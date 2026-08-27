@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>ClipSense</title>
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div id="app">
+    <header class="header" id="header">
+      <h1 id="title">ClipSense</h1>
+      <div class="header-actions">
+        <span class="countdown-badge" id="countdownBadge">
+          <span class="countdown-icon">⏱</span>
+          <span class="countdown-number" id="countdownNumber">5</span>
+          <span class="countdown-unit">s</span>
+        </span>
+        <button id="pinBtn" class="pin-btn" title="固定窗口">
+          <svg class="pin-icon pin-icon--unpinned" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/>
+            <circle cx="12" cy="12" r="2" fill="currentColor" opacity="0.4"/>
+          </svg>
+          <svg class="pin-icon pin-icon--pinned" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" fill="#a29bfe" opacity="0.9"/>
+            <circle cx="12" cy="12" r="4" fill="#fff"/>
+          </svg>
+        </button>
+        <button id="langBtn" title="Switch language" class="lang-btn">EN</button>
+        <button id="clearBtn" title="清空历史">清空</button>
+      </div>
+    </header>
+
+    <div class="hint" id="hint">
+      现在复制任意文本（Ctrl+C），会自动出现在下方列表<br>
+      <small>全局快捷键 <kbd>Ctrl+Shift+V</kbd> 唤出窗口</small>
+    </div>
+
+    <main class="list" id="list">
+      <div class="empty">暂无剪贴板历史</div>
+    </main>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="renderer.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

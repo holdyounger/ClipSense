@@ -1,0 +1,18 @@
+{
+  "name": "clipboard-spike",
+  "version": "0.1.0",
+  "description": "剪贴板程序可行性 spike demo —— 验证：剪贴板轮询监听 → 面板展示 → 点击回写",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "set NODE_ENV=development&& electron .",
+    "gen:icon": "node scripts/gen-icon.js"
+  },
+  "keywords": ["clipboard", "electron", "spike"],
+  "author": "产品 spike",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  },
+  "dependencies": {}
+}
