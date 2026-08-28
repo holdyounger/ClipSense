@@ -28,7 +28,7 @@
 
 ## 🎬 运行效果
 
-![ClipSense 面板](README/image-20260828164536541.png)
+![ClipSense 面板](README/DemoShow.gif)
 
 ---
 
