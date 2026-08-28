@@ -80,6 +80,16 @@ class ClipboardMonitor {
       // 3. 纯文本（优先级高于富文本：绝大多数复制都带 text/plain，最干净）
       const text = clipboard.readText();
       if (text) {
+        // 特殊情况：文本内容是 file:// 路径（首次启动时格式已冲刷，只剩纯文本）
+        // 此时把它识别为「文件」而非普通文本
+        const fileEntries = this._parseFileUriText(text);
+        if (fileEntries.length > 0) {
+          return {
+            kind: 'file',
+            files: fileEntries,
+            uriList: fileEntries.map(f => f.uri).join('\n'),
+          };
+        }
         return { kind: 'text', text };
       }
 
@@ -162,6 +172,42 @@ class ClipboardMonitor {
     const name = p.split(/[\\/]/).pop() || p;
     const uri = 'file:///' + p.replace(/\\/g, '/');
     return { uri, path: p, name };
+  }
+
+  /**
+   * 判断一段纯文本是否「整体是 file:// 路径」（首次启动残留的文件 URI 文本）
+   * 是则解析成文件条目数组，否则返回空数组。
+   *
+   * 触发场景：首次启动时剪贴板里残留的是 file:///C:/... 纯文本，
+   * 但格式已被冲刷，只剩 text/plain（读不到 FileNameW / uri-list）。
+   */
+  _parseFileUriText(text) {
+    const lines = String(text).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+
+    // 所有非空行都必须是 file:// 开头，才认定为文件（避免误判普通文本）
+    const allAreFileUri = lines.every(line => line.startsWith('file://'));
+    if (!allAreFileUri) return [];
+
+    const files = [];
+    for (const line of lines) {
+      let pathPart = line.slice('file://'.length);
+      let filePath;
+      try {
+        filePath = decodeURIComponent(pathPart);
+      } catch (e) {
+        filePath = pathPart;
+      }
+      // Windows 路径规范化：/C:/xxx -> C:/xxx；以及 file://C:/xxx 的变体
+      if (/^\/[A-Za-z]:\//.test(filePath)) {
+        filePath = filePath.slice(1);
+      } else if (/^\/[A-Za-z]\//.test(filePath)) {
+        filePath = filePath.slice(1);
+      }
+      const name = filePath.split(/[\\/]/).pop() || filePath;
+      files.push({ uri: line, path: filePath, name });
+    }
+    return files;
   }
 
   /**

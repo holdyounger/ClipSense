@@ -69,6 +69,30 @@ function formatPreview(text, maxUnits = 80, maxLines = 3) {
 }
 
 /**
+ * 判断文本是否会被截断（是否需要「展开」功能）
+ * @param {string} text
+ * @param {number} maxUnits
+ * @param {number} maxLines
+ * @returns {boolean}
+ */
+function isTruncated(text, maxUnits = 80, maxLines = 3) {
+  if (!text) return false;
+  const normalized = String(text).replace(/\r\n/g, '\n').trim();
+  if (!normalized) return false;
+  const lines = normalized.split('\n');
+  if (lines.length > maxLines) return true;
+  // 单行但超宽也算截断
+  for (const line of lines) {
+    let w = 0;
+    for (const ch of line) {
+      w += (ch.charCodeAt(0) > 255 ? 2 : 1);
+    }
+    if (w > maxUnits) return true;
+  }
+  return false;
+}
+
+/**
  * 根据文件名/路径得到对应的分类图标（emoji）
  * 按扩展名映射，覆盖常见类型；未知类型回退到通用文件图标。
  */
@@ -121,9 +145,36 @@ const ItemBuilders = {
   text(item, ctx) {
     const previewEl = document.createElement('pre');
     previewEl.className = 'preview preview--text';
-    previewEl.textContent = formatPreview(item.text, 80, 3);
+
+    const needsExpand = isTruncated(item.text, 80, 3);
+    let expanded = false;
+
+    function renderText() {
+      previewEl.textContent = expanded
+        ? String(item.text)
+        : formatPreview(item.text, 80, 3);
+    }
+    renderText();
+
+    // 超长文本：加「展开/收起」切换按钮（作为 preview 的兄弟节点）
+    let toggleBtn = null;
+    if (needsExpand) {
+      toggleBtn = document.createElement('button');
+      toggleBtn.className = 'expand-btn';
+      toggleBtn.innerHTML = `<span class="expand-icon">▼</span><span>${ctx.t('expand')}</span>`;
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        expanded = !expanded;
+        toggleBtn.innerHTML = expanded
+          ? `<span class="expand-icon">▲</span><span>${ctx.t('collapse')}</span>`
+          : `<span class="expand-icon">▼</span><span>${ctx.t('expand')}</span>`;
+        renderText();
+      });
+    }
+
     return {
       previewEl,
+      extraEls: toggleBtn ? [toggleBtn] : [],
       metaText: `${ctx.timeStr(item.timestamp)} · ${ctx.t('chars', item.length)}`,
     };
   },
@@ -164,15 +215,31 @@ const ItemBuilders = {
       previewEl.appendChild(icon);
       previewEl.appendChild(name);
     } else {
-      // 单文件：按扩展名显示对应图标
+      // 单文件：先显示扩展名分类 emoji，再异步加载真实系统图标替换
+      const filePath = item.path || (item.files && item.files[0] ? item.files[0].path : '') || '';
       const icon = document.createElement('span');
       icon.className = 'file-icon';
-      icon.textContent = fileIcon(item.name || item.path);
+      icon.textContent = fileIcon(item.name || filePath);
+
       const name = document.createElement('span');
       name.className = 'file-name';
-      name.textContent = item.name || item.path || 'file';
+      name.textContent = item.name || filePath || 'file';
+
       previewEl.appendChild(icon);
       previewEl.appendChild(name);
+
+      // 异步加载真实系统图标（Windows 上能拿到 .exe 等文件的内置图标）
+      if (filePath && window.clipboardAPI && window.clipboardAPI.getFileIcon) {
+        window.clipboardAPI.getFileIcon(filePath).then((dataUrl) => {
+          // 竞态保护：列表可能已被重新渲染，icon 已脱离 DOM，此时放弃（新一轮会重新请求）
+          if (!dataUrl || !icon.isConnected) return;
+          const img = document.createElement('img');
+          img.className = 'file-icon-img';
+          img.src = dataUrl;
+          img.alt = item.name || 'file';
+          icon.replaceWith(img);
+        }).catch(() => { /* 加载失败保留 emoji */ });
+      }
     }
 
     return {
@@ -215,7 +282,7 @@ function renderHistory(container, history, handlers, ctx) {
     const builder = ItemBuilders[type] || ItemBuilders.text;
 
     // 构建条目
-    const { previewEl, metaText } = builder(item, ctx);
+    const { previewEl, metaText, extraEls } = builder(item, ctx);
 
     const div = document.createElement('div');
     div.className = 'item';
@@ -247,12 +314,19 @@ function renderHistory(container, history, handlers, ctx) {
     actions.appendChild(delBtn);
 
     div.appendChild(previewEl);
+    // 额外元素（如展开按钮）插在预览和 meta 之间
+    if (extraEls && extraEls.length > 0) {
+      for (const el of extraEls) {
+        div.appendChild(el);
+      }
+    }
     div.appendChild(meta);
     div.appendChild(actions);
 
     // 双击条目复制
     div.addEventListener('dblclick', (e) => {
       if (e.target.closest('.actions')) return;
+      if (e.target.closest('.expand-btn')) return;
       if (handlers.onCopy) handlers.onCopy(item, div);
     });
 

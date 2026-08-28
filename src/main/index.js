@@ -52,7 +52,7 @@ class ClipboardSpikeApp {
     const isDev = !app.isPackaged;
     console.log(`[Spike] 当前环境: ${isDev ? 'development（未打包）' : 'production（已打包）'}`);
     if (isDev) {
-      // this.mainWindow.webContents.openDevTools({ mode: 'detach' });
+      this.mainWindow.webContents.openDevTools({ mode: 'detach' });
     } else {
       console.log('[Spike] 生产模式，关闭菜单栏');
       this.mainWindow.removeMenu();
@@ -147,6 +147,29 @@ class ClipboardSpikeApp {
     // 渲染进程拉取历史
     ipcMain.handle('get-history', () => {
       return this.monitor.getHistory();
+    });
+
+    // 获取文件的真实系统图标（异步，返回 dataURL）
+    ipcMain.handle('get-file-icon', async (event, filePath) => {
+      try {
+        if (!filePath || typeof filePath !== 'string') return null;
+        // Windows 上 getFileIcon 需要反斜杠正规路径；正斜杠可能失败
+        let normalized = filePath;
+        if (process.platform === 'win32') {
+          normalized = filePath.replace(/\//g, '\\');
+        }
+        console.log(`[Spike] getFileIcon 入参: "${filePath}" -> 规范化为 "${normalized}"`);
+        const icon = await app.getFileIcon(normalized, { size: 'normal' });
+        if (icon && !icon.isEmpty()) {
+          console.log(`[Spike] getFileIcon 成功: ${filePath}`);
+          return icon.toDataURL();
+        }
+        console.warn(`[Spike] getFileIcon 返回空图标: ${filePath}`);
+        return null;
+      } catch (err) {
+        console.warn(`[Spike] 获取文件图标失败: ${err.message} (path=${filePath})`);
+        return null;
+      }
     });
 
     // 点击条目：回写剪贴板（按类型分类处理）

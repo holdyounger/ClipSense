@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
   <title>ClipSense</title>
   <link rel="stylesheet" href="main.css">
 </head>
@@ -27,8 +27,14 @@
             <circle cx="12" cy="12" r="4" fill="#fff"/>
           </svg>
         </button>
-        <button id="langBtn" title="Switch language" class="lang-btn">EN</button>
-        <button id="clearBtn" title="清空历史">清空</button>
+        <!-- 更多菜单按钮 -->
+        <div class="menu-wrap">
+          <button id="menuBtn" class="menu-btn" title="菜单">⋮</button>
+          <div class="dropdown-menu" id="dropdownMenu">
+            <button class="dropdown-item" id="menuLangBtn">切换语言</button>
+            <button class="dropdown-item dropdown-item--danger" id="menuClearBtn">清空历史</button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -40,6 +46,17 @@
     <main class="list" id="list">
       <div class="empty">暂无剪贴板历史</div>
     </main>
+
+    <!-- 底部状态栏：搜索 + 统计 -->
+    <footer class="footer" id="footer">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
+      </div>
+      <div class="stats" id="stats">
+        <span id="statCount">0 项</span>
+      </div>
+    </footer>
   </div>
 
   <script src="i18n.js"></script>

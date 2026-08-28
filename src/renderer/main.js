@@ -5,38 +5,43 @@
  * 列表的 DOM 构建委托给 renderer.js（类型化渲染，支持扩展多内容类型）。
  */
 const listEl = document.getElementById('list');
-const clearBtn = document.getElementById('clearBtn');
-const langBtn = document.getElementById('langBtn');
 const pinBtn = document.getElementById('pinBtn');
+const menuBtn = document.getElementById('menuBtn');
+const dropdownMenu = document.getElementById('dropdownMenu');
+const menuLangBtn = document.getElementById('menuLangBtn');
+const menuClearBtn = document.getElementById('menuClearBtn');
+const searchInput = document.getElementById('searchInput');
+const statCount = document.getElementById('statCount');
 
 let isPinned = false;
 let countdownInterval = null;
+let searchQuery = '';
+let fullHistory = []; // 完整历史（未过滤）
 
 // 初始化国际化
 initLang();
 applyStaticText();
 
 /**
- * 应用静态文案（标题、清空按钮、提示、空状态等）
+ * 应用静态文案（标题、提示、空状态、下拉菜单等）
  */
 function applyStaticText() {
   const titleEl = document.getElementById('title');
   const hintEl = document.getElementById('hint');
-  const clearBtn = document.getElementById('clearBtn');
 
   titleEl.textContent = t('title');
   hintEl.innerHTML = t('hintHtml');
-  clearBtn.textContent = t('clear');
-  clearBtn.title = t('clearTitle');
 
-  // 语言切换按钮文案：显示"目标语言"
-  langBtn.textContent = getLang() === 'zh-CN' ? 'EN' : '中文';
-  langBtn.title = getLang() === 'zh-CN' ? 'Switch to English' : '切换为中文';
+  // 下拉菜单文案
+  menuLangBtn.textContent = t('menuLang');
+  menuClearBtn.textContent = t('menuClear');
+  searchInput.placeholder = t('searchPlaceholder');
 
   // 空状态（如果当前是空列表）
   if (listEl.querySelector('.empty')) {
     refresh();
   }
+  updateStats();
 }
 
 // ========== 渲染上下文与事件手柄（交给 renderer.js） ==========
@@ -70,22 +75,73 @@ function flashItem(el) {
   setTimeout(() => el.classList.remove('flash'), 300);
 }
 
-async function refresh() {
-  const history = await window.clipboardAPI.getHistory();
-  renderHistory(listEl, history, renderHandlers, renderCtx);
+/**
+ * 按搜索词过滤历史
+ */
+function filterHistory(history) {
+  const q = searchQuery.toLowerCase().trim();
+  if (!q) return history;
+  return history.filter(item => {
+    const text = (item.text || item.preview || item.name || '').toLowerCase();
+    return text.includes(q);
+  });
 }
 
-clearBtn.addEventListener('click', async () => {
+/**
+ * 更新底部统计（总数 + 过滤后数量）
+ */
+function updateStats() {
+  const total = fullHistory.length;
+  const shown = filterHistory(fullHistory).length;
+  if (searchQuery.trim()) {
+    statCount.textContent = t('statFiltered', shown, total);
+  } else {
+    statCount.textContent = t('statCount', total);
+  }
+}
+
+async function refresh() {
+  fullHistory = await window.clipboardAPI.getHistory();
+  const shown = filterHistory(fullHistory);
+  renderHistory(listEl, shown, renderHandlers, renderCtx);
+  updateStats();
+}
+
+// ========== 下拉菜单 ==========
+menuBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  dropdownMenu.classList.toggle('open');
+});
+
+// 点击菜单外部关闭
+document.addEventListener('click', (e) => {
+  if (!dropdownMenu.contains(e.target) && !menuBtn.contains(e.target)) {
+    dropdownMenu.classList.remove('open');
+  }
+});
+
+// 菜单：切换语言
+menuLangBtn.addEventListener('click', () => {
+  dropdownMenu.classList.remove('open');
+  const next = getLang() === 'zh-CN' ? 'en' : 'zh-CN';
+  setLang(next);
+  applyStaticText();
+  refresh();
+});
+
+// 菜单：清空历史
+menuClearBtn.addEventListener('click', async () => {
+  dropdownMenu.classList.remove('open');
   await window.clipboardAPI.clearHistory();
   await refresh();
 });
 
-// 语言切换
-langBtn.addEventListener('click', () => {
-  const next = getLang() === 'zh-CN' ? 'en' : 'zh-CN';
-  setLang(next);
-  applyStaticText();
-  refresh(); // 重新渲染列表文案（时间/字符数等）
+// ========== 搜索 ==========
+searchInput.addEventListener('input', () => {
+  searchQuery = searchInput.value;
+  const shown = filterHistory(fullHistory);
+  renderHistory(listEl, shown, renderHandlers, renderCtx);
+  updateStats();
 });
 
 // ========== 窗口固定 ==========
@@ -115,7 +171,10 @@ function updatePinUI() {
 pinBtn.addEventListener('click', togglePin);
 
 window.clipboardAPI.onHistoryUpdated((history) => {
-  renderHistory(listEl, history, renderHandlers, renderCtx);
+  fullHistory = history;
+  const shown = filterHistory(fullHistory);
+  renderHistory(listEl, shown, renderHandlers, renderCtx);
+  updateStats();
 });
 
 // ========== 倒计时显示（同步 KeySense） ==========
