@@ -23,9 +23,8 @@ class EdgeDetector {
     this.isWindowVisible = false;
     this.edgeWidth = 5;
     /** 隐藏后仍保留在屏幕边缘的鼠标触发条宽度 */
-    /** 触摸条外壳宽度；实际可见条由触摸条页面固定为 6px */
-    this.triggerWidth = 60;
-    this.triggerVisualWidth = 6;
+    /** 触发条真实命中宽度；不能把透明外壳扩展成整段屏幕区域 */
+    this.triggerWidth = 6;
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
@@ -42,8 +41,9 @@ class EdgeDetector {
     this.isCountingDown = false;
     /** 是否固定（固定后不自动隐藏） */
     this.isPinned = false;
-    /** 当前推出动画定时器，避免隐藏动画被重复触发 */
+    /** 当前推出/弹入动画定时器，避免窗口动画重复触发 */
     this._hideAnimationId = null;
+    this._showAnimationId = null;
     this._isHiding = false;
   }
 
@@ -89,6 +89,7 @@ class EdgeDetector {
     this.isActive = false;
     this._cancelHideTimer();
     this._cancelHideAnimation();
+    this._cancelShowAnimation();
     console.log('[EdgeDetector] 停止边缘检测');
   }
 
@@ -121,7 +122,7 @@ class EdgeDetector {
   }
 
   _checkMousePosition() {
-    if (this._isDragging || this._isHiding) return; // 拖拽/推出期间跳过
+    if (this._isDragging || this._isHiding || this._showAnimationId) return; // 拖拽/动画期间跳过
     try {
       const point = screen.getCursorScreenPoint();
       const display = screen.getDisplayNearestPoint(point);
@@ -129,22 +130,24 @@ class EdgeDetector {
       const { x: displayX } = display.workArea;
 
       const rightEdge = displayX + width;
-      const distanceFromLeft = point.x - displayX;
-      const distanceFromRight = rightEdge - point.x;
-      const isInLeftTriggerZone = point.x - displayX <= this.triggerWidth;
-      const isInRightTriggerZone = rightEdge - point.x <= this.triggerWidth;
-      // KeySense 默认右侧唤出；隐藏后只监听实际贴住的那一侧。
-      const isInEdgeTriggerZone = this.isWindowVisible
-        ? (distanceFromRight <= this.edgeWidth && distanceFromRight >= 0)
-        : (this._hiddenEdge === 'left' ? isInLeftTriggerZone : isInRightTriggerZone);
-
       const wb = this.mainWindow.getBounds();
       const isOverPanel = (
         point.x >= wb.x && point.x <= wb.x + wb.width &&
         point.y >= wb.y && point.y <= wb.y + wb.height
       );
 
-      if (isInEdgeTriggerZone) {
+      // 只有隐藏后的独立 triggerWindow 才是唤出热区。
+      // 面板显示时不再把主窗口贴边区域当作触发条，避免 hover 整个窗口边框触发逻辑。
+      const triggerBounds = !this.isWindowVisible && this.triggerWindow
+        && !this.triggerWindow.isDestroyed()
+        ? this.triggerWindow.getBounds()
+        : null;
+      const isOverTrigger = triggerBounds && (
+        point.x >= triggerBounds.x && point.x < triggerBounds.x + triggerBounds.width &&
+        point.y >= triggerBounds.y && point.y < triggerBounds.y + triggerBounds.height
+      );
+
+      if (isOverTrigger) {
         this._lastIsOverPanel = false;
         this._cancelHideTimer();
         if (!this.isWindowVisible) this._showWindow(display);
@@ -160,12 +163,12 @@ class EdgeDetector {
 
   _showWindow(display) {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    if (this.isWindowVisible && !this._showAnimationId) return;
 
     // 在 show() 抢走焦点之前记录原目标窗口，供双击粘贴恢复。
     if (this._onShown) this._onShown();
 
     const { width, height } = display.workAreaSize;
-    // 固定窗口尺寸，避免拖拽/重复显示时尺寸漂移
     const windowWidth = 360;
     const windowHeight = Math.min(560, height);
 
@@ -181,25 +184,70 @@ class EdgeDetector {
       targetY = display.workArea.y;
     }
 
+    if (this._showAnimationId) {
+      clearTimeout(this._showAnimationId);
+      this._showAnimationId = null;
+    }
     if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.hide();
     }
     if (this.mainWindow.isMinimized()) this.mainWindow.restore();
-    if (!this.mainWindow.isVisible()) this.mainWindow.showInactive();
-    // 明确保持前台窗口不变；focusable:false 负责阻止鼠标点击面板抢焦点。
-    this.mainWindow.setIgnoreMouseEvents(false);
-    this.mainWindow.setOpacity(1);
+
     // 恢复正常面板前解除触发条阶段的最小尺寸限制。
     this.mainWindow.setMinimumSize(0, 0);
+    this.mainWindow.setIgnoreMouseEvents(false);
     this.mainWindow.setBounds({
       x: Math.round(targetX),
       y: Math.round(targetY),
       width: windowWidth,
       height: windowHeight,
     });
+
+    const edge = this._hiddenAtPos ? this._hiddenEdge : this._getNearestEdgeForPoint(targetX, display);
+    const distance = this._hiddenAtPos ? windowWidth : 22;
+    const startX = edge === 'right'
+      ? targetX + distance
+      : targetX - distance;
+    const startedAt = Date.now();
+    const durationMs = this._hiddenAtPos ? 300 : 220;
+    this.mainWindow.setPosition(Math.round(startX), Math.round(targetY));
+    this.mainWindow.setOpacity(0);
+    this.mainWindow.showInactive();
     this.isWindowVisible = true;
     this._lastIsOverPanel = false;
-    console.log(`[EdgeDetector] 显示窗口 (x=${targetX}, y=${targetY})`);
+
+    const animate = () => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) {
+        this._showAnimationId = null;
+        return;
+      }
+      const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
+      // ease-out：快速离开边缘，接近目标位置时柔和停下。
+      const eased = 1 - Math.pow(1 - progress, 3);
+      this.mainWindow.setPosition(
+        Math.round(startX + (targetX - startX) * eased),
+        Math.round(targetY),
+      );
+      this.mainWindow.setOpacity(Math.min(1, eased));
+
+      if (progress < 1) {
+        this._showAnimationId = setTimeout(animate, 16);
+      } else {
+        this._showAnimationId = null;
+        this.mainWindow.setPosition(Math.round(targetX), Math.round(targetY));
+        this.mainWindow.setOpacity(1);
+        // 这次隐藏位置已被消费，后续手动唤出使用拖拽后的位置。
+        this._hiddenAtPos = null;
+      }
+    };
+
+    console.log(`[EdgeDetector] 弹出窗口 (x=${targetX}, y=${targetY}, edge=${edge})`);
+    animate();
+  }
+
+  _getNearestEdgeForPoint(x, display) {
+    const { x: dx, width: dw } = display.workArea;
+    return (x + 180 - dx) <= ((dx + dw) - (x + 180)) ? 'left' : 'right';
   }
 
   _getNearestEdge() {
@@ -276,11 +324,10 @@ class EdgeDetector {
 
     // 主面板完全隐藏，独立触发窗口负责边缘唤出。
     const triggerDisplay = screen.getDisplayNearestPoint({ x: snapX, y });
-    // 让大部分外壳位于屏幕外，只把 6px 可见条留在屏幕内。
-    // 左侧：外壳向左偏移；右侧：外壳从右边界向左放置。
+    // triggerWindow 只占据可见触发条本身，透明区域不会成为命中热区。
     const triggerX = targetEdge === 'right'
       ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - this.triggerWidth
-      : triggerDisplay.workArea.x - (this.triggerWidth - this.triggerVisualWidth);
+      : triggerDisplay.workArea.x;
     this.mainWindow.hide();
     if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.setBounds({
@@ -301,6 +348,13 @@ class EdgeDetector {
     this._lastIsOverPanel = false;
     console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}）`);
     if (this._onHidden) this._onHidden();
+  }
+
+  _cancelShowAnimation() {
+    if (this._showAnimationId) {
+      clearTimeout(this._showAnimationId);
+      this._showAnimationId = null;
+    }
   }
 
   _cancelHideAnimation() {

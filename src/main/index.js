@@ -58,10 +58,9 @@ class ClipboardSpikeApp {
 
     this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-    // 独立的边缘触摸条窗口。使用统一外壳尺寸，再用原生 shape 裁成 6px，
-    // 避免 Windows 对左侧屏幕边界的无框窗口做额外扩展，导致左右视觉宽度不一致。
+    // 独立的边缘触发条窗口。窗口本身只有 6px 宽，命中区域与可见条完全一致。
     this.triggerWindow = new BrowserWindow({
-      width: 60,
+      width: 6,
       height: 480,
       frame: false,
       transparent: true,
@@ -81,7 +80,7 @@ class ClipboardSpikeApp {
         html,body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; }
         #bar { position:fixed; top:0; bottom:0; left:0; width:6px; background:linear-gradient(180deg,#a29bfe,#6c5ce7); border-radius:0 6px 6px 0; box-shadow:0 0 8px rgba(108,92,231,.8); }
         #bar.right { left:auto; right:0; border-radius:6px 0 0 6px; }
-        #bar.left { left:54px; }
+        #bar.left { left:0; border-radius:0 6px 6px 0; }
       </style></head><body><div id="bar"></div></body></html>
     `)}`);
     this.triggerWindow.setIgnoreMouseEvents(false);
