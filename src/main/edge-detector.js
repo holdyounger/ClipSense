@@ -125,10 +125,11 @@ class EdgeDetector {
       const { x: displayX } = display.workArea;
 
       const rightEdge = displayX + width;
+      const distanceFromLeft = point.x - displayX;
       const distanceFromRight = rightEdge - point.x;
       const isInLeftTriggerZone = point.x - displayX <= this.triggerWidth;
       const isInRightTriggerZone = rightEdge - point.x <= this.triggerWidth;
-      // 窗口显示时只用右侧边缘唤出；窗口收缩后只监听它实际贴住的那一侧。
+      // KeySense 默认右侧唤出；隐藏后只监听实际贴住的那一侧。
       const isInEdgeTriggerZone = this.isWindowVisible
         ? (distanceFromRight <= this.edgeWidth && distanceFromRight >= 0)
         : (this._hiddenEdge === 'left' ? isInLeftTriggerZone : isInRightTriggerZone);
@@ -293,6 +294,7 @@ class EdgeDetector {
     }
     this.isWindowVisible = false;
     this._isHiding = false;
+    this._lastIsOverPanel = false;
     console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}）`);
     if (this._onHidden) this._onHidden();
   }
