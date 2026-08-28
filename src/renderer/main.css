@@ -360,6 +360,21 @@ html, body {
 }
 
 /* 富文本类型 */
+.preview--whitespace {
+  color: var(--accent-hover);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+}
+
+.preview--whitespace::first-line {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
 .preview--rich {
   white-space: pre-wrap;
   word-break: break-word;

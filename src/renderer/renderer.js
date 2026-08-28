@@ -150,9 +150,25 @@ const ItemBuilders = {
     let expanded = false;
 
     function renderText() {
-      previewEl.textContent = expanded
-        ? String(item.text)
-        : formatPreview(item.text, 80, 3);
+      const rawText = String(item.text || '');
+      const isWhitespaceOnly = rawText.length > 0 && /^\s+$/.test(rawText);
+      if (isWhitespaceOnly) {
+        // 用可见转义符展示，避免连续空格/换行在界面上“消失”。
+        // 使用编辑器常见的“显示空白”符号：空格␠、Tab⇥、换行↵。
+        // CRLF 作为一个换行标记展示，避免出现“␍↵”两个符号。
+        const visible = rawText.replace(/\r\n|\n|\r|\t| /g, (token) => {
+          if (token === ' ') return '␠';
+          if (token === '\t') return '⇥';
+          return '↵\n';
+        });
+        previewEl.textContent = `[空白字符 × ${rawText.length}]\n${visible}`;
+        previewEl.classList.add('preview--whitespace');
+        previewEl.title = '这是有效的空白字符内容，双击仍会粘贴原始空白字符';
+        return;
+      }
+      previewEl.classList.remove('preview--whitespace');
+      previewEl.title = '';
+      previewEl.textContent = expanded ? rawText : formatPreview(rawText, 80, 3);
     }
     renderText();
 

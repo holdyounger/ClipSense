@@ -307,6 +307,14 @@ class ClipboardSpikeApp {
         : { isCountingDown: false, remainingMs: null };
     });
 
+    // 搜索框需要键盘焦点；仅在用户明确点击搜索框时临时允许主窗口获取焦点。
+    ipcMain.handle('focus-search', () => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
+      this.mainWindow.setFocusable(true);
+      this.mainWindow.focus();
+      return true;
+    });
+
     // ========== 窗口固定 ==========
 
     ipcMain.handle('set-pinned', (event, pinned) => {
@@ -382,6 +390,8 @@ class ClipboardSpikeApp {
     this.edgeDetector.start();
     // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。
     this.edgeDetector.forceShow();
+    // 默认不抢目标窗口焦点；搜索框点击时由 focus-search IPC 按需开启。
+    this.mainWindow.setFocusable(false);
 
     // 启动时从磁盘恢复历史（重启不丢失）
     const restoredCount = this.monitor.loadFromStorage();

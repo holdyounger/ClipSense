@@ -145,6 +145,11 @@ menuClearBtn.addEventListener('click', async () => {
 });
 
 // ========== 搜索 ==========
+// 主窗口默认 focusable:false；用户点击搜索框时按需开启焦点。
+searchInput.addEventListener('pointerdown', () => {
+  window.clipboardAPI.focusSearch();
+});
+
 searchInput.addEventListener('input', () => {
   searchQuery = searchInput.value;
   const shown = filterHistory(fullHistory);

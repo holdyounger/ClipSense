@@ -282,7 +282,10 @@ class ClipboardMonitor {
           ...base,
           type: 'text',
           text,
-          preview: text.length > 80 ? text.slice(0, 80) + '…' : text,
+          // 空格/换行本身是有效剪贴板内容，预览不能显示成空白。
+          preview: /^\s+$/.test(text)
+            ? `[空白字符 × ${text.length}]`
+            : (text.length > 80 ? text.slice(0, 80) + '…' : text),
           length: text.length,
         };
       }

@@ -32,4 +32,5 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   // ========== 窗口固定 ==========
   setPinned: (pinned) => ipcRenderer.invoke('set-pinned', pinned),
   verifyPinned: () => ipcRenderer.invoke('verify-pinned'),
+  focusSearch: () => ipcRenderer.invoke('focus-search'),
 });
