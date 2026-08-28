@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   copyItem: (id) => ipcRenderer.invoke('copy-item', id),
   simulateInput: (id) => ipcRenderer.invoke('simulate-input', id),
   getFileIcon: (path) => ipcRenderer.invoke('get-file-icon', path),
+  openFileLocation: (path) => ipcRenderer.invoke('open-file-location', path),
   removeItem: (id) => ipcRenderer.invoke('remove-item', id),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
   onHistoryUpdated: (callback) => {

@@ -11,7 +11,8 @@
  *   - 全局快捷键 Ctrl+Shift+V 切换显示
  */
 
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector');
@@ -215,6 +216,25 @@ class ClipboardSpikeApp {
     });
 
     // 获取文件的真实系统图标（异步，返回 dataURL）
+    ipcMain.handle('open-file-location', async (event, filePath) => {
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return { ok: false, error: '文件路径为空' };
+      }
+      const normalized = process.platform === 'win32'
+        ? filePath.replace(/\//g, '\\')
+        : filePath;
+      try {
+        if (!fs.existsSync(normalized)) {
+          return { ok: false, error: '文件不存在或已被移动' };
+        }
+        shell.showItemInFolder(normalized);
+        return { ok: true };
+      } catch (err) {
+        console.warn(`[Spike] 打开文件位置失败: ${err.message} (path=${normalized})`);
+        return { ok: false, error: err.message };
+      }
+    });
+
     ipcMain.handle('get-file-icon', async (event, filePath) => {
       try {
         if (!filePath || typeof filePath !== 'string') return null;

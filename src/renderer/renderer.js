@@ -214,6 +214,19 @@ const ItemBuilders = {
       name.textContent = `${files.length} 个文件`;
       previewEl.appendChild(icon);
       previewEl.appendChild(name);
+
+      // 多文件条目点击时定位到第一个文件。
+      const firstFilePath = files[0] && files[0].path;
+      if (firstFilePath) {
+        previewEl.classList.add('file-link');
+        previewEl.title = '在 Explorer 中打开文件位置（第一个文件）';
+        previewEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          previewEl._openFileTimer = setTimeout(() => {
+            window.clipboardAPI.openFileLocation(firstFilePath).catch(() => {});
+          }, 250);
+        });
+      }
     } else {
       // 单文件：先显示扩展名分类 emoji，再异步加载真实系统图标替换
       const filePath = item.path || (item.files && item.files[0] ? item.files[0].path : '') || '';
@@ -227,6 +240,20 @@ const ItemBuilders = {
 
       previewEl.appendChild(icon);
       previewEl.appendChild(name);
+
+      // 单击文件预览：在 Explorer 中打开并定位到对应文件。
+      if (filePath) {
+        previewEl.classList.add('file-link');
+        previewEl.title = '在 Explorer 中打开文件位置';
+        previewEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // 延迟单击动作，给条目的双击粘贴留出识别时间。
+          previewEl._openFileTimer = setTimeout(async () => {
+            const result = await window.clipboardAPI.openFileLocation(filePath);
+            if (!result || !result.ok) console.warn(result && result.error ? result.error : '打开文件失败');
+          }, 250);
+        });
+      }
 
       // 异步加载真实系统图标（Windows 上能拿到 .exe 等文件的内置图标）
       if (filePath && window.clipboardAPI && window.clipboardAPI.getFileIcon) {
@@ -325,6 +352,10 @@ function renderHistory(container, history, handlers, ctx) {
 
     // 双击条目：回写原始类型后，粘贴到双击前的目标窗口
     div.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.file-link') && e.target.closest('.file-link')._openFileTimer) {
+        clearTimeout(e.target.closest('.file-link')._openFileTimer);
+        e.target.closest('.file-link')._openFileTimer = null;
+      }
       if (e.target.closest('.actions')) return;
       if (e.target.closest('.expand-btn')) return;
       if (handlers.onSimulateInput) handlers.onSimulateInput(item, div);
