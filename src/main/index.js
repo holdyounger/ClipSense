@@ -57,7 +57,40 @@ class ClipboardSpikeApp {
 
     this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-    
+    // 独立的边缘触摸条窗口。使用统一外壳尺寸，再用原生 shape 裁成 6px，
+    // 避免 Windows 对左侧屏幕边界的无框窗口做额外扩展，导致左右视觉宽度不一致。
+    this.triggerWindow = new BrowserWindow({
+      width: 60,
+      height: 480,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      alwaysOnTop: true,
+      resizable: false,
+      skipTaskbar: true,
+      show: false,
+      focusable: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    this.triggerWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`
+      <!doctype html><html><head><style>
+        html,body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; }
+        #bar { position:fixed; top:0; bottom:0; left:0; width:6px; background:linear-gradient(180deg,#a29bfe,#6c5ce7); border-radius:0 6px 6px 0; box-shadow:0 0 8px rgba(108,92,231,.8); }
+        #bar.right { left:auto; right:0; border-radius:6px 0 0 6px; }
+        #bar.left { left:54px; }
+      </style></head><body><div id="bar"></div></body></html>
+    `)}`);
+    this.triggerWindow.setIgnoreMouseEvents(false);
+    this.triggerWindow.webContents.on('did-finish-load', () => {
+      const edge = this.triggerWindow._edge || 'right';
+      this.triggerWindow.webContents.executeJavaScript(
+        `document.getElementById('bar').className = '${edge}'`
+      ).catch(() => {});
+    });
+
     // 开发模式判断：用 app.isPackaged（打包后为 true），不依赖环境变量
     const isDev = !app.isPackaged;
     console.log(`[Spike] 当前环境: ${isDev ? 'development（未打包）' : 'production（已打包）'}`);
@@ -322,7 +355,7 @@ class ClipboardSpikeApp {
     this.setupIPC();
 
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
-    this.edgeDetector = new EdgeDetector(this.mainWindow);
+    this.edgeDetector = new EdgeDetector(this.mainWindow, this.triggerWindow);
     this.edgeDetector.setOnHidden(() => {
       // 不可获取焦点的置顶面板隐藏后，目标窗口始终保持原焦点。
     });
@@ -380,6 +413,9 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   globalShortcut.unregisterAll();
+  if (spikeApp.triggerWindow && !spikeApp.triggerWindow.isDestroyed()) {
+    spikeApp.triggerWindow.destroy();
+  }
   spikeApp.monitor.stop();
   if (spikeApp.edgeDetector) spikeApp.edgeDetector.stop();
 });

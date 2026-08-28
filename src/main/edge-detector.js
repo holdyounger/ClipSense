@@ -14,17 +14,24 @@
 const { screen } = require('electron');
 
 class EdgeDetector {
-  constructor(mainWindow) {
+  constructor(mainWindow, triggerWindow = null) {
     this.mainWindow = mainWindow;
+    this.triggerWindow = triggerWindow;
     this.intervalId = null;
     this.hideTimerId = null;
     this.isActive = false;
     this.isWindowVisible = false;
     this.edgeWidth = 5;
+    /** 隐藏后仍保留在屏幕边缘的鼠标触发条宽度 */
+    /** 触摸条外壳宽度；实际可见条由触摸条页面固定为 6px */
+    this.triggerWidth = 60;
+    this.triggerVisualWidth = 6;
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     this._lastDraggedPos = null;
     this._hiddenAtPos = null;
+    /** 最近一次隐藏时所在的屏幕边缘（只在该边缘触发恢复） */
+    this._hiddenEdge = 'right';
     /** 拖拽期间冻结边缘检测（防止窗口变大/漂移） */
     this._isDragging = false;
     /** 隐藏倒计时截止时间戳（ms） */
@@ -114,6 +121,12 @@ class EdgeDetector {
 
       const rightEdge = displayX + width;
       const distanceFromRight = rightEdge - point.x;
+      const isInLeftTriggerZone = point.x - displayX <= this.triggerWidth;
+      const isInRightTriggerZone = rightEdge - point.x <= this.triggerWidth;
+      // 窗口显示时只用右侧边缘唤出；窗口收缩后只监听它实际贴住的那一侧。
+      const isInEdgeTriggerZone = this.isWindowVisible
+        ? (distanceFromRight <= this.edgeWidth && distanceFromRight >= 0)
+        : (this._hiddenEdge === 'left' ? isInLeftTriggerZone : isInRightTriggerZone);
 
       const wb = this.mainWindow.getBounds();
       const isOverPanel = (
@@ -121,7 +134,7 @@ class EdgeDetector {
         point.y >= wb.y && point.y <= wb.y + wb.height
       );
 
-      if (distanceFromRight <= this.edgeWidth && distanceFromRight >= 0) {
+      if (isInEdgeTriggerZone) {
         this._cancelHideTimer();
         if (!this.isWindowVisible) this._showWindow(display);
       } else if (this.isWindowVisible) {
@@ -156,11 +169,16 @@ class EdgeDetector {
       targetY = display.workArea.y;
     }
 
+    if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+      this.triggerWindow.hide();
+    }
     if (this.mainWindow.isMinimized()) this.mainWindow.restore();
     if (!this.mainWindow.isVisible()) this.mainWindow.showInactive();
     // 明确保持前台窗口不变；focusable:false 负责阻止鼠标点击面板抢焦点。
     this.mainWindow.setIgnoreMouseEvents(false);
     this.mainWindow.setOpacity(1);
+    // 恢复正常面板前解除触发条阶段的最小尺寸限制。
+    this.mainWindow.setMinimumSize(0, 0);
     this.mainWindow.setBounds({
       x: Math.round(targetX),
       y: Math.round(targetY),
@@ -190,6 +208,7 @@ class EdgeDetector {
     this._hiddenAtPos = { x: currentBounds.x, y: currentBounds.y };
 
     const targetEdge = this._getNearestEdge();
+    this._hiddenEdge = targetEdge;
     const display = screen.getDisplayNearestPoint({ x: currentBounds.x, y: currentBounds.y });
     const snapX = targetEdge === 'right'
       ? display.workArea.x + display.workAreaSize.width - currentBounds.width
@@ -224,7 +243,7 @@ class EdgeDetector {
       if (progress < 1) {
         this._hideAnimationId = setTimeout(animate, 16);
       } else {
-        this._finishHideAnimation(targetEdge, snapX, startY);
+        this._finishHideAnimation(targetEdge, snapX, startY, currentBounds.height);
       }
     };
 
@@ -232,7 +251,7 @@ class EdgeDetector {
     animate();
   }
 
-  _finishHideAnimation(targetEdge, snapX, y) {
+  _finishHideAnimation(targetEdge, snapX, y, height) {
     if (this._hideAnimationId) {
       clearTimeout(this._hideAnimationId);
       this._hideAnimationId = null;
@@ -242,10 +261,28 @@ class EdgeDetector {
       return;
     }
 
-    // 隐藏位置仍贴在屏幕边缘，便于下一次显示时恢复原位置。
-    if (typeof snapX === 'number') this.mainWindow.setPosition(snapX, y);
-    this.mainWindow.setOpacity(1);
+    // 主面板完全隐藏，独立触发窗口负责边缘唤出。
+    const triggerDisplay = screen.getDisplayNearestPoint({ x: snapX, y });
+    // 让大部分外壳位于屏幕外，只把 6px 可见条留在屏幕内。
+    // 左侧：外壳向左偏移；右侧：外壳从右边界向左放置。
+    const triggerX = targetEdge === 'right'
+      ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - this.triggerWidth
+      : triggerDisplay.workArea.x - (this.triggerWidth - this.triggerVisualWidth);
     this.mainWindow.hide();
+    if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+      this.triggerWindow.setBounds({
+        x: Math.round(triggerX),
+        y: Math.round(y),
+        width: this.triggerWidth,
+        height: height || 480,
+      });
+      this.triggerWindow._edge = targetEdge;
+      this.triggerWindow.webContents.executeJavaScript(
+        `document.getElementById('bar').className = '${targetEdge === 'right' ? 'right' : 'left'}'`
+      ).catch(() => {});
+      this.triggerWindow.setIgnoreMouseEvents(false);
+      this.triggerWindow.showInactive();
+    }
     this.isWindowVisible = false;
     this._isHiding = false;
     console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}）`);
@@ -261,6 +298,10 @@ class EdgeDetector {
     this._isHiding = false;
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.setOpacity(1);
+      this.mainWindow.hide();
+    }
+    if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+      this.triggerWindow.hide();
     }
   }
 
