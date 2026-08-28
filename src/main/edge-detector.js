@@ -28,6 +28,8 @@ class EdgeDetector {
     this.triggerVisualWidth = 6;
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
+    /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
+    this._lastIsOverPanel = false;
     this._lastDraggedPos = null;
     this._hiddenAtPos = null;
     /** 最近一次隐藏时所在的屏幕边缘（只在该边缘触发恢复） */
@@ -43,6 +45,7 @@ class EdgeDetector {
     /** 当前推出动画定时器，避免隐藏动画被重复触发 */
     this._hideAnimationId = null;
     this._isHiding = false;
+    this._hiddenEdge = 'right';
   }
 
   /**
@@ -91,7 +94,8 @@ class EdgeDetector {
   }
 
   onMouseEnter() {
-    if (this.isPinned) return;
+    if (this.isPinned || this._isHiding) return;
+    this._lastIsOverPanel = true;
     if (!this.isWindowVisible) {
       try {
         const point = screen.getCursorScreenPoint();
@@ -105,7 +109,8 @@ class EdgeDetector {
   }
 
   onMouseLeave() {
-    if (this.isPinned) return;
+    if (this.isPinned || this._isHiding) return;
+    this._lastIsOverPanel = false;
     if (this.isWindowVisible) {
       this._startHideTimer();
     }
@@ -135,9 +140,11 @@ class EdgeDetector {
       );
 
       if (isInEdgeTriggerZone) {
+        this._lastIsOverPanel = false;
         this._cancelHideTimer();
         if (!this.isWindowVisible) this._showWindow(display);
       } else if (this.isWindowVisible) {
+        this._lastIsOverPanel = isOverPanel;
         if (!isOverPanel) this._startHideTimer();
         else this._cancelHideTimer();
       }
@@ -186,6 +193,7 @@ class EdgeDetector {
       height: windowHeight,
     });
     this.isWindowVisible = true;
+    this._lastIsOverPanel = false;
     console.log(`[EdgeDetector] 显示窗口 (x=${targetX}, y=${targetY})`);
   }
 
@@ -306,8 +314,9 @@ class EdgeDetector {
   }
 
   _startHideTimer() {
-    if (this.isPinned) return;
+    if (this.isPinned || this._isHiding) return;
     if (this.hideTimerId) return;
+    if (this._lastIsOverPanel) return;
 
     const deadline = Date.now() + this.hideDelay;
     this._hideDeadline = deadline;
@@ -315,11 +324,11 @@ class EdgeDetector {
     this._notifyRendererCountdown();
 
     this.hideTimerId = setTimeout(() => {
-      this._hideWindow();
       this.hideTimerId = null;
       this._hideDeadline = null;
       this.isCountingDown = false;
       this._notifyRendererCountdown();
+      if (!this.isPinned && !this._lastIsOverPanel) this._hideWindow();
     }, this.hideDelay);
   }
 
@@ -331,6 +340,8 @@ class EdgeDetector {
       this.isCountingDown = false;
       this._notifyRendererCountdown();
     }
+    // 与 KeySense 一致：鼠标重新进入时立即取消未完成的推出动画。
+    this._cancelHideAnimation();
   }
 
   /**

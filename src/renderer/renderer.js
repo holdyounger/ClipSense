@@ -374,7 +374,10 @@ function renderHistory(container, history, handlers, ctx) {
       }
       if (e.target.closest('.actions')) return;
       if (e.target.closest('.expand-btn')) return;
-      if (handlers.onSimulateInput) handlers.onSimulateInput(item, div);
+      if (handlers.onSimulateInput) {
+        // 搜索结果也是原始历史 item，始终使用其真实 id 执行写入/粘贴。
+        handlers.onSimulateInput(item, div);
+      }
     });
 
     container.appendChild(div);

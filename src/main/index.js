@@ -271,6 +271,11 @@ class ClipboardSpikeApp {
     // 双击条目：将选中的 item 写入系统剪贴板，再向原目标窗口发送一次 Ctrl+V。
     // 面板本身 focusable:false，不抢走目标窗口的键盘焦点。
     ipcMain.handle('simulate-input', async (event, id) => {
+      // 搜索框曾临时开启 focusable:true；双击条目粘贴前必须恢复“面板不接收焦点”状态。
+      // 否则 Ctrl+V 可能仍落到搜索框，而不是原目标窗口。
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.setFocusable(false);
+      }
       const item = this.monitor.getHistory().find(h => h.id === id);
       if (!item) return { ok: false, error: '未找到该条目' };
 
