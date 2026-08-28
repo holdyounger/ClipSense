@@ -12,6 +12,7 @@ const menuLangBtn = document.getElementById('menuLangBtn');
 const menuClearBtn = document.getElementById('menuClearBtn');
 const searchInput = document.getElementById('searchInput');
 const statCount = document.getElementById('statCount');
+const hintEl = document.getElementById('hint');
 
 let isPinned = false;
 let countdownInterval = null;
@@ -27,10 +28,15 @@ applyStaticText();
  */
 function applyStaticText() {
   const titleEl = document.getElementById('title');
-  const hintEl = document.getElementById('hint');
 
   titleEl.textContent = t('title');
+  hintEl.classList.remove('hint--compact');
   hintEl.innerHTML = t('hintHtml');
+
+  // 设置为不可选中，避免误触发选中状态
+  hintEl.style.userSelect = 'none';
+  hintEl.style.webkitUserSelect = 'none';
+  hintEl.style.MozUserSelect = 'none';
 
   // 下拉菜单文案
   menuLangBtn.textContent = t('menuLang');
@@ -43,6 +49,17 @@ function applyStaticText() {
   }
   updateStats();
 }
+
+// 提示条默认收起；鼠标移入时展开，移出后恢复为可触碰的细条。
+hintEl.addEventListener('mouseenter', () => {
+  hintEl.classList.remove('hint--compact');
+  hintEl.innerHTML = t('hintHtml');
+});
+
+hintEl.addEventListener('mouseleave', () => {
+  hintEl.classList.add('hint--compact');
+  hintEl.innerHTML = t('hintSmallHtml');
+});
 
 // ========== 渲染上下文与事件手柄（交给 renderer.js） ==========
 const renderCtx = {

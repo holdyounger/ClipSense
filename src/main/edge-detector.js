@@ -45,7 +45,6 @@ class EdgeDetector {
     /** 当前推出动画定时器，避免隐藏动画被重复触发 */
     this._hideAnimationId = null;
     this._isHiding = false;
-    this._hiddenEdge = 'right';
   }
 
   /**
@@ -94,8 +93,12 @@ class EdgeDetector {
   }
 
   onMouseEnter() {
-    if (this.isPinned || this._isHiding) return;
+    if (this._isHiding) return;
     this._lastIsOverPanel = true;
+    if (this.isPinned) {
+      this._cancelHideTimer();
+      return;
+    }
     if (!this.isWindowVisible) {
       try {
         const point = screen.getCursorScreenPoint();
@@ -109,8 +112,9 @@ class EdgeDetector {
   }
 
   onMouseLeave() {
-    if (this.isPinned || this._isHiding) return;
+    if (this._isHiding) return;
     this._lastIsOverPanel = false;
+    if (this.isPinned) return;
     if (this.isWindowVisible) {
       this._startHideTimer();
     }
@@ -383,22 +387,32 @@ class EdgeDetector {
    * 设置窗口固定状态
    */
   setPinned(pinned) {
-    this.isPinned = pinned;
-    if (pinned) {
+    this.isPinned = Boolean(pinned);
+    if (this.isPinned) {
+      // 固定时立即终止倒计时和推出动画，并确保面板恢复完整显示。
       this._cancelHideTimer();
       this._cancelHideAnimation();
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        if (!this.mainWindow.isVisible()) this.mainWindow.show();
+        if (!this.mainWindow.isVisible()) this.mainWindow.showInactive();
         if (this.mainWindow.getOpacity() < 1) this.mainWindow.setOpacity(1);
       }
       console.log('[EdgeDetector] 已固定');
-    } else {
-      console.log('[EdgeDetector] 已取消固定');
+      return;
     }
+
+    // 与 KeySense 一致：取消固定后，如果鼠标已离开面板，立即重新进入隐藏流程。
+    if (this.isWindowVisible && !this._lastIsOverPanel) {
+      this._startHideTimer();
+    }
+    console.log('[EdgeDetector] 已取消固定');
   }
 
   updateDraggedPosition(x, y) {
-    this._lastDraggedPos = { x, y };
+    const currentY = this._lastDraggedPos ? this._lastDraggedPos.y : y;
+    this._lastDraggedPos = {
+      x,
+      y: y !== undefined ? y : currentY,
+    };
     console.log(`[EdgeDetector] 记录拖拽位置: (${x}, ${y})`);
   }
 

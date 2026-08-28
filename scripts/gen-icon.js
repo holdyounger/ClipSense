@@ -7,7 +7,7 @@
  * - 配色：紫色系（呼应主界面 accent #6c5ce7）
  *
  * 用法：node scripts/gen-icon.js
- * 输出：src/renderer/tray-icon.png（16x16）、tray-icon@2x.png（32x32）
+ * 输出：src/renderer/tray-icon.png（16x16）、tray-icon@2x.png（32x32）、app-icon.png（256x256）
  */
 
 const fs = require('fs');
@@ -155,6 +155,7 @@ function main() {
   const sizes = [
     { name: 'tray-icon.png', size: 16 },
     { name: 'tray-icon@2x.png', size: 32 },
+    { name: 'app-icon.png', size: 256 },
   ];
 
   for (const { name, size } of sizes) {

@@ -9,6 +9,7 @@ const I18N = {
   'zh-CN': {
     title: 'ClipSense',
     hintHtml: '现在复制任意文本（Ctrl+C），会自动出现在下方列表<br><small>全局快捷键 <kbd>Ctrl+Shift+V</kbd> 唤出窗口</small>',
+    hintSmallHtml: '<small>全局快捷键 <kbd>Ctrl+Shift+V</kbd> 唤出窗口</small>',
     empty: '暂无剪贴板历史',
     copy: '复制',
     expand: '展开',
@@ -26,6 +27,7 @@ const I18N = {
   en: {
     title: 'ClipSense',
     hintHtml: 'Copy any text (Ctrl+C) and it will appear below<br><small>Global shortcut <kbd>Ctrl+Shift+V</kbd> toggles the window</small>',
+    hintSmallHtml: '<small>Global shortcut <kbd>Ctrl+Shift+V</kbd> toggles the window</small>',
     empty: 'No clipboard history yet',
     copy: 'Copy',
     expand: 'Expand',
