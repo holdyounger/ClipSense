@@ -33,6 +33,9 @@ class EdgeDetector {
     this.isCountingDown = false;
     /** 是否固定（固定后不自动隐藏） */
     this.isPinned = false;
+    /** 当前推出动画定时器，避免隐藏动画被重复触发 */
+    this._hideAnimationId = null;
+    this._isHiding = false;
   }
 
   /**
@@ -54,6 +57,10 @@ class EdgeDetector {
     this._onHidden = callback;
   }
 
+  setOnShown(callback) {
+    this._onShown = callback;
+  }
+
   start() {
     if (this.isActive) return;
 
@@ -72,6 +79,7 @@ class EdgeDetector {
     clearInterval(this.intervalId);
     this.isActive = false;
     this._cancelHideTimer();
+    this._cancelHideAnimation();
     console.log('[EdgeDetector] 停止边缘检测');
   }
 
@@ -97,7 +105,7 @@ class EdgeDetector {
   }
 
   _checkMousePosition() {
-    if (this._isDragging) return; // 拖拽期间跳过
+    if (this._isDragging || this._isHiding) return; // 拖拽/推出期间跳过
     try {
       const point = screen.getCursorScreenPoint();
       const display = screen.getDisplayNearestPoint(point);
@@ -128,6 +136,9 @@ class EdgeDetector {
   _showWindow(display) {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
 
+    // 在 show() 抢走焦点之前记录原目标窗口，供双击粘贴恢复。
+    if (this._onShown) this._onShown();
+
     const { width, height } = display.workAreaSize;
     // 固定窗口尺寸，避免拖拽/重复显示时尺寸漂移
     const windowWidth = 360;
@@ -146,7 +157,9 @@ class EdgeDetector {
     }
 
     if (this.mainWindow.isMinimized()) this.mainWindow.restore();
-    if (!this.mainWindow.isVisible()) this.mainWindow.show();
+    if (!this.mainWindow.isVisible()) this.mainWindow.showInactive();
+    // 明确保持前台窗口不变；focusable:false 负责阻止鼠标点击面板抢焦点。
+    this.mainWindow.setIgnoreMouseEvents(false);
     this.mainWindow.setOpacity(1);
     this.mainWindow.setBounds({
       x: Math.round(targetX),
@@ -171,7 +184,7 @@ class EdgeDetector {
       console.log('[EdgeDetector] 已固定，拒绝隐藏');
       return;
     }
-    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    if (!this.mainWindow || this.mainWindow.isDestroyed() || this._isHiding) return;
 
     const currentBounds = this.mainWindow.getBounds();
     this._hiddenAtPos = { x: currentBounds.x, y: currentBounds.y };
@@ -181,13 +194,74 @@ class EdgeDetector {
     const snapX = targetEdge === 'right'
       ? display.workArea.x + display.workAreaSize.width - currentBounds.width
       : display.workArea.x;
+    const exitX = targetEdge === 'right'
+      ? display.workArea.x + display.workAreaSize.width
+      : display.workArea.x - currentBounds.width;
 
-    // 简单实现：直接隐藏 + 贴边定位（spike 不做 300ms 动画，保持精简）
-    this.mainWindow.setPosition(snapX, currentBounds.y);
+    // 侧向推出并淡出，避免窗口突然消失；动画结束后再贴边并 hide。
+    const startX = currentBounds.x;
+    const startY = currentBounds.y;
+    const startOpacity = this.mainWindow.getOpacity();
+    const durationMs = 240;
+    const startedAt = Date.now();
+    this._isHiding = true;
+
+    const animate = () => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) {
+        this._finishHideAnimation();
+        return;
+      }
+
+      const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
+      // ease-in：开始平稳，结束时快速推出
+      const eased = progress * progress * (3 - 2 * progress);
+      this.mainWindow.setPosition(
+        Math.round(startX + (exitX - startX) * eased),
+        startY,
+      );
+      this.mainWindow.setOpacity(Math.max(0, startOpacity * (1 - eased)));
+
+      if (progress < 1) {
+        this._hideAnimationId = setTimeout(animate, 16);
+      } else {
+        this._finishHideAnimation(targetEdge, snapX, startY);
+      }
+    };
+
+    console.log(`[EdgeDetector] 开始推出动画（方向: ${targetEdge}）`);
+    animate();
+  }
+
+  _finishHideAnimation(targetEdge, snapX, y) {
+    if (this._hideAnimationId) {
+      clearTimeout(this._hideAnimationId);
+      this._hideAnimationId = null;
+    }
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) {
+      this._isHiding = false;
+      return;
+    }
+
+    // 隐藏位置仍贴在屏幕边缘，便于下一次显示时恢复原位置。
+    if (typeof snapX === 'number') this.mainWindow.setPosition(snapX, y);
+    this.mainWindow.setOpacity(1);
     this.mainWindow.hide();
     this.isWindowVisible = false;
-    console.log(`[EdgeDetector] 隐藏窗口（贴边: ${targetEdge}）`);
+    this._isHiding = false;
+    console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}）`);
     if (this._onHidden) this._onHidden();
+  }
+
+  _cancelHideAnimation() {
+    if (this._hideAnimationId) {
+      clearTimeout(this._hideAnimationId);
+      this._hideAnimationId = null;
+    }
+    if (!this._isHiding) return;
+    this._isHiding = false;
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.setOpacity(1);
+    }
   }
 
   _startHideTimer() {
@@ -258,6 +332,7 @@ class EdgeDetector {
     this.isPinned = pinned;
     if (pinned) {
       this._cancelHideTimer();
+      this._cancelHideAnimation();
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         if (!this.mainWindow.isVisible()) this.mainWindow.show();
         if (this.mainWindow.getOpacity() < 1) this.mainWindow.setOpacity(1);
@@ -279,6 +354,7 @@ class EdgeDetector {
   }
 
   forceShow(display = null) {
+    this._cancelHideAnimation();
     if (!display) {
       const point = screen.getCursorScreenPoint();
       display = screen.getDisplayNearestPoint(point);
@@ -289,6 +365,7 @@ class EdgeDetector {
 
   forceHide() {
     this._cancelHideTimer();
+    this._cancelHideAnimation();
     this._hideWindow();
   }
 

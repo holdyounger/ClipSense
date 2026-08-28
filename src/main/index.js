@@ -4,7 +4,7 @@
  * 目的：验证核心链路
  *   1. ClipboardMonitor 轮询监听剪贴板变化
  *   2. 面板展示历史
- *   3. 点击条目回写剪贴板
+ *   3. 点击条目回写剪贴板；双击条目回写选中内容并发送 Ctrl+V
  *
  * 附加（同步自 KeySense）：
  *   - 窗口贴边 / 定时隐藏 / 鼠标靠边缘唤出（EdgeDetector）
@@ -15,12 +15,19 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, sc
 const path = require('path');
 const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector');
+const HistoryStorage = require('./storage');
+const { simulatePaste } = require('./input-simulator');
 
 class ClipboardSpikeApp {
   constructor() {
     this.mainWindow = null;
     this.tray = null;
-    this.monitor = new ClipboardMonitor({ intervalMs: 600, maxHistory: 100 });
+    this.storage = new HistoryStorage();
+    this.monitor = new ClipboardMonitor({
+      intervalMs: 600,
+      maxHistory: this.storage.getMaxHistory(),
+      storage: this.storage,
+    });
     this.edgeDetector = null;
   }
 
@@ -37,7 +44,10 @@ class ClipboardSpikeApp {
       alwaysOnTop: true,
       resizable: false,
       skipTaskbar: true,
-      show: true,
+      // 先不抢占启动时的前台窗口；由 EdgeDetector.showInactive() 显示。
+      show: false,
+      // 不成为前台窗口：鼠标点击面板时，原目标窗口仍保持焦点，Ctrl+V 可直接发送给它。
+      focusable: false,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -89,10 +99,32 @@ class ClipboardSpikeApp {
         label: '自动隐藏倒计时',
         submenu: this._buildHideDelaySubmenu(),
       },
+      {
+        label: '历史上限',
+        submenu: this._buildMaxHistorySubmenu(),
+      },
       { type: 'separator' },
       { label: '退出', click: () => app.exit(0) },
     ]));
     this.tray.on('click', () => this.toggleWindow());
+  }
+
+  /**
+   * 构建「历史上限」子菜单
+   */
+  _buildMaxHistorySubmenu() {
+    const options = [100, 200, 500, 1000, 5000];
+    const current = this.monitor ? this.monitor.maxHistory : 500;
+    return options.map(opt => ({
+      label: `${opt} 条`,
+      type: 'radio',
+      checked: current === opt,
+      click: () => {
+        this.monitor.setMaxHistory(opt);
+        this.storage.setMaxHistory(opt);
+        this.pushHistory();
+      },
+    }));
   }
 
   /**
@@ -181,6 +213,25 @@ class ClipboardSpikeApp {
         return ok ? { ok: true } : { ok: false, error: '回写失败' };
       }
       return { ok: false, error: '未找到该条目' };
+    });
+
+    // 双击条目：将选中的 item 写入系统剪贴板，再向原目标窗口发送一次 Ctrl+V。
+    // 面板本身 focusable:false，不抢走目标窗口的键盘焦点。
+    ipcMain.handle('simulate-input', async (event, id) => {
+      const item = this.monitor.getHistory().find(h => h.id === id);
+      if (!item) return { ok: false, error: '未找到该条目' };
+
+      // Ctrl+V 没有“指定历史条目”的参数；选中 item 必须先成为系统剪贴板内容。
+      const copied = this.monitor.copyToClipboard(item);
+      if (!copied) return { ok: false, error: '写入系统剪贴板失败' };
+
+      const result = await simulatePaste();
+      if (!result.ok) {
+        console.warn(`[Spike] 选中条目 Ctrl+V 粘贴失败: ${result.error}`);
+      } else {
+        console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview}`);
+      }
+      return result;
     });
 
     // 删除单条
@@ -273,16 +324,43 @@ class ClipboardSpikeApp {
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
     this.edgeDetector = new EdgeDetector(this.mainWindow);
     this.edgeDetector.setOnHidden(() => {
-      // 隐藏时无额外操作
+      // 不可获取焦点的置顶面板隐藏后，目标窗口始终保持原焦点。
     });
     this.edgeDetector.start();
+    // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。
+    this.edgeDetector.forceShow();
+
+    // 启动时从磁盘恢复历史（重启不丢失）
+    const restoredCount = this.monitor.loadFromStorage();
+    if (restoredCount > 0) {
+      console.log(`[Spike] 已从存储恢复 ${restoredCount} 条历史`);
+    }
+
+    // 加密状态提示
+    if (!this.storage.isEncryptionAvailable()) {
+      console.warn('[Spike] ⚠ safeStorage 加密不可用（可能为 WSL/无钥匙串环境），历史将以明文落盘');
+    } else {
+      console.log('[Spike] ✅ 历史加密已启用（safeStorage / OS 钥匙串）');
+    }
 
     // 剪贴板变化 → 推送给渲染进程
     this.monitor.setOnChange((item, history) => {
       console.log(`[Spike] 剪贴板变化: ${item.preview}`);
       this.pushHistory();
     });
+
+    // 启动同步：恢复历史后，立即检查系统剪贴板，把未同步的新数据同步进来
+    const syncResult = this.monitor.syncNow();
+    if (syncResult.changed) {
+      console.log(`[Spike] 启动同步：已将系统剪贴板内容归档: ${syncResult.item.preview}`);
+    } else {
+      console.log('[Spike] 启动同步：系统剪贴板无新内容（已在历史中或为空）');
+    }
+
     this.monitor.start();
+
+    // 恢复 + 同步后，推一次给渲染进程（避免窗口先加载空列表）
+    this.pushHistory();
 
     console.log('[Spike] 剪贴板监听已启动（轮询间隔 600ms）');
     console.log('[Spike] 边缘唤出已启动（鼠标靠右边缘 5px 唤出）');

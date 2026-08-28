@@ -58,6 +58,14 @@ const renderHandlers = {
       flashItem(el);
     }
   },
+  onSimulateInput: async (item, el) => {
+    const res = await window.clipboardAPI.simulateInput(item.id);
+    if (res.ok) {
+      flashItem(el);
+      return;
+    }
+    console.warn(`[Spike] 模拟输入未执行: ${res.error}`);
+  },
   onRemove: async (item) => {
     await window.clipboardAPI.removeItem(item.id);
     await refresh();

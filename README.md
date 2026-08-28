@@ -65,11 +65,18 @@ tick() → clipboard.readText() → md5 hash → 与上次比对
 | 图片剪贴板 | ⚠️ 本 demo 只做文本，图片需二期（`readImage()` + `nativeImage`） |
 | 富文本 | ⚠️ 二期（CSP + 渲染安全需处理） |
 
+### 持久化（storage.js，重启不丢失）
+
+- 历史数组 + 图片数据**加密落盘**到 `app.getPath('userData')`：
+  - `clipboard-history.json` —— 元数据（safeStorage 加密）
+  - `clip-images/<id>.bin` —— 图片数据（safeStorage 加密，dataUrl 从主 JSON 抽离）
+- 加密用 Electron `safeStorage`（密钥由 OS 钥匙串托管，不落地）；WSL2 无钥匙串时降级明文（仅告警）
+- 历史上限可配置（托盘菜单「历史上限」：100/200/500/1000/5000 条）
+
 ## 五、遗留 / 待验证
 
 - 网络盘 `/mnt/d` 下 Electron 能否正常启动 GUI（需在真实 Windows 或 WSLg 环境验证）
-- 图片、富文本、文件复制留待二期
-- 本 demo 未做 SQLite，历史仅存内存（重启丢失）—— 验证「监听」链路足够，正式版再补持久化
+- 图片、富文本、文件复制留待二期（图片已支持持久化，但复制的图片链路待二期完善）
 
 ---
 

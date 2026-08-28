@@ -4,7 +4,7 @@
  * 职责：
  * - 根据条目类型（text / image / file / rich-text ...）分发渲染
  * - 处理长文本截断 / 换行 / 溢出
- * - 构建 DOM 并绑定交互（复制、删除、双击复制）
+ * - 构建 DOM 并绑定交互（复制、删除、双击模拟输入）
  *
  * 设计目标：后续新增内容类型时，只需在 ItemBuilders 里加一个 builder，
  * 无需改 main.js。每个 builder 负责自己的预览展示与长文本/长内容处理。
@@ -266,7 +266,7 @@ const ItemBuilders = {
  * 渲染历史列表
  * @param {HTMLElement} container 列表容器
  * @param {Array} history 历史条目数组
- * @param {Object} handlers 交互回调 { onCopy, onRemove }
+ * @param {Object} handlers 交互回调 { onCopy, onSimulateInput, onRemove }
  * @param {Object} ctx 上下文 { t, timeStr, flashItem }
  */
 function renderHistory(container, history, handlers, ctx) {
@@ -323,11 +323,11 @@ function renderHistory(container, history, handlers, ctx) {
     div.appendChild(meta);
     div.appendChild(actions);
 
-    // 双击条目复制
+    // 双击条目：回写原始类型后，粘贴到双击前的目标窗口
     div.addEventListener('dblclick', (e) => {
       if (e.target.closest('.actions')) return;
       if (e.target.closest('.expand-btn')) return;
-      if (handlers.onCopy) handlers.onCopy(item, div);
+      if (handlers.onSimulateInput) handlers.onSimulateInput(item, div);
     });
 
     container.appendChild(div);

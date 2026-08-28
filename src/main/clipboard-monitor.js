@@ -27,6 +27,10 @@ class ClipboardMonitor {
     this._seenHashes = new Set();
     /** 定时器 ID */
     this.intervalId = null;
+    /** 持久化存储实例（可选，注入后启用持久化） */
+    this.storage = options.storage || null;
+    /** 变化后的持久化回调（由外部注入 storage 后自动设置） */
+    this._onPersist = null;
   }
 
   /**
@@ -212,8 +216,7 @@ class ClipboardMonitor {
 
   /**
    * 计算 hash（支持字符串或 Buffer）
-   */
-  _hash(data) {
+   */  _hash(data) {
     const input = Buffer.isBuffer(data) ? data : String(data);
     return crypto.createHash('md5').update(input).digest('hex');
   }
@@ -256,6 +259,8 @@ class ClipboardMonitor {
       this.history = this.history.slice(0, this.maxHistory);
     }
 
+    this._persist();
+
     return { changed: true, item };
   }
 
@@ -286,6 +291,7 @@ class ClipboardMonitor {
           ...base,
           type: 'image',
           dataUrl: result.dataUrl,
+          mimeType: this._mimeFromDataUrl(result.dataUrl),
           size: result.size,
           width: result.width,
           height: result.height,
@@ -352,8 +358,16 @@ class ClipboardMonitor {
           return true;
         }
         case 'file': {
-          // 文件：写回 URI 列表（粘贴到资源管理器可还原文件）
-          clipboard.writeText(item.uriList || item.path || '');
+          // Explorer 需要 CF_HDROP / FileNameW，单纯写入 URI 文本只会粘贴成路径字符串。
+          const paths = (item.files || [])
+            .map(file => file.path)
+            .filter(path => typeof path === 'string' && path.length > 0);
+          if (paths.length === 0 && item.path) paths.push(item.path);
+          if (paths.length === 0) return false;
+
+          // FileNameW 是 Windows 文件拖放/复制使用的 UTF-16LE 路径列表格式。
+          const fileNameW = Buffer.from(`${paths.join('\0')}\0\0`, 'utf16le');
+          clipboard.writeBuffer('FileNameW', fileNameW);
           return true;
         }
         case 'text':
@@ -366,6 +380,17 @@ class ClipboardMonitor {
       console.error(`[Monitor] 回写剪贴板失败: ${err.message}`);
       return false;
     }
+  }
+
+  /**
+   * 根据 dataUrl 提取 mime 类型
+   * @param {string} dataUrl
+   * @returns {string}
+   */
+  _mimeFromDataUrl(dataUrl) {
+    if (!dataUrl) return 'image/png';
+    const m = /^data:([^;,]+)/.exec(dataUrl);
+    return m ? m[1] : 'image/png';
   }
 
   /**
@@ -411,6 +436,7 @@ class ClipboardMonitor {
    */
   remove(id) {
     this.history = this.history.filter(h => h.id !== id);
+    this._persist();
   }
 
   /**
@@ -419,6 +445,85 @@ class ClipboardMonitor {
   clear() {
     this.history = [];
     this._seenHashes.clear();
+    this._persist();
+  }
+
+  /**
+   * 触发持久化（若已注入 storage）
+   */
+  _persist() {
+    if (this.storage && typeof this.storage.save === 'function') {
+      try {
+        this.storage.save(this.history);
+      } catch (err) {
+        console.error(`[Monitor] 持久化失败: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * 从 storage 加载历史（启动时调用），恢复 history + 去重集合
+   * @returns {number} 恢复的条目数
+   */
+  loadFromStorage() {
+    if (!this.storage || typeof this.storage.load !== 'function') return 0;
+    try {
+      const items = this.storage.load();
+      this.history = Array.isArray(items) ? items : [];
+      // 重建去重集合：恢复的条目不应在下次复制时被重复归档
+      this._seenHashes = new Set();
+      for (const item of this.history) {
+        const hashSource = item.type === 'image'
+          ? item.dataUrl
+          : item.type === 'file'
+            ? item.uriList
+            : item.type === 'rich-text'
+              ? (item.html || item.plainText)
+              : item.text;
+        if (hashSource !== undefined && hashSource !== null && hashSource !== '') {
+          this._seenHashes.add(this._hash(hashSource));
+        }
+      }
+      // 首次轮询比对基准：保持 null，让启动时的立即 tick() 能把系统剪贴板
+      // 里「未同步过的新内容」归档进来（已同步的由 _seenHashes 去重，保持原位）
+      this._lastHash = null;
+      console.log(`[Monitor] 从存储恢复了 ${this.history.length} 条历史`);
+      return this.history.length;
+    } catch (err) {
+      console.error(`[Monitor] 加载历史失败: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * 立即执行一次剪贴板同步（启动时调用）
+   *
+   * 目的：每次启动都检查系统剪贴板，把「历史里没有的新数据」同步进来。
+   * 依赖 tick() 的去重逻辑：
+   *   - _lastHash 为 null（尚未读过），读到剪贴板内容会走到 _seenHashes 判断
+   *   - 内容已同步过 → _seenHashes 命中，跳过（保持原位）
+   *   - 内容是新的 → 归档到顶部
+   *
+   * @returns {{changed: boolean, item: Object|null}}
+   */
+  syncNow() {
+    const result = this.tick();
+    if (result.changed && this.onChange) {
+      this.onChange(result.item, this.history);
+    }
+    return result;
+  }
+
+  /**
+   * 设置历史上限（可配置），超限时自动裁剪
+   * @param {number} max
+   */
+  setMaxHistory(max) {
+    this.maxHistory = max;
+    if (this.history.length > this.maxHistory) {
+      this.history = this.history.slice(0, this.maxHistory);
+      this._persist();
+    }
   }
 }
 

@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('clipboardAPI', {
   getHistory: () => ipcRenderer.invoke('get-history'),
   copyItem: (id) => ipcRenderer.invoke('copy-item', id),
+  simulateInput: (id) => ipcRenderer.invoke('simulate-input', id),
   getFileIcon: (path) => ipcRenderer.invoke('get-file-icon', path),
   removeItem: (id) => ipcRenderer.invoke('remove-item', id),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
