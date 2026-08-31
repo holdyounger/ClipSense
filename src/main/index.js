@@ -58,10 +58,10 @@ class ClipboardSpikeApp {
 
     this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-    // 独立的边缘触发条窗口。窗口本身只有 6px 宽，命中区域与可见条完全一致。
+    // 独立的边缘触发条窗口。窗口本身只有 6px 宽、与 header 同高，命中区域与可见条完全一致。
     this.triggerWindow = new BrowserWindow({
       width: 6,
-      height: 480,
+      height: 56,
       frame: false,
       transparent: true,
       backgroundColor: '#00000000',

@@ -22,9 +22,10 @@ class EdgeDetector {
     this.isActive = false;
     this.isWindowVisible = false;
     this.edgeWidth = 5;
-    /** 隐藏后仍保留在屏幕边缘的鼠标触发条宽度 */
     /** 触发条真实命中宽度；不能把透明外壳扩展成整段屏幕区域 */
     this.triggerWidth = 6;
+    /** 贴边触发条高度：与主面板 header 一致，热区只覆盖 header 部分（测量值见 _headerHeight） */
+    this.triggerHeight = 56;
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
@@ -33,6 +34,8 @@ class EdgeDetector {
     this._hiddenAtPos = null;
     /** 最近一次隐藏时所在的屏幕边缘（只在该边缘触发恢复） */
     this._hiddenEdge = 'right';
+    /** 从渲染进程实测的 header 高度（px），贴边触发条按此对齐 header */
+    this._headerHeight = null;
     /** 拖拽期间冻结边缘检测（防止窗口变大/漂移） */
     this._isDragging = false;
     /** 隐藏倒计时截止时间戳（ms） */
@@ -286,6 +289,14 @@ class EdgeDetector {
     const startedAt = Date.now();
     this._isHiding = true;
 
+    // 实测 header 高度：贴边触发条只保留 header 那一段，而不是整个面板高度。
+    // CSS min-height:56px 只是布局下限，DPI 缩放后可能更高，这里以实测为准。
+    this.mainWindow.webContents.executeJavaScript(
+      `(() => { const el = document.querySelector('.header'); return el ? el.getBoundingClientRect().height : 0; })()`
+    ).then((h) => {
+      if (h > 0) this._headerHeight = Math.round(h);
+    }).catch(() => {});
+
     const animate = () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) {
         this._finishHideAnimation();
@@ -328,13 +339,15 @@ class EdgeDetector {
     const triggerX = targetEdge === 'right'
       ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - this.triggerWidth
       : triggerDisplay.workArea.x;
+    // 高度与主面板 header 一致：贴边热区只有 header 部分。
+    const triggerHeight = this._headerHeight || this.triggerHeight;
     this.mainWindow.hide();
     if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.setBounds({
         x: Math.round(triggerX),
         y: Math.round(y),
         width: this.triggerWidth,
-        height: height || 480,
+        height: triggerHeight,
       });
       this.triggerWindow._edge = targetEdge;
       this.triggerWindow.webContents.executeJavaScript(
@@ -346,7 +359,7 @@ class EdgeDetector {
     this.isWindowVisible = false;
     this._isHiding = false;
     this._lastIsOverPanel = false;
-    console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}）`);
+    console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}, 触发条: ${this.triggerWidth}x${triggerHeight}）`);
     if (this._onHidden) this._onHidden();
   }
 
