@@ -43,8 +43,14 @@ class ClipboardSpikeApp {
       // y: 0,
       frame: false,          // 无边框（配合边缘吸附）
       alwaysOnTop: true,
-      resizable: false,
+      resizable: true,
       skipTaskbar: true,
+      // 透明窗口：渲染层 #app 自带圆角背景（--bg），原生层不绘制任何背景。
+      // 否则滑出动画时 CSS transform 把 #app 移走，原生白底残留在原地直到 hide()。
+      // 注意：backgroundColor 只接受 hex（Electron 会忽略 'transparent' 字符串），
+      // 全透必须配合 transparent: true。
+      transparent: true,
+      backgroundColor: '#00000000',
       // 先不抢占启动时的前台窗口；由 EdgeDetector.showInactive() 显示。
       show: false,
       // 不成为前台窗口：鼠标点击面板时，原目标窗口仍保持焦点，Ctrl+V 可直接发送给它。
@@ -339,7 +345,7 @@ class ClipboardSpikeApp {
 
     // 鼠标离开窗口
     ipcMain.on('mouse-leave', () => {
-      if (this.edgeDetector) this.edgeDetector.onMouseLeave();
+      if (this.edgeDetector) this.edgeDetector.onMouseLeaveDebounced();
     });
 
     // 获取窗口 bounds（拖拽用）

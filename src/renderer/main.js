@@ -35,7 +35,6 @@ function applyStaticText() {
 
   // 设置为不可选中，避免误触发选中状态
   hintEl.style.userSelect = 'none';
-  hintEl.style.webkitUserSelect = 'none';
   hintEl.style.MozUserSelect = 'none';
 
   // 下拉菜单文案
@@ -51,14 +50,47 @@ function applyStaticText() {
 }
 
 // 提示条默认收起；鼠标移入时展开，移出后恢复为可触碰的细条。
-hintEl.addEventListener('mouseenter', () => {
+// 快速划过不展开：mouseenter 后延迟判定，只有鼠标真正停留才展开；
+// 停留不够就划走则取消展开，不会闪。
+const HINT_EXPAND_DELAY_MS = 150;  // 鼠标停留超过此时长才展开
+const HINT_COLLAPSE_DELAY_MS = 200; // 移出后延迟收起，避免边缘抖动
+let hintExpandTimer = null;
+let hintCollapseTimer = null;
+
+function expandHint() {
   hintEl.classList.remove('hint--compact');
   hintEl.innerHTML = t('hintHtml');
+}
+
+function collapseHint() {
+  hintEl.classList.add('hint--compact');
+  hintEl.innerHTML = t('hintSmallHtml');
+}
+
+hintEl.addEventListener('mouseenter', () => {
+  if (hintCollapseTimer) {
+    clearTimeout(hintCollapseTimer);
+    hintCollapseTimer = null;
+  }
+  // 已展开则无需动作；正在等待展开则保持。
+  if (!hintEl.classList.contains('hint--compact')) return;
+  if (hintExpandTimer) return;
+  hintExpandTimer = setTimeout(() => {
+    hintExpandTimer = null;
+    expandHint();
+  }, HINT_EXPAND_DELAY_MS);
 });
 
 hintEl.addEventListener('mouseleave', () => {
-  hintEl.classList.add('hint--compact');
-  hintEl.innerHTML = t('hintSmallHtml');
+  // 划走时取消待展开：停留不够则根本不展开。
+  if (hintExpandTimer) {
+    clearTimeout(hintExpandTimer);
+    hintExpandTimer = null;
+  }
+  if (hintCollapseTimer) clearTimeout(hintCollapseTimer);
+  // 只有当前是展开状态才需要延迟收起；未展开（被取消了）则什么都不做。
+  if (hintEl.classList.contains('hint--compact')) return;
+  hintCollapseTimer = setTimeout(collapseHint, HINT_COLLAPSE_DELAY_MS);
 });
 
 // ========== 渲染上下文与事件手柄（交给 renderer.js） ==========
@@ -251,6 +283,10 @@ function hideCountdown() {
 window.clipboardAPI.onCountdownUpdate(handleCountdownUpdate);
 
 // ========== 鼠标进入/离开上报（用于自动隐藏） ==========
+// 快速划过 hintEl 时倒计时徽章闪现的修复在主进程：
+// EdgeDetector.onMouseLeaveDebounced() 对 mouse-leave 加 120ms 防抖，
+// 轮询纠偏（isOverPanel=true）或 mouse-enter 都会取消待执行的倒计时。
+// 注：mouseenter/mouseleave 本身不冒泡，无需 stopPropagation。
 const appEl = document.getElementById('app');
 appEl.addEventListener('mouseenter', () => {
   window.clipboardAPI.mouseEnter();
