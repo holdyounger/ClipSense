@@ -278,6 +278,12 @@ class ClipboardMonitor {
     switch (result.kind) {
       case 'text': {
         const text = result.text;
+        // 链接识别：入库时算一次存 item.links，渲染时直接用（避免每次跑正则）
+        let links = null;
+        try {
+          const { extractLinks } = require('../common/link-utils');
+          links = extractLinks(text);
+        } catch (err) { /* 识别失败不影响入库，静默降级 */ }
         return {
           ...base,
           type: 'text',
@@ -287,6 +293,7 @@ class ClipboardMonitor {
             ? `[空白字符 × ${text.length}]`
             : (text.length > 80 ? text.slice(0, 80) + '…' : text),
           length: text.length,
+          ...(links ? { links } : {}),
         };
       }
       case 'image': {
@@ -473,6 +480,8 @@ class ClipboardMonitor {
     try {
       const items = this.storage.load();
       this.history = Array.isArray(items) ? items : [];
+      // 迁移：旧数据无 item.links（链接识别 2026-09-01 新增），补算一次并回写
+      this._migrateLinks();
       // 重建去重集合：恢复的条目不应在下次复制时被重复归档
       this._seenHashes = new Set();
       for (const item of this.history) {
@@ -487,6 +496,8 @@ class ClipboardMonitor {
           this._seenHashes.add(this._hash(hashSource));
         }
       }
+      // 迁移：旧数据无 links 字段，补算并回写存储
+      this._migrateLinks();
       // 首次轮询比对基准：保持 null，让启动时的立即 tick() 能把系统剪贴板
       // 里「未同步过的新内容」归档进来（已同步的由 _seenHashes 去重，保持原位）
       this._lastHash = null;
@@ -496,6 +507,36 @@ class ClipboardMonitor {
       console.error(`[Monitor] 加载历史失败: ${err.message}`);
       return 0;
     }
+  }
+
+  /**
+   * 历史数据迁移：为无 links 字段的 text 条目补算链接标记（幂等）
+   * 迁移后持久化，下次启动不再重复计算。
+   * @returns {number} 补算的条目数
+   */
+  _migrateLinks() {
+    let migrated = 0;
+    try {
+      const { extractLinks } = require('../common/link-utils');
+      for (const item of this.history) {
+        if (!item || item.type !== 'text' || !item.text) continue;
+        if (item.links !== undefined) continue; // 已有（含显式 null）不重复算
+        const links = extractLinks(item.text);
+        if (links) {
+          item.links = links;
+        } else {
+          item.links = null; // 显式 null 标记「已识别、无链接」，避免每次启动重算
+        }
+        migrated++;
+      }
+      if (migrated > 0 && this.storage && typeof this.storage.save === 'function') {
+        this.storage.save(this.history);
+        console.log(`[Monitor] 链接标记迁移完成: ${migrated} 条已回写存储`);
+      }
+    } catch (err) {
+      console.warn(`[Monitor] 链接标记迁移失败（不影响使用）: ${err.message}`);
+    }
+    return migrated;
   }
 
   /**

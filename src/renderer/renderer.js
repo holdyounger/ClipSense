@@ -169,8 +169,32 @@ const ItemBuilders = {
       previewEl.classList.remove('preview--whitespace');
       previewEl.title = '';
       previewEl.textContent = expanded ? rawText : formatPreview(rawText, 80, 3);
+      // 链接条目：预览区 hover 显示完整 URL（截断显示时）
+      if (item.links && item.links.length === 1 && !isWhitespaceOnly) {
+        previewEl.title = item.links[0];
+      }
     }
     renderText();
+
+    // Ctrl+单击 / 🌐 按钮：在默认浏览器打开链接（A+B 方案）
+    // 仅对链接条目生效；多 URL 条目按钮变为「提取链接」弹清单。
+    if (item.links && item.links.length > 0 && window.clipboardAPI && window.clipboardAPI.openExternal) {
+      const openLink = async (e) => {
+        e.stopPropagation();
+        if (item.links.length === 1) {
+          await window.clipboardAPI.openExternal(item.links[0]);
+        } else {
+          showLinkPicker(item.links);
+        }
+      };
+      previewEl.addEventListener('click', (e) => {
+        if (e.ctrlKey) openLink(e);
+      });
+      previewEl.classList.add('text-link');
+      previewEl.title = item.links.length === 1
+        ? `Ctrl+单击 或点 🌐 在浏览器打开\n${item.links[0]}`
+        : 'Ctrl+单击 提取链接（含多个 URL）';
+    }
 
     // 超长文本：加「展开/收起」切换按钮（作为 preview 的兄弟节点）
     let toggleBtn = null;
@@ -354,6 +378,27 @@ function renderHistory(container, history, handlers, ctx) {
     const actions = document.createElement('div');
     actions.className = 'actions';
     actions.appendChild(copyBtn);
+
+    // 链接条目：操作区增加「🌐 打开」/「提取链接」按钮（方案 A）
+    if (item.links && item.links.length > 0 && window.clipboardAPI && window.clipboardAPI.openExternal) {
+      const openBtn = document.createElement('button');
+      openBtn.className = 'open-btn';
+      openBtn.textContent = '🌐';
+      openBtn.title = item.links.length === 1
+        ? `在默认浏览器打开\n${item.links[0]}`
+        : `提取链接（${item.links.length} 个 URL）`;
+      openBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (item.links.length === 1) {
+          const r = await window.clipboardAPI.openExternal(item.links[0]);
+          if (!r || !r.ok) console.warn(r && r.error ? r.error : '打开链接失败');
+        } else {
+          showLinkPicker(item.links);
+        }
+      });
+      actions.appendChild(openBtn);
+    }
+
     actions.appendChild(delBtn);
 
     div.appendChild(previewEl);
@@ -382,6 +427,39 @@ function renderHistory(container, history, handlers, ctx) {
 
     container.appendChild(div);
   }
+}
+
+/**
+ * 链接条目说明：识别逻辑在主进程（src/common/link-utils.js，入库时算 item.links），
+ * 渲染层只消费 item.links 字段做 🌐 按钮 / Ctrl+单击交互。
+ */
+
+/**
+ * 多 URL 清单：点选打开某一个，不静默全开
+ * 简单实现：动态创建浮层，点击遮罩关闭。
+ */
+function showLinkPicker(links) {
+  // 幂等：已存在则先移除
+  let picker = document.getElementById('link-picker');
+  if (picker) picker.remove();
+
+  picker = document.createElement('div');
+  picker.id = 'link-picker';
+  picker.innerHTML = '<div class="link-picker-mask"></div>' +
+    '<div class="link-picker-panel"><div class="link-picker-title">提取到 ' +
+    links.length + ' 个链接，点击打开：</div><ul class="link-picker-list">' +
+    links.map(u => `<li class="link-picker-item" title="${u.replace(/"/g, '&quot;')}">${u}</li>`).join('') +
+    '</ul></div>';
+
+  picker.querySelector('.link-picker-mask').addEventListener('click', () => picker.remove());
+  picker.querySelectorAll('.link-picker-item').forEach((el, i) => {
+    el.addEventListener('click', async () => {
+      const r = await window.clipboardAPI.openExternal(links[i]);
+      if (!r || !r.ok) console.warn(r && r.error ? r.error : '打开链接失败');
+      picker.remove();
+    });
+  });
+  document.body.appendChild(picker);
 }
 
 if (typeof module !== 'undefined') {

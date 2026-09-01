@@ -400,6 +400,16 @@ html, body {
   text-decoration: underline;
 }
 
+/* 链接类文本条目：hover 加下划线提示可打开（与 file-link 视觉一致） */
+.preview--text.text-link {
+  cursor: pointer;
+}
+
+.preview--text.text-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
 .preview--file .file-icon {
   font-size: 16px;
   line-height: 1;
@@ -475,7 +485,7 @@ html, body {
   justify-content: flex-end;
 }
 
-.copy-btn, .del-btn {
+.copy-btn, .del-btn, .open-btn {
   padding: 3px 10px;
   font-size: 11px;
   border: 1px solid var(--border);
@@ -491,9 +501,67 @@ html, body {
   color: #fff;
 }
 
+.open-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent-hover);
+}
+
 .del-btn:hover {
   background: #a33;
   color: #fff;
+}
+
+/* 多 URL 提取清单浮层 */
+.link-picker-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 100;
+}
+
+.link-picker-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 260px;
+  max-width: 90%;
+  max-height: 70%;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 51;
+  padding: 12px;
+}
+
+.link-picker-title {
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.link-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.link-picker-item {
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--accent-hover);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link-picker-item:hover {
+  background: var(--accent-soft);
+  text-decoration: underline;
 }
 
 /* ========== 底部状态栏 ========== */

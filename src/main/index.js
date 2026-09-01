@@ -220,6 +220,37 @@ class ClipboardSpikeApp {
       return this.monitor.getHistory();
     });
 
+    // 用默认浏览器打开 URL（协议白名单：仅 http/https）
+    // 安全：shell.openExternal 对未过滤协议可能拉起任意已注册 handler，
+    // file:/javascript:/自定义协议一律拒绝。
+    ipcMain.handle('open-external', async (event, rawUrl) => {
+      if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+        return { ok: false, error: 'URL 为空' };
+      }
+      let url = rawUrl.trim();
+      // 无协议补全：localhost / IP 补 http，其余补 https
+      if (!/^https?:\/\//i.test(url)) {
+        const prefix = /^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/|$)/i.test(url) ? 'http://' : 'https://';
+        url = prefix + url;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        return { ok: false, error: '仅支持 http/https 链接' };
+      }
+      try {
+        // 二次校验：URL 解析后协议必须是 http/https
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return { ok: false, error: '仅支持 http/https 协议' };
+        }
+        await shell.openExternal(parsed.href);
+        console.log(`[Spike] 已在默认浏览器打开: ${parsed.href}`);
+        return { ok: true, url: parsed.href };
+      } catch (err) {
+        console.warn(`[Spike] 打开链接失败: ${err.message} (url=${rawUrl})`);
+        return { ok: false, error: err.message };
+      }
+    });
+
     // 获取文件的真实系统图标（异步，返回 dataURL）
     ipcMain.handle('open-file-location', async (event, filePath) => {
       if (typeof filePath !== 'string' || !filePath.trim()) {

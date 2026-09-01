@@ -3,12 +3,17 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 说明：链接识别（extractLinks）只在主进程入库时执行并存为 item.links，
+// 渲染层直接读取该字段即可，无需引入 link-utils。
+// （Electron sandbox 模式下 preload 的 require 不支持跨目录相对路径）
+
 contextBridge.exposeInMainWorld('clipboardAPI', {
   getHistory: () => ipcRenderer.invoke('get-history'),
   copyItem: (id) => ipcRenderer.invoke('copy-item', id),
   simulateInput: (id) => ipcRenderer.invoke('simulate-input', id),
   getFileIcon: (path) => ipcRenderer.invoke('get-file-icon', path),
   openFileLocation: (path) => ipcRenderer.invoke('open-file-location', path),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   removeItem: (id) => ipcRenderer.invoke('remove-item', id),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
   onHistoryUpdated: (callback) => {
