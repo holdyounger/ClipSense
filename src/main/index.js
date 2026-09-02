@@ -17,7 +17,8 @@ const path = require('path');
 const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector');
 const HistoryStorage = require('./storage');
-const { simulatePaste } = require('./input-simulator');
+const { PasteBridge } = require('./paste-bridge');
+const { FocusTracker } = require('./focus-tracker');
 
 class ClipboardSpikeApp {
   constructor() {
@@ -63,6 +64,9 @@ class ClipboardSpikeApp {
     });
 
     this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    // 鼠标点击不激活面板：目标窗口自始至终保持焦点（用户洞察 2026-09-02，
+    // 这是「双击粘贴失败」的本质修复——之前全部恢复逻辑都在为被抢走焦点打补丁）。
+    this._applyNoActivate(this.mainWindow);
 
     // 独立的边缘触发条窗口。窗口本身只有 6px 宽、与 header 同高，命中区域与可见条完全一致。
     this.triggerWindow = new BrowserWindow({
@@ -304,14 +308,13 @@ class ClipboardSpikeApp {
       return { ok: false, error: '未找到该条目' };
     });
 
-    // 双击条目：将选中的 item 写入系统剪贴板，再向原目标窗口发送一次 Ctrl+V。
-    // 面板本身 focusable:false，不抢走目标窗口的键盘焦点。
+    // 双击条目（Ditto/CopyQ 模型，2026-09-02 对齐竞品实现）：
+    //   写入系统剪贴板 → 恢复目标窗口焦点 → Ctrl+V → 隐藏面板（Ditto 实际顺序）
+    // 15:59 实机教训：先收面板会在 hide 瞬间触发系统前台重分配——
+    // 从 VSCode 终端启动的子进程，收起后前台特权关联窗口（VSCode）抢先拿走焦点，
+    // 粘贴时前台已不是目标窗口。改为先粘贴后收面板：粘贴时前台未变，
+    // restored=same 直接发键，无竞争窗口。
     ipcMain.handle('simulate-input', async (event, id) => {
-      // 搜索框曾临时开启 focusable:true；双击条目粘贴前必须恢复“面板不接收焦点”状态。
-      // 否则 Ctrl+V 可能仍落到搜索框，而不是原目标窗口。
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        this.mainWindow.setFocusable(false);
-      }
       const item = this.monitor.getHistory().find(h => h.id === id);
       if (!item) return { ok: false, error: '未找到该条目' };
 
@@ -319,11 +322,37 @@ class ClipboardSpikeApp {
       const copied = this.monitor.copyToClipboard(item);
       if (!copied) return { ok: false, error: '写入系统剪贴板失败' };
 
-      const result = await simulatePaste();
+      // 取目标句柄（16:34 根因修复）：双击瞬间重新抓前台——NOACTIVATE 面板不抢焦点，
+      // 此刻前台就是真实目标窗口；弹出时冻结记录的 tracked 句柄仅作兜底。
+      // fgNow=0 是窗口切换真空态（合法瞬态），用 captureForegroundRetry 忙等重试。
+      const fgNow = this.pasteBridge ? this.pasteBridge.captureForegroundRetry() : 0;
+      const trackedHwnd = this.focusTracker ? this.focusTracker.getHwnd() : 0;
+      const restoreHwnd = fgNow > 0 ? fgNow : trackedHwnd;
+      console.log(`[Spike] paste target: fgNow=${fgNow} tracked=${trackedHwnd} -> use=${restoreHwnd}`);
+
+      // ① 先粘贴（面板 NOACTIVATE 不抢焦点，目标窗口仍在前台）
+      let result = this.pasteBridge.pasteTo(restoreHwnd);
+      // CopyQ 同款降级：Ctrl+V 被吞（RDP/远程桌面等场景）时尝试 Shift+Insert。
+      if (!result.ok && restoreHwnd && result.error !== 'restore-denied' && result.error !== 'modifiers-held') {
+        console.warn(`[Spike] Ctrl+V 失败(${result.error || 'unknown'})，降级 Shift+Insert 重试`);
+        result = this.pasteBridge.pasteTo(restoreHwnd, { key: 'shift-insert' });
+      }
+
+      // ② 双击不收面板（用户决策 2026-09-02）：保留面板支持连续操作；
+      // 句柄生命周期跟面板走（setOnHidden 时 clear），不随单次粘贴清除。
+      // 5 分钟过期由 getHwnd 内部处理；外部窗口切换由 pasteTo 的 IsWindow 校验兜底。
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.setFocusable(false);
+      }
       if (!result.ok) {
-        console.warn(`[Spike] 选中条目 Ctrl+V 粘贴失败: ${result.error}`);
+        // 粘贴失败时面板保持显示：用户可直接重试或改用单击复制，不打断操作流
+        console.warn(`[Spike] 选中条目粘贴失败: ${result.error}`);
       } else {
-        console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview}`);
+        console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview} (restored=${result.restored})`);
+        // 粘贴成功后抑制轮询归档+重建基线：否则 600ms 轮询把刚粘贴的内容当新复制
+        // 处理 → pushHistory → 渲染层全量重建 → 连续双击的 DOM 元素被销毁，
+        // 第二击事件丢失（16:50「只有第一条成功」根因）
+        this.monitor.rebaseAfterPaste();
       }
       return result;
     });
@@ -353,6 +382,13 @@ class ClipboardSpikeApp {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
       this.mainWindow.setFocusable(true);
       this.mainWindow.focus();
+      return true;
+    });
+
+    // 搜索框失焦后关回不可聚焦，恢复“面板不抢焦点”常态（Ditto/CopyQ 模型的辅助措施）。
+    ipcMain.handle('blur-search', () => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
+      this.mainWindow.setFocusable(false);
       return true;
     });
 
@@ -417,6 +453,58 @@ class ClipboardSpikeApp {
     }
   }
 
+  /**
+   * 给窗口加 WS_EX_NOACTIVATE 样式：鼠标点击不激活窗口、不抢前台。
+   * 这是 Ditto/uTools 类工具「点击不夺焦」的标准实现（Electron 无直接参数）。
+   * focusable:false 只禁键盘焦点链，鼠标点击默认仍会触发 WM_MOUSEACTIVATE 激活；
+   * NOACTIVATE 从源头禁掉，目标窗口自始至终保持焦点。
+   */
+  _applyNoActivate(win) {
+    if (process.platform !== 'win32') return;
+    try {
+      const koffi = require('koffi');
+      const user32 = koffi.load('user32.dll');
+      const GetWindowLongPtrW = user32.func('intptr_t __stdcall GetWindowLongPtrW(intptr_t hWnd, int nIndex)');
+      const SetWindowLongPtrW = user32.func('intptr_t __stdcall SetWindowLongPtrW(intptr_t hWnd, int nIndex, intptr_t dwNewLong)');
+      const GWL_EXSTYLE = -20;
+      const WS_EX_NOACTIVATE = 0x08000000;
+      const WS_EX_TOPMOST = 0x00000008;
+      const hwnd = win.getNativeWindowHandle().readBigInt64LE(0);
+      const cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      // NOACTIVATE + TOPMOST（alwaysOnTop 在 Electron 内部也设 TOPMOST，这里补齐以防重置）
+      // 注意：句柄是 64 位，EXSTYLE 读写都在低 32 位，但传参必须保持完整 intptr_t 宽度，
+      // 先 BigInt 运算再整体转 Number 会丢高 32 位（句柄高位非零时窗口句柄错乱），
+      // 因此 SetWindowLongPtrW 直接收 BigInt（koffi intptr_t 原生支持）。
+      const newStyle = (cur | BigInt(WS_EX_NOACTIVATE) | BigInt(WS_EX_TOPMOST));
+      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, newStyle);
+      const after = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      const applied = (after & BigInt(WS_EX_NOACTIVATE)) !== 0n;
+      console.log(`[Spike] WS_EX_NOACTIVATE ${applied ? '已应用' : '应用失败'}: hwnd=${hwnd} exstyle 0x${cur.toString(16)} -> 0x${after.toString(16)}`);
+    } catch (err) {
+      console.warn('[Spike] WS_EX_NOACTIVATE 应用失败:', err.message);
+    }
+  }
+
+  /**
+   * 诊断版 capture：抓前台现场（hwnd/pid/class）+ 过滤判定，结果推送到渲染层 console。
+   * 目标窗口可用则记录，否则清空（宁可无目标不贴错）。
+   */
+  _diagCapture() {
+    const r = this.pasteBridge ? this.pasteBridge.captureForegroundVerbose() : { hwnd: 0, reason: 'no-bridge' };
+    if (r.hwnd > 0) {
+      this.focusTracker._targetHwnd = r.hwnd;
+      this.focusTracker._trackedAt = Date.now();
+    } else {
+      this.focusTracker._targetHwnd = 0;
+      this.focusTracker._trackedAt = 0;
+    }
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.executeJavaScript(
+        `console.log('[FocusTracker] capture: hwnd=${r.hwnd} ${r.reason || ''} ${r.cls ? 'class=' + r.cls : ''} pid=${r.pid || 0}')`
+      ).catch(() => {});
+    }
+  }
+
   async init() {
     this.createWindow();
     this.initTray();
@@ -426,7 +514,17 @@ class ClipboardSpikeApp {
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
     this.edgeDetector = new EdgeDetector(this.mainWindow, this.triggerWindow);
     this.edgeDetector.setOnHidden(() => {
-      // 不可获取焦点的置顶面板隐藏后，目标窗口始终保持原焦点。
+      // 面板收起后句柄生命周期结束：下次唤出时重新 capture。
+      // （双击不收面板，同一显示周期内句柄持续有效，支持连续粘贴多条目）
+      this.focusTracker.clear();
+    });
+    // Ditto/CopyQ 模型：面板显示前记录原前台窗口，双击粘贴时由 PasteBridge 原子恢复+注入。
+    // FFI 同步抓取（微秒级），无 PS 冷启动，消除「唤出后立即双击」的时序竞争。
+    this.pasteBridge = new PasteBridge();
+    this.focusTracker = new FocusTracker(this.pasteBridge);
+    this.edgeDetector.setOnShown(() => {
+      // capture 主进程日志用户看不到；把每次 capture 的判定结果推送到渲染层 console
+      this._diagCapture();
     });
     this.edgeDetector.start();
     // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。

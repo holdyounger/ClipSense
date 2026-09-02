@@ -337,6 +337,22 @@ const ItemBuilders = {
  * @param {Object} ctx 上下文 { t, timeStr, flashItem }
  */
 function renderHistory(container, history, handlers, ctx) {
+  // 双击粘贴改用事件委托（挂在 container 上）：粘贴成功后 pushHistory 会全量重建
+  // innerHTML，逐元素绑定的 dblclick 会随旧 DOM 一起销毁，连续双击的第二击事件丢失
+  // （16:50「只有第一条成功」根因之一）。委托到 container 则重建不影响事件。
+  if (!container._dblclickDelegated) {
+    container._dblclickDelegated = true;
+    container.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.actions')) return;
+      if (e.target.closest('.expand-btn')) return;
+      const itemEl = e.target.closest('.item');
+      if (!itemEl || !itemEl._itemData) return;
+      if (handlers.onSimulateInput) {
+        handlers.onSimulateInput(itemEl._itemData, itemEl);
+      }
+    });
+  }
+
   if (!history || history.length === 0) {
     container.innerHTML = `<div class="empty">${ctx.t('empty')}</div>`;
     return;
@@ -353,6 +369,7 @@ function renderHistory(container, history, handlers, ctx) {
 
     const div = document.createElement('div');
     div.className = 'item';
+    div._itemData = item;   // 事件委托用：重建后新元素仍带数据引用
 
     const meta = document.createElement('div');
     meta.className = 'meta';
@@ -411,17 +428,12 @@ function renderHistory(container, history, handlers, ctx) {
     div.appendChild(meta);
     div.appendChild(actions);
 
-    // 双击条目：回写原始类型后，粘贴到双击前的目标窗口
+    // 双击条目：改为 container 事件委托（见 renderHistory 头部说明），
+    // 此处仅保留 file-link 定时器清理逻辑（双击时取消未触发的单击定位）。
     div.addEventListener('dblclick', (e) => {
       if (e.target.closest('.file-link') && e.target.closest('.file-link')._openFileTimer) {
         clearTimeout(e.target.closest('.file-link')._openFileTimer);
         e.target.closest('.file-link')._openFileTimer = null;
-      }
-      if (e.target.closest('.actions')) return;
-      if (e.target.closest('.expand-btn')) return;
-      if (handlers.onSimulateInput) {
-        // 搜索结果也是原始历史 item，始终使用其真实 id 执行写入/粘贴。
-        handlers.onSimulateInput(item, div);
       }
     });
 

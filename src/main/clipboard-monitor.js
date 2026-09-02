@@ -25,6 +25,8 @@ class ClipboardMonitor {
     this._lastHash = null;
     /** 内容去重 Set（hash），防止同一内容重复归档 */
     this._seenHashes = new Set();
+    /** 回写抑制：copyToClipboard 写入期间暂停归档，写完重建基线（Ditto/CopyQ 同款保护） */
+    this._suppressUntil = 0;
     /** 定时器 ID */
     this.intervalId = null;
     /** 持久化存储实例（可选，注入后启用持久化） */
@@ -226,6 +228,22 @@ class ClipboardMonitor {
    * @returns {{changed: boolean, item: Object|null}}
    */
   tick() {
+    // 回写抑制窗口内：跳过归档（我们自己写的剪贴板内容不算用户复制）
+    if (Date.now() < this._suppressUntil) return { changed: false, item: null };
+    // 抑制刚结束的第一帧：重建基线 hash 为当前剪贴板内容（抑制期间的内容已被 consume），
+    // 避免 600ms 轮询把回写残留当作新复制归档。
+    if (this._suppressUntil > 0) {
+      this._suppressUntil = 0;
+      const baseline = this._readClipboard();
+      if (baseline.kind !== 'empty') {
+        const src = baseline.kind === 'image' ? baseline.dataUrl
+          : baseline.kind === 'file' ? baseline.uriList
+          : baseline.kind === 'rich-text' ? (baseline.html || baseline.plainText)
+          : baseline.text;
+        this._lastHash = this._hash(src);
+      }
+      return { changed: false, item: null };
+    }
     const result = this._readClipboard();
     if (result.kind === 'empty') return { changed: false, item: null };
 
@@ -262,6 +280,16 @@ class ClipboardMonitor {
     this._persist();
 
     return { changed: true, item };
+  }
+
+  /**
+   * 粘贴后同步调用：把当前剪贴板内容设为基线，避免轮询把「我们自己写入并粘贴的
+   * 内容」当作用户新复制归档（触发列表重渲染 → 连续双击的 DOM 元素被重建销毁，
+   * 第二击事件丢失——16:50「只有第一条粘贴成功」的根因）。
+   */
+  rebaseAfterPaste() {
+    if (Date.now() < this._suppressUntil) return;  // 已在抑制窗口内，无需重复
+    this._suppressUntil = Date.now() + 1500;
   }
 
   /**
@@ -345,6 +373,9 @@ class ClipboardMonitor {
    * @returns {boolean} 是否成功
    */
   copyToClipboard(item) {
+    // 回写抑制（Ditto/CopyQ 同款）：我们自己写入的内容不是「新复制」事件，
+    // 写入后重建 _lastHash 基线，防止轮询把回写内容/应用回写/格式转换中间态归档。
+    this._suppressUntil = Date.now() + 1500;
     try {
       switch (item.type) {
         case 'image': {

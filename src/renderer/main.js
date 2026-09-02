@@ -199,6 +199,11 @@ searchInput.addEventListener('pointerdown', () => {
   window.clipboardAPI.focusSearch();
 });
 
+// 失焦时通知主进程关回 focusable，双击粘贴不再依赖 simulate-input 里的补救。
+searchInput.addEventListener('blur', () => {
+  window.clipboardAPI.blurSearch();
+});
+
 searchInput.addEventListener('input', () => {
   searchQuery = searchInput.value;
   const shown = filterHistory(fullHistory);
