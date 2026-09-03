@@ -376,6 +376,23 @@ html, body {
   overflow-wrap: break-word;
 }
 
+/* 展开态：条目内部滚动（面板高度固定 480，列表整体可滚动） */
+.preview--text--expanded {
+  max-height: 50vh;
+  overflow-y: auto;
+  line-height: 1.5;
+  padding-right: 4px;
+}
+
+.preview--text--expanded::-webkit-scrollbar {
+  width: 6px;
+}
+
+.preview--text--expanded::-webkit-scrollbar-thumb {
+  background: rgba(162, 155, 254, 0.35);
+  border-radius: 3px;
+}
+
 /* 图片类型 */
 .preview--image img {
   max-width: 100%;

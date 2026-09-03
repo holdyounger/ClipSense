@@ -18,6 +18,7 @@ class EdgeDetector {
     this.mainWindow = mainWindow;
     this.triggerWindow = triggerWindow;
     this.intervalId = null;
+    this._searchActive = false;   // 搜索输入中（挂起自动隐藏）
     this.hideTimerId = null;
     this.isActive = false;
     this.isWindowVisible = false;
@@ -424,10 +425,26 @@ class EdgeDetector {
     }
   }
 
+  /**
+   * 搜索输入期间挂起/恢复自动隐藏（18:42：搜索时鼠标移出导致打字中面板被隐藏）。
+   * 挂起时取消已在倒计时的定时器；恢复时若鼠标仍在外则走正常隐藏流程。
+   */
+  setSearchActive(active) {
+    this._searchActive = !!active;
+    if (active) {
+      this._cancelHideTimer();
+    } else if (this.isWindowVisible && !this.isPinned && !this._lastIsOverPanel) {
+      // 恢复时鼠标仍不在面板上：按正常流程启动倒计时
+      this._startHideTimer();
+    }
+  }
+
   _startHideTimer() {
     if (this.isPinned || this._isHiding) return;
     if (this.hideTimerId) return;
     if (this._lastIsOverPanel) return;
+    // 搜索输入期间挂起自动隐藏：用户正在打字，键盘活跃优先于鼠标离开
+    if (this._searchActive) return;
 
     const deadline = Date.now() + this.hideDelay;
     this._hideDeadline = deadline;
@@ -534,6 +551,23 @@ class EdgeDetector {
     }
     if (this.isWindowVisible) this.forceHide();
     else this.forceShow();
+  }
+
+  /**
+   * 快捷键弹出后重置鼠标位置状态：快捷键弹出绕过了触发条 hover 流程，
+   * 若弹出瞬间鼠标恰在触发条热区上，_wasOverTrigger/_suppressTriggerUntilLeave
+   * 会卡在 true（系统在等一个永远不会发生的「离开触发条」事件），
+   * 轮询用错误状态持续干扰交互 → 固定按钮/菜单点不动（18:21 实验证实）。
+   * 弹出后面板就在鼠标下，鼠标位置状态以实际为准：全部重置。
+   */
+  resetMouseStateAfterShortcutShow() {
+    this._suppressTriggerUntilLeave = false;
+    this._wasOverTrigger = false;
+    // 注意：不置 _lastIsOverPanel=true、不清 hideTimer——
+    // 若鼠标不在面板上（快捷键弹出但鼠标没动），置 true 会让轮询永远认为
+    // 鼠标在面板上，自动隐藏永不触发 → Alt+V 隐藏体验回帰（18:26 回归）。
+    // 只清触发条相关的卡死状态（17:52 实锤的按钮点不动根因），其余交给轮询
+    // 的 isOverPanel 实时判定（它用 getBounds 算，不受快捷键路径影响）。
   }
 
   forceShow(display = null) {

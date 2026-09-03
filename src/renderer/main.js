@@ -202,6 +202,13 @@ searchInput.addEventListener('pointerdown', () => {
 // 失焦时通知主进程关回 focusable，双击粘贴不再依赖 simulate-input 里的补救。
 searchInput.addEventListener('blur', () => {
   window.clipboardAPI.blurSearch();
+  // 搜索结束：恢复自动隐藏（若鼠标仍在外则立即走正常倒计时）
+  window.clipboardAPI.setSearchActive(false);
+});
+
+// 聚焦/输入期间挂起自动隐藏：用户正在打字，鼠标移出不应隐藏面板（18:42）
+searchInput.addEventListener('focus', () => {
+  window.clipboardAPI.setSearchActive(true);
 });
 
 searchInput.addEventListener('input', () => {

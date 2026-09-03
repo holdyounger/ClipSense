@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   // ========== 窗口定位 / 鼠标事件 ==========
   mouseEnter: () => ipcRenderer.send('mouse-enter'),
   mouseLeave: () => ipcRenderer.send('mouse-leave'),
+  setSearchActive: (active) => ipcRenderer.send('set-search-active', active),
   getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
   updateDraggedPosition: (x, y) => ipcRenderer.invoke('update-dragged-position', x, y),
   dragStart: () => ipcRenderer.invoke('drag-start'),

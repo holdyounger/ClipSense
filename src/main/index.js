@@ -8,7 +8,7 @@
  *
  * 附加（同步自 KeySense）：
  *   - 窗口贴边 / 定时隐藏 / 鼠标靠边缘唤出（EdgeDetector）
- *   - 全局快捷键 Ctrl+Shift+V 切换显示
+ *   - 全局快捷键 Alt+V 切换显示
  */
 
 const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell } = require('electron');
@@ -206,16 +206,21 @@ class ClipboardSpikeApp {
   }
 
   registerShortcut() {
-    // Ctrl+Shift+V 唤出（V = clipboard 语义）
-    const ok = globalShortcut.register('CommandOrControl+Shift+V', () => {
+    // Alt+V 唤出（V = clipboard 语义）
+    const ok = globalShortcut.register('Alt+V', () => {
       if (this.edgeDetector) {
         this.edgeDetector.toggle();
-        if (this.edgeDetector.isWindowVisible) this.pushHistory();
+        if (this.edgeDetector.isWindowVisible) {
+          this.pushHistory();
+          // 快捷键弹出可能覆盖鼠标当前位置：重置触发条抑制/悬停状态，
+          // 否则弹出位置恰在鼠标覆盖区域时按钮点不动（18:21 实验证实的卡死机制）
+          this.edgeDetector.resetMouseStateAfterShortcutShow();
+        }
       } else {
         this.toggleWindow();
       }
     });
-    console.log(`[Spike] 全局快捷键 Ctrl+Shift+V 注册${ok ? '成功' : '失败'}`);
+    console.log(`[Spike] 全局快捷键 Alt+V 注册${ok ? '成功' : '失败'}`);
   }
 
   setupIPC() {
@@ -286,7 +291,7 @@ class ClipboardSpikeApp {
         console.log(`[Spike] getFileIcon 入参: "${filePath}" -> 规范化为 "${normalized}"`);
         const icon = await app.getFileIcon(normalized, { size: 'normal' });
         if (icon && !icon.isEmpty()) {
-          console.log(`[Spike] getFileIcon 成功: ${filePath}`);
+          // console.log(`[Spike] getFileIcon 成功: ${filePath}`);
           return icon.toDataURL();
         }
         console.warn(`[Spike] getFileIcon 返回空图标: ${filePath}`);
@@ -382,6 +387,9 @@ class ClipboardSpikeApp {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
       this.mainWindow.setFocusable(true);
       this.mainWindow.focus();
+      // focus() 会触发渲染层 focus 事件 → setSearchActive(true)，
+      // 但若 focus 事件丢失（NOACTIVATE 窗口焦点路径不稳），这里兜底挂起
+      if (this.edgeDetector) this.edgeDetector.setSearchActive(true);
       return true;
     });
 
@@ -389,6 +397,8 @@ class ClipboardSpikeApp {
     ipcMain.handle('blur-search', () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
       this.mainWindow.setFocusable(false);
+      // 搜索结束：恢复自动隐藏（与渲染层 blur 事件双保险，18:42）
+      if (this.edgeDetector) this.edgeDetector.setSearchActive(false);
       return true;
     });
 
@@ -413,6 +423,11 @@ class ClipboardSpikeApp {
     // 鼠标离开窗口
     ipcMain.on('mouse-leave', () => {
       if (this.edgeDetector) this.edgeDetector.onMouseLeaveDebounced();
+    });
+
+    // 搜索输入期间挂起自动隐藏（键盘活跃优先于鼠标离开，18:42）
+    ipcMain.on('set-search-active', (event, active) => {
+      if (this.edgeDetector) this.edgeDetector.setSearchActive(active);
     });
 
     // 获取窗口 bounds（拖拽用）

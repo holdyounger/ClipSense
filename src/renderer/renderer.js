@@ -69,10 +69,12 @@ function formatPreview(text, maxUnits = 80, maxLines = 3) {
 }
 
 /**
- * 判断文本是否会被截断（是否需要「展开」功能）
+ * 判断文本是否值得折叠：折叠必须有足够收益（省下至少一整行），
+ * 否则直接全文显示——只截几个字符的「假折叠」比不折叠更糟糕
+ * （多一个按钮、多一次点击，只换来几个字母的省略，17:39 用户反馈）
  * @param {string} text
- * @param {number} maxUnits
- * @param {number} maxLines
+ * @param {number} maxUnits 预览单行宽度
+ * @param {number} maxLines 预览行数
  * @returns {boolean}
  */
 function isTruncated(text, maxUnits = 80, maxLines = 3) {
@@ -80,14 +82,27 @@ function isTruncated(text, maxUnits = 80, maxLines = 3) {
   const normalized = String(text).replace(/\r\n/g, '\n').trim();
   if (!normalized) return false;
   const lines = normalized.split('\n');
-  if (lines.length > maxLines) return true;
-  // 单行但超宽也算截断
-  for (const line of lines) {
+  const displayW = (s) => {
     let w = 0;
-    for (const ch of line) {
-      w += (ch.charCodeAt(0) > 255 ? 2 : 1);
-    }
-    if (w > maxUnits) return true;
+    for (const ch of s) w += (ch.charCodeAt(0) > 255 ? 2 : 1);
+    return w;
+  };
+
+  // 行数超限：只有「超出部分足够多」（至少再省一整行）才值得折叠。
+  // 例：4 行内容折叠成 3 行只省 1 行，但若第 4 行只有几个字符则不值得。
+  if (lines.length > maxLines) {
+    const dropped = lines.slice(maxLines);
+    const droppedWidth = dropped.reduce((sum, l) => sum + displayW(l), 0) + (dropped.length - 1); // + 换行宽
+    // 超出行总宽度 ≥ 预览区一行宽（≈maxUnits）才折叠
+    if (droppedWidth >= maxUnits) return true;
+    // 超出行虽短，但总行数明显多（≥2 行）也折叠
+    return dropped.length >= 2;
+  }
+
+  // 单行/行数未超：只有宽度超限明显（超过 maxUnits 的 1.15 倍，即至少能省
+  // 出一个可感知的省略号+尾部内容）才折叠；81~92 这种擦边内容直接全文显示。
+  for (const line of lines) {
+    if (displayW(line) > Math.floor(maxUnits * 1.15)) return true;
   }
   return false;
 }
@@ -147,7 +162,8 @@ const ItemBuilders = {
     previewEl.className = 'preview preview--text';
 
     const needsExpand = isTruncated(item.text, 80, 3);
-    let expanded = false;
+    // 展开状态从 item 对象恢复（列表重渲染传入同一引用，状态不丢）
+    let expanded = !!item._expanded;
 
     function renderText() {
       const rawText = String(item.text || '');
@@ -166,9 +182,12 @@ const ItemBuilders = {
         previewEl.title = '这是有效的空白字符内容，双击仍会粘贴原始空白字符';
         return;
       }
-      previewEl.classList.remove('preview--whitespace');
+      previewEl.classList.remove('preview--whitespace', 'preview--text--expanded');
       previewEl.title = '';
-      previewEl.textContent = expanded ? rawText : formatPreview(rawText, 80, 3);
+      // 判定不折叠 → 直接全文（否则 81 字符内容被截到 80 且无展开按钮可救，
+      // 与 isTruncated 的「折叠必须有收益」判定联动）
+      previewEl.textContent = (expanded || !needsExpand) ? rawText : formatPreview(rawText, 80, 3);
+      if (expanded) previewEl.classList.add('preview--text--expanded');
       // 链接条目：预览区 hover 显示完整 URL（截断显示时）
       if (item.links && item.links.length === 1 && !isWhitespaceOnly) {
         previewEl.title = item.links[0];
@@ -209,6 +228,9 @@ const ItemBuilders = {
           ? `<span class="expand-icon">▲</span><span>${ctx.t('collapse')}</span>`
           : `<span class="expand-icon">▼</span><span>${ctx.t('expand')}</span>`;
         renderText();
+        // 展开状态持久化到 item 对象：列表重渲染（pushHistory 触发）传入的是
+        // 同一个 item 引用，新渲染的条目自动恢复展开状态（否则一粘贴就收回折叠）
+        item._expanded = expanded;
       });
     }
 
@@ -364,7 +386,7 @@ function renderHistory(container, history, handlers, ctx) {
     const type = item.type || 'text';
     const builder = ItemBuilders[type] || ItemBuilders.text;
 
-    // 构建条目
+    // 构建条目（item._expanded 展开状态在 builder 内读取）
     const { previewEl, metaText, extraEls } = builder(item, ctx);
 
     const div = document.createElement('div');

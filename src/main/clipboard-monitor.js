@@ -51,7 +51,7 @@ class ClipboardMonitor {
     try {
       const formats = clipboard.availableFormats();
 
-      console.log(`[Monitor] availableFormats: ${formats.join(', ')}`);
+      // console.log(`[Monitor] availableFormats: ${formats.join(', ')}`);
 
       // availableFormats 可能返回空数组，用 readText 兜底
       const has = (needle) => formats.some(f => f.toLowerCase().includes(needle));

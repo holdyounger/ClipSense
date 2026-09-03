@@ -246,8 +246,8 @@ class PasteBridge {
 
   /**
    * 等待用户松开修饰键（CopyQ waitForModifiersReleased 模型）。
-   * 场景：Ctrl+Shift+V 唤出面板后立即双击，用户手指还没离开修饰键，
-   * 此时注入的 Ctrl+V 会被用户按着的 Shift 等污染成 Ctrl+Shift+V。
+   * 场景：Alt+V 唤出面板后立即双击，用户手指还没离开修饰键，
+   * 此时注入的 Ctrl+V 会被用户按着的 Alt 等污染成 Ctrl+Alt+V。
    * @returns {boolean} true=已全部松开；false=超时仍有按住（放弃注入更安全）
    */
   _waitForModifiersReleased() {
@@ -367,7 +367,7 @@ class PasteBridge {
           return { ok: false, restored, error: 'restore-denied' };
         }
 
-        // --- 修饰键等待（CopyQ 模型，防 Ctrl+Shift+V 手指残留污染） ---
+        // --- 修饰键等待（CopyQ 模型，防 Alt+V 手指残留污染） ---
         const modsReleased = this._waitForModifiersReleased();
         if (!modsReleased) {
           console.log('[PasteBridge] 修饰键 1500ms 内未松开，放弃注入');
