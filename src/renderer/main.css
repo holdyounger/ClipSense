@@ -38,6 +38,7 @@ html, body {
   background: var(--bg);
   border-radius: 8px;
   overflow: hidden;
+  position: relative; /* 返回顶部悬浮按钮的定位基准 */
 }
 
 /* 自动隐藏后窗口会缩成贴边触发条；保留清晰的紫色提示，不显示残缺内容。 */
@@ -336,6 +337,77 @@ html, body {
 
 .list::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* 返回顶部：悬浮于列表右下角（footer 上方），滚动超过阈值才出现。
+   用 visibility+opacity 切换而非 display，隐藏时不拦截列表项点击。 */
+.back-top-btn {
+  position: absolute;
+  right: 14px;
+  bottom: 58px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(162, 155, 254, 0.4);
+  border-radius: 50%;
+  background: rgba(108, 92, 231, 0.85);
+  color: #fff;
+  cursor: pointer;
+  z-index: 40;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity 0.2s, visibility 0.2s, transform 0.2s, background 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.back-top-btn.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.back-top-btn:hover {
+  background: var(--accent-hover);
+}
+
+.back-top-btn:active {
+  transform: translateY(1px);
+}
+
+.back-top-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 日期分组线：每天之间 */
+.date-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 2px 8px;
+  user-select: none;
+}
+
+/* 列表顶部的第一个组头不需要上方留白 */
+.list .date-divider:first-child {
+  margin-top: 2px;
+}
+
+.date-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.date-divider-label {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  letter-spacing: 0.03em;
 }
 
 .empty {

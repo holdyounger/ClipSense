@@ -352,6 +352,38 @@ const ItemBuilders = {
 };
 
 /**
+ * 日期分组线：自然日变化处插入（列表新→旧排列，相邻条目日期不同即新组开始）。
+ * 标签规则：今天 / 昨天 / 本年内 MM-DD / 跨年 YYYY-MM-DD。
+ */
+function buildDateDivider(date, ctx) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const sameDay = (a, b) => a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+
+  let label;
+  if (sameDay(date, now)) {
+    label = ctx.t('today');
+  } else if (sameDay(date, yesterday)) {
+    label = ctx.t('yesterday');
+  } else if (date.getFullYear() === now.getFullYear()) {
+    label = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  } else {
+    label = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  const div = document.createElement('div');
+  div.className = 'date-divider';
+  // label 只有翻译词/数字日期，无用户输入，innerHTML 安全
+  div.innerHTML = `<span class="date-divider-line"></span>` +
+    `<span class="  "></span>` +
+    `<span class="date-divider-line"></span>`;
+  div.querySelector('.date-divider-label').textContent = label;
+  return div;
+}
+
+/**
  * 渲染历史列表
  * @param {HTMLElement} container 列表容器
  * @param {Array} history 历史条目数组
@@ -382,7 +414,17 @@ function renderHistory(container, history, handlers, ctx) {
 
   container.innerHTML = '';
 
+  let lastDayKey = null;
   for (const item of history) {
+    // 每天之间的分界线：自然日变化时插入组头（搜索过滤后空组自然消失，
+    // 因为组头基于实际显示的条目计算）
+    const d = new Date(item.timestamp);
+    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (dayKey !== lastDayKey) {
+      lastDayKey = dayKey;
+      container.appendChild(buildDateDivider(d, ctx));
+    }
+
     const type = item.type || 'text';
     const builder = ItemBuilders[type] || ItemBuilders.text;
 
@@ -396,6 +438,8 @@ function renderHistory(container, history, handlers, ctx) {
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = metaText || '';
+    // 悬停查看完整入库时间（列表内只显日期+时分秒，跨天条目日期已可见）
+    meta.title = new Date(item.timestamp).toLocaleString(undefined, { hour12: false });
 
     // 操作按钮
     const copyBtn = document.createElement('button');

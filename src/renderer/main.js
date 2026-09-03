@@ -13,6 +13,7 @@ const menuClearBtn = document.getElementById('menuClearBtn');
 const searchInput = document.getElementById('searchInput');
 const statCount = document.getElementById('statCount');
 const hintEl = document.getElementById('hint');
+const backTopBtn = document.getElementById('backTopBtn');
 
 let isPinned = false;
 let countdownInterval = null;
@@ -41,6 +42,8 @@ function applyStaticText() {
   menuLangBtn.textContent = t('menuLang');
   menuClearBtn.textContent = t('menuClear');
   searchInput.placeholder = t('searchPlaceholder');
+  backTopBtn.title = t('backTop');
+  backTopBtn.setAttribute('aria-label', t('backTop'));
 
   // 空状态（如果当前是空列表）
   if (listEl.querySelector('.empty')) {
@@ -124,7 +127,12 @@ const renderHandlers = {
 function timeStr(ts) {
   const d = new Date(ts);
   const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  // 非今天的条目带日期：昨天 10 点和今天 10 点不能看着一样（2026-09-03 用户反馈）
+  const now = new Date();
+  const isToday = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return isToday ? hms : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
 }
 
 function flashItem(el) {
@@ -216,6 +224,19 @@ searchInput.addEventListener('input', () => {
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
   updateStats();
+});
+
+// ========== 返回顶部 ==========
+// 监听挂在 listEl 上（renderHistory 只重建 innerHTML，容器本身不重建，监听不丢）。
+// 阈值 120px：列表 barely 滚动时不出按钮，避免和条目操作区视觉拥挤。
+const BACK_TOP_THRESHOLD = 120;
+
+listEl.addEventListener('scroll', () => {
+  backTopBtn.classList.toggle('visible', listEl.scrollTop > BACK_TOP_THRESHOLD);
+}, { passive: true });
+
+backTopBtn.addEventListener('click', () => {
+  listEl.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
 // ========== 窗口固定 ==========
