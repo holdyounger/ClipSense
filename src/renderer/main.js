@@ -124,15 +124,16 @@ const renderHandlers = {
   },
 };
 
+const pad2 = n => String(n).padStart(2, '0');
+
 function timeStr(ts) {
   const d = new Date(ts);
-  const pad = n => String(n).padStart(2, '0');
-  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const hms = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
   // 非今天的条目带日期：昨天 10 点和今天 10 点不能看着一样（2026-09-03 用户反馈）
   const now = new Date();
   const isToday = d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-  return isToday ? hms : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
+  return isToday ? hms : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hms}`;
 }
 
 function flashItem(el) {
@@ -141,14 +142,84 @@ function flashItem(el) {
 }
 
 /**
- * 按搜索词过滤历史
+ * 解析日期查询片段（搜索用）。
+ * 支持：今天/昨天（含英文 today/yesterday）、YYYY-MM-DD、MM-DD、YYYY。
+ * 返回 { key: 'y-mm-dd' } 按自然日过滤，或 { year } 按年过滤，null = 不可识别。
+ */
+function parseDateQuery(raw) {
+  const q = String(raw || '').trim();
+  if (!q) return null;
+  const now = new Date();
+  const dayKey = (y, m, d) => `${y}-${pad2(m)}-${pad2(d)}`;
+
+  const lower = q.toLowerCase();
+  if (q === '今天' || lower === 'today') {
+    return { key: dayKey(now.getFullYear(), now.getMonth() + 1, now.getDate()) };
+  }
+  if (q === '昨天' || lower === 'yesterday') {
+    const yd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    return { key: dayKey(yd.getFullYear(), yd.getMonth() + 1, yd.getDate()) };
+  }
+  let m = q.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return { key: dayKey(+m[1], +m[2], +m[3]) };
+  m = q.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (m) return { key: dayKey(now.getFullYear(), +m[1], +m[2]) };
+  m = q.match(/^(\d{4})$/);
+  if (m) return { year: +m[1] };
+  return null;
+}
+
+/** 条目入库时间的自然日 key（与 parseDateQuery 返回的 key 同构） */
+function itemDayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * 按搜索词过滤历史：
+ * 1) `date:` 前缀 → 第一个词必须是日期（今天/昨天/YY-MM-DD/YYYY-MM-DD/YYYY），
+ *    不是日期 → 无匹配；是日期 → 剩余词继续内容过滤（可组合：date:昨天 评审、
+ *    date:今天 10:30 —— 内容不含时附带匹配入库时间串，实现按时间定位）
+ * 2) 输入整体是日期串（YYYY-MM-DD / MM-DD）→ 自动按日期过滤
+ * 3) 其余按内容文本匹配
  */
 function filterHistory(history) {
   const q = searchQuery.toLowerCase().trim();
   if (!q) return history;
+
+  let dateCond = null;
+  let textQ = q;
+
+  if (q.startsWith('date:')) {
+    const rest = q.slice(5).trim();
+    const firstToken = rest.split(/\s+/)[0] || '';
+    const dateParsed = parseDateQuery(firstToken);
+    // date: 模式必须日期开头，非日期 = 无匹配（2026-09-03 用户定）
+    if (!dateParsed) return [];
+    dateCond = dateParsed;
+    // 剩余词作为内容过滤（可为空 = 只按日期）
+    textQ = rest.slice(firstToken.length).trim();
+  } else if (/^(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})$/.test(q)) {
+    dateCond = parseDateQuery(q);
+    textQ = '';
+  }
+
   return history.filter(item => {
+    if (dateCond) {
+      if (dateCond.key) {
+        if (itemDayKey(item.timestamp) !== dateCond.key) return false;
+      } else if (new Date(item.timestamp).getFullYear() !== dateCond.year) {
+        return false;
+      }
+    }
+    if (!textQ) return true;
     const text = (item.text || item.preview || item.name || '').toLowerCase();
-    return text.includes(q);
+    if (text.includes(textQ)) return true;
+    // 内容未命中 → 尝试入库时间文本（YYYY-MM-DD HH:MM:SS），支持按时间定位条目
+    const d = new Date(item.timestamp);
+    const fullTime = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    return fullTime.includes(textQ);
   });
 }
 

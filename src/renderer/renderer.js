@@ -377,7 +377,7 @@ function buildDateDivider(date, ctx) {
   div.className = 'date-divider';
   // label 只有翻译词/数字日期，无用户输入，innerHTML 安全
   div.innerHTML = `<span class="date-divider-line"></span>` +
-    `<span class="  "></span>` +
+    `<span class="date-divider-label"></span>` +
     `<span class="date-divider-line"></span>`;
   div.querySelector('.date-divider-label').textContent = label;
   return div;
@@ -417,12 +417,16 @@ function renderHistory(container, history, handlers, ctx) {
   let lastDayKey = null;
   for (const item of history) {
     // 每天之间的分界线：自然日变化时插入组头（搜索过滤后空组自然消失，
-    // 因为组头基于实际显示的条目计算）
+    // 因为组头基于实际显示的条目计算）。
+    // 防御：timestamp 缺失/无效的脏数据不参与分组（避免 NaN-NaN-NaN 标签），
+    // 条目本身仍正常渲染。
     const d = new Date(item.timestamp);
-    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    if (dayKey !== lastDayKey) {
-      lastDayKey = dayKey;
-      container.appendChild(buildDateDivider(d, ctx));
+    if (!isNaN(d.getTime())) {
+      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (dayKey !== lastDayKey) {
+        lastDayKey = dayKey;
+        container.appendChild(buildDateDivider(d, ctx));
+      }
     }
 
     const type = item.type || 'text';
