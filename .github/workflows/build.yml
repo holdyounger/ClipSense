@@ -37,13 +37,15 @@ jobs:
           set -euo pipefail
           node --check src/main/clipboard-monitor.js
           node --check src/main/edge-detector.js
+          node --check src/main/focus-tracker.js
           node --check src/main/index.js
-          node --check src/main/input-simulator.js
+          node --check src/main/paste-bridge.js
           node --check src/main/storage.js
           node --check src/renderer/i18n.js
           node --check src/renderer/main.js
           node --check src/renderer/preload.js
           node --check src/renderer/renderer.js
+          node --check src/renderer/slide-anim.js
 
   build-windows:
     name: Build (Windows)

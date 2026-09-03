@@ -190,12 +190,17 @@ clipboard-spike/
 │   │   ├── clipboard-monitor.js   # 剪贴板读取、分类、去重、历史和回写
 │   │   ├── storage.js             # 历史与图片持久化、safeStorage 加密
 │   │   ├── edge-detector.js       # 贴边、自动隐藏、推出动画和触发条
-│   │   └── input-simulator.js     # Windows Ctrl+V 键盘事件注入
+│   │   ├── paste-bridge.js        # koffi FFI（user32）焦点恢复 + SendInput 粘贴注入
+│   │   └── focus-tracker.js       # 目标窗口焦点跟踪（供粘贴回原窗口）
+│   ├── common/
+│   │   └── link-utils.js          # URL 识别（入库时提取 item.links）
 │   └── renderer/
 │       ├── index.html             # 面板页面
 │       ├── main.css               # 面板样式
 │       ├── main.js                # 搜索、固定、倒计时和窗口交互
 │       ├── renderer.js            # 历史条目类型化渲染
+│       ├── i18n.js                # 国际化字典（中/英）
+│       ├── slide-anim.js          # 滑入/滑出 CSS 动画
 │       ├── preload.js             # contextBridge 安全桥接
 │       ├── app-icon.png           # Windows 应用图标（256×256）
 │       └── tray-icon.png          # 托盘图标（16×16）
@@ -214,9 +219,9 @@ clipboard-spike/
 | **Electron clipboard** | 读取和写入系统剪贴板 |
 | **Electron nativeImage** | 图片剪贴板读取与写入 |
 | **Electron safeStorage** | 历史数据和图片加密 |
-| **Electron shell** | Explorer 文件定位 |
+| **Electron shell** | Explorer 文件定位、默认浏览器打开链接 |
+| **koffi（FFI）** | 绑定 user32/kernel32：SendInput 粘贴注入、焦点恢复、修饰键等待 |
 | **electron-builder** | Windows NSIS 安装包构建 |
-| **PowerShell user32.dll** | 发送一次 `Ctrl+V`，避免额外原生 npm 依赖 |
 
 ### IPC 通信架构
 
@@ -229,7 +234,8 @@ contextBridge（preload.js）
         ├── ClipboardMonitor：读取、归档和回写
         ├── HistoryStorage：持久化与加密
         ├── EdgeDetector：窗口显示、隐藏和边缘触发
-        └── input-simulator：Windows Ctrl+V 注入
+        ├── FocusTracker：目标窗口焦点记录（粘贴回原窗口）
+        └── PasteBridge：焦点恢复 + SendInput 粘贴注入（koffi FFI）
 ```
 
 主要 IPC：
@@ -304,13 +310,15 @@ clip-history-config.json     历史上限等配置
 ```bash
 node --check src/main/clipboard-monitor.js
 node --check src/main/edge-detector.js
+node --check src/main/focus-tracker.js
 node --check src/main/index.js
-node --check src/main/input-simulator.js
+node --check src/main/paste-bridge.js
 node --check src/main/storage.js
 node --check src/renderer/i18n.js
 node --check src/renderer/main.js
 node --check src/renderer/preload.js
 node --check src/renderer/renderer.js
+node --check src/renderer/slide-anim.js
 git diff --check
 ```
 
