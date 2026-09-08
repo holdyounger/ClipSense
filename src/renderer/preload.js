@@ -40,4 +40,7 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   verifyPinned: () => ipcRenderer.invoke('verify-pinned'),
   blurSearch: () => ipcRenderer.invoke('blur-search'),
   focusSearch: () => ipcRenderer.invoke('focus-search'),
+
+  // ========== 诊断（命中偏移排查，定位后可移除） ==========
+  diagHit: (data) => ipcRenderer.send('diag-hit', data),
 });

@@ -399,6 +399,27 @@ appEl.addEventListener('mouseleave', () => {
   window.clipboardAPI.mouseLeave();
 });
 
+// ========== 命中偏移诊断（2026-09-08，定位后可移除） ==========
+// 目的：对比「渲染层认为的光标位置」与「OS 实际光标位置」，
+// delta 非零 = 输入坐标换算错位（DPI/child hwnd/命中缓存类问题）。
+let _diagLast = 0;
+document.addEventListener('mousemove', (e) => {
+  const now = Date.now();
+  if (now - _diagLast < 400) return;
+  _diagLast = now;
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  window.clipboardAPI.diagHit({
+    clientX: e.clientX,
+    clientY: e.clientY,
+    screenX: e.screenX,
+    screenY: e.screenY,
+    winScreenX: window.screenX,
+    winScreenY: window.screenY,
+    dpr: window.devicePixelRatio,
+    el: el ? `${el.tagName}${el.id ? '#' + el.id : ''}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : ''}` : 'null',
+  });
+}, { passive: true });
+
 // ========== 窗口拖拽 ==========
 // 使用 CSS -webkit-app-region: drag 原生拖拽（同步 KeySense），
 // 由 Electron 系统原生管理窗口位置/尺寸，不会出现 JS 手动 setPosition 的漂移变大问题。

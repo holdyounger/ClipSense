@@ -425,6 +425,32 @@ class ClipboardSpikeApp {
       if (this.edgeDetector) this.edgeDetector.onMouseLeaveDebounced();
     });
 
+    // ========== 命中偏移诊断（2026-09-08，定位后可移除） ==========
+    // 对比三层坐标系：OS 物理光标 → screen API (DIP) → Chromium 输入事件
+    // delta 非零 = 某层换算错位；正常时完全静默
+    ipcMain.on('diag-hit', (event, d) => {
+      try {
+        const cursor = screen.getCursorScreenPoint();
+        const b = this.mainWindow.getBounds();
+        const expClientX = cursor.x - b.x;
+        const expClientY = cursor.y - b.y;
+        const dClientX = d.clientX - expClientX;
+        const dClientY = d.clientY - expClientY;
+        const dScreenX = d.screenX - cursor.x;
+        const dScreenY = d.screenY - cursor.y;
+        const dWinX = d.winScreenX - b.x;
+        const dWinY = d.winScreenY - b.y;
+        if (Math.abs(dClientX) > 1 || Math.abs(dClientY) > 1
+          || Math.abs(dScreenX) > 1 || Math.abs(dScreenY) > 1 || Math.abs(dWinX) > 1) {
+          const line = `[DiagHit] 偏移! clientΔ=(${dClientX},${dClientY}) screenΔ=(${dScreenX},${dScreenY}) winΔ=(${dWinX},${dWinY}) `
+            + `client=(${d.clientX},${d.clientY}) cursorMain=(${cursor.x},${cursor.y}) winBounds=(${b.x},${b.y},${b.width}x${b.height}) `
+            + `dpr=${d.dpr} el=${d.el}`;
+          console.log(line);
+          event.sender.executeJavaScript(`console.log(${JSON.stringify(line)})`).catch(() => {});
+        }
+      } catch (err) { /* 诊断失败不影响功能 */ }
+    });
+
     // 搜索输入期间挂起自动隐藏（键盘活跃优先于鼠标离开，18:42）
     ipcMain.on('set-search-active', (event, active) => {
       if (this.edgeDetector) this.edgeDetector.setSearchActive(active);

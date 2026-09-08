@@ -214,6 +214,17 @@ class EdgeDetector {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     if (this.isWindowVisible && !this._showAnimationId) return;
 
+    // 同步置可见标记：原先在异步 prepare 回调里才置 true，
+    // 轮询的 100ms 空窗期内鼠标若静止在触发条热区上，会用 getBounds()（隐藏窗口也能取到）
+    // 误判 isOverTrigger → 重复重入 _showWindow，prepare/'in' 动画链互踩。
+    this.isWindowVisible = true;
+    // 触发条状态与实际对齐（原 resetMouseStateAfterShortcutShow 下沉至此，
+    // 覆盖所有弹出路径：启动/边缘触发/快捷键/托盘）。若弹出前鼠标恰在热区上，
+    // _wasOverTrigger/_suppressTriggerUntilLeave 卡住会让轮询持续干扰交互
+    // → 固定按钮/菜单点不动（18:21 实验证实的机制）。
+    this._suppressTriggerUntilLeave = false;
+    this._wasOverTrigger = false;
+
     // 在 show() 抢走焦点之前记录原目标窗口，供双击粘贴恢复。
     if (this._onShown) this._onShown();
 
@@ -276,8 +287,11 @@ class EdgeDetector {
     ).then(() => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
       this.mainWindow.showInactive();
-      this.isWindowVisible = true;
       this._lastIsOverPanel = false;
+      // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
+      // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
+      // （移出再移回才恢复）。1px 抖动强制系统重算光标下窗口。
+      this._forceCursorHoverRefresh();
 
       // 2. 显示后下一帧滑入，CSS transition 接管动画。
       // _showAnimationId 兼作过渡锁（toggle 用它判断动画中）。
@@ -297,10 +311,49 @@ class EdgeDetector {
       this._showAnimationId = null;
       this._hiddenAtPos = null;
       this.mainWindow.showInactive();
-      this.isWindowVisible = true;
+      this._forceCursorHoverRefresh();
     });
 
     console.log(`[EdgeDetector] 弹出窗口 (x=${targetX}, y=${targetY}, edge=${edge})`);
+  }
+
+  /**
+   * 弹出后若光标恰好落在窗口范围内（弹出界面在鼠标 hover 区域），
+   * Windows 对「新出现在静止光标下方的窗口」不会主动补发 WM_MOUSEMOVE，
+   * 导致渲染层收不到 mouseenter、OS hover 命中也不刷新，固定按钮/菜单栏
+   * 点击无响应（鼠标移出再移回才能恢复）。
+   *
+   * 修复：窗口 1px 水平抖动再复位，强制系统重新计算光标下的窗口并补发
+   * mouse-move → 渲染层 mouseenter 正常触发，交互状态全部对齐。
+   * （纯 Electron 实现，窗口 bounds 变化与 CSS 滑入动画互不干扰）
+   */
+  _forceCursorHoverRefresh() {
+    if (process.platform !== 'win32') return;
+    try {
+      const point = screen.getCursorScreenPoint();
+      const b = this.mainWindow.getBounds();
+      const inside = point.x >= b.x && point.x <= b.x + b.width
+        && point.y >= b.y && point.y <= b.y + b.height;
+      if (!inside) return; // 光标不在窗口上，无需刷新
+      // ① Chromium 输入注入：绕过 OS stale hit-test，直接给渲染层合成 mousemove
+      // → mouseenter/mouseover 正常触发，hover/交互状态立即对齐
+      try {
+        this.mainWindow.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: Math.round(point.x - b.x),
+          y: Math.round(point.y - b.y),
+        });
+      } catch (e) { /* 注入失败不阻断 */ }
+      // ② 窗口 1px 抖动强制 OS 重算光标下窗口并补发原生 WM_MOUSEMOVE
+      this.mainWindow.setBounds({ ...b, x: b.x + 1 });
+      setTimeout(() => {
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+          this.mainWindow.setBounds({ ...b });
+        }
+      }, 32);
+    } catch (err) {
+      // 刷新失败不影响显示，静默降级
+    }
   }
 
   _getNearestEdgeForPoint(x, display) {
@@ -554,11 +607,13 @@ class EdgeDetector {
   }
 
   /**
-   * 快捷键弹出后重置鼠标位置状态：快捷键弹出绕过了触发条 hover 流程，
-   * 若弹出瞬间鼠标恰在触发条热区上，_wasOverTrigger/_suppressTriggerUntilLeave
-   * 会卡在 true（系统在等一个永远不会发生的「离开触发条」事件），
-   * 轮询用错误状态持续干扰交互 → 固定按钮/菜单点不动（18:21 实验证实）。
-   * 弹出后面板就在鼠标下，鼠标位置状态以实际为准：全部重置。
+   * 快捷键弹出后重置鼠标位置状态（2026-09-08 已下沉到 _showWindow 统一执行，
+   * 此处保留为幂等兜底，行为一致：只清触发条相关卡死状态）。
+   * 注意：不置 _lastIsOverPanel=true、不清 hideTimer——
+   * 若鼠标不在面板上（快捷键弹出但鼠标没动），置 true 会让轮询永远认为
+   * 鼠标在面板上，自动隐藏永不触发 → Alt+V 隐藏体验回帰（18:26 回归）。
+   * 只清触发条相关的卡死状态（17:52 实锤的按钮点不动根因），其余交给轮询
+   * 的 isOverPanel 实时判定（它用 getBounds 算，不受快捷键路径影响）。
    */
   resetMouseStateAfterShortcutShow() {
     this._suppressTriggerUntilLeave = false;

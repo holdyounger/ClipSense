@@ -81,6 +81,10 @@ html, body {
   gap: 6px;
   align-items: center;
   flex-shrink: 0;
+  /* 整个按钮簇显式排除出 drag 命中体系：原先只有单个按钮 no-drag，
+     按钮 gap/徽章区域仍继承 header 的 drag，Windows 上 drag/no-drag
+     边界命中判定有偏差时按钮点击会落在 drag 区（点不动/要偏移到特定角落才响应） */
+  -webkit-app-region: no-drag;
 }
 
 .header button {

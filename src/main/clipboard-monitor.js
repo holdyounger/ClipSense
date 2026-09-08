@@ -7,6 +7,7 @@
  * 本模块：
  * - 定时读取剪贴板文本
  * - 与上次内容做 hash 比对，变化则归档一条历史
+ * - 已存在的内容再次被复制：不重复归档，改为刷新时间戳并置顶（Ditto/CopyQ 同款）
  * - 图片暂记 size 标记（本 spike 只验证文本链路）
  */
 
@@ -225,9 +226,10 @@ class ClipboardMonitor {
 
   /**
    * 单次检测：读剪贴板，变化则归档
+   * @param {boolean} allowBump 已存在内容是否允许置顶（启动同步传 false，保持恢复顺序）
    * @returns {{changed: boolean, item: Object|null}}
    */
-  tick() {
+  tick(allowBump = true) {
     // 回写抑制窗口内：跳过归档（我们自己写的剪贴板内容不算用户复制）
     if (Date.now() < this._suppressUntil) return { changed: false, item: null };
     // 抑制刚结束的第一帧：重建基线 hash 为当前剪贴板内容（抑制期间的内容已被 consume），
@@ -262,8 +264,12 @@ class ClipboardMonitor {
     }
     this._lastHash = hash;
 
-    // 去重：整个会话内已出现过的内容不再重复归档
+    // 去重：整个会话内已出现过的内容不再重复归档，
+    // 改为「刷新时间戳 + 置顶」——用户重新复制旧内容 = 最近使用（2026-09-08 需求）
     if (this._seenHashes.has(hash)) {
+      if (allowBump) {
+        return this._bumpExisting(hash);
+      }
       return { changed: false, item: null };
     }
     this._seenHashes.add(hash);
@@ -290,6 +296,41 @@ class ClipboardMonitor {
   rebaseAfterPaste() {
     if (Date.now() < this._suppressUntil) return;  // 已在抑制窗口内，无需重复
     this._suppressUntil = Date.now() + 1500;
+  }
+
+  /**
+   * 已存在条目再次被复制：刷新时间戳并移到列表顶部（已在顶部时仅刷新时间）
+   * @param {string} hash 内容 hash（用于在历史中定位原条目）
+   * @returns {{changed: boolean, item: Object|null}}
+   */
+  _bumpExisting(hash) {
+    const idx = this.history.findIndex(item => {
+      const src = this._hashSourceOfItem(item);
+      return src !== undefined && src !== null && src !== '' && this._hash(src) === hash;
+    });
+    if (idx === -1) return { changed: false, item: null };
+    const item = this.history[idx];
+    item.timestamp = Date.now();
+    if (idx > 0) {
+      this.history.splice(idx, 1);
+      this.history.unshift(item);
+    }
+    this._persist();
+    return { changed: true, item };
+  }
+
+  /**
+   * 单条历史条目的内容 hash 源（与 tick 的去重源保持一致）
+   * @param {Object} item 历史条目
+   * @returns {string|undefined} 可哈希的内容源；无法哈希返回 undefined
+   */
+  _hashSourceOfItem(item) {
+    switch (item.type) {
+      case 'image': return item.dataUrl;
+      case 'file': return item.uriList;
+      case 'rich-text': return item.html || item.plainText;
+      default: return item.text;
+    }
   }
 
   /**
@@ -516,13 +557,7 @@ class ClipboardMonitor {
       // 重建去重集合：恢复的条目不应在下次复制时被重复归档
       this._seenHashes = new Set();
       for (const item of this.history) {
-        const hashSource = item.type === 'image'
-          ? item.dataUrl
-          : item.type === 'file'
-            ? item.uriList
-            : item.type === 'rich-text'
-              ? (item.html || item.plainText)
-              : item.text;
+        const hashSource = this._hashSourceOfItem(item);
         if (hashSource !== undefined && hashSource !== null && hashSource !== '') {
           this._seenHashes.add(this._hash(hashSource));
         }
@@ -576,13 +611,13 @@ class ClipboardMonitor {
    * 目的：每次启动都检查系统剪贴板，把「历史里没有的新数据」同步进来。
    * 依赖 tick() 的去重逻辑：
    *   - _lastHash 为 null（尚未读过），读到剪贴板内容会走到 _seenHashes 判断
-   *   - 内容已同步过 → _seenHashes 命中，跳过（保持原位）
+   *   - 内容已同步过 → _seenHashes 命中，跳过（allowBump=false，保持恢复顺序）
    *   - 内容是新的 → 归档到顶部
    *
    * @returns {{changed: boolean, item: Object|null}}
    */
   syncNow() {
-    const result = this.tick();
+    const result = this.tick(false);
     if (result.changed && this.onChange) {
       this.onChange(result.item, this.history);
     }
