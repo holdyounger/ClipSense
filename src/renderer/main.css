@@ -78,7 +78,7 @@ html, body {
 
 .header-actions {
   display: flex;
-  gap: 6px;
+  gap: 8px; /* 公共修正基线 2026-09-10：8px 统一间距（原 6px） */
   align-items: center;
   flex-shrink: 0;
   /* 整个按钮簇显式排除出 drag 命中体系：原先只有单个按钮 no-drag，
@@ -88,18 +88,37 @@ html, body {
 }
 
 .header button {
-  padding: 4px 10px;
+  padding: 0; /* 图标钮固定尺寸自撑，内边距归零避免 28px 内容区被挤压（下拉项自带 padding 覆盖） */
   border: 1px solid rgba(255,255,255,0.3);
   background: rgba(255,255,255,0.15);
   color: #fff;
-  border-radius: 5px;
+  border-radius: 7px; /* 公共修正基线：容器短边 25%，与 #app 8px 同族 */
   cursor: pointer;
   font-size: 11px;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
 
+/* 三档 hover/active（公共基线）：bg 0.15 / 0.24 / 0.30 + active 回弹缩放 */
 .header button:hover {
-  background: rgba(255,255,255,0.28);
+  background: rgba(255,255,255,0.24);
+  border-color: rgba(255,255,255,0.45);
+}
+
+.header button:active {
+  background: rgba(255,255,255,0.30);
+}
+
+.search-btn:active,
+.pin-btn:active,
+.menu-btn:active {
+  transform: scale(0.96);
+}
+
+/* 键盘焦点可见性（公共基线）：紫色描边环 */
+.header button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(162, 155, 254, 0.8);
 }
 
 /* 更多菜单（下拉） */
@@ -109,13 +128,16 @@ html, body {
 }
 
 .menu-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  line-height: 1;
+}
+
+.menu-btn-icon {
+  width: 16px;
+  height: 16px;
 }
 
 .dropdown-menu {
@@ -157,22 +179,23 @@ html, body {
   color: #ff6b6b;
 }
 
-/* 固定按钮 */
+/* 固定按钮（公共基线 28×28） */
 .pin-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  color: rgba(255,255,255,0.5);
+  color: rgba(255,255,255,0.5); /* B-1 静止态：空心 icon 白 50% 描边 */
 }
 
 .pin-icon {
   position: absolute;
-  width: 18px;
-  height: 18px;
-  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s;
+}
 }
 
 .pin-icon--unpinned { opacity: 1; }
@@ -196,51 +219,165 @@ html, body {
   100% { transform: scale(1); }
 }
 
-/* 倒计时徽章：用 visibility/opacity 切换（保持占位，避免 header 高度跳变） */
-.countdown-badge {
-  visibility: hidden;
+/* ========== 倒计时环形入固定按钮（UI 方案 B，2026-09-10） ========== */
+/* pin 三态：.cd-running（环形进度+环心秒数）/ 静止（空心 icon，现状）/ .pinned（实心紫+光晕，现状）。
+   倒计时徽标已从 header-actions 移除（空洞根治，右簇恒 28×3+8×2=100px）。
+   环参数：cx=cy=14 r=12，周长 75.4，dashoffset = 75.4 × (1−剩余比例)，由 main.js 同步。 */
+.pin-ring {
+  position: absolute;
+  left: -1px; /* 抵消 1px 边框：svg 28×28 精确覆盖按钮 border-box（abspos 包含块 = padding box） */
+  top: -1px;
+  width: 28px;
+  height: 28px;
   opacity: 0;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 9px;
-  background: rgba(255, 107, 107, 0.2);
-  border: 1px solid rgba(255, 107, 107, 0.4);
-  border-radius: 20px;
-  font-size: 11px;
-  color: #ff9999;
-  flex-shrink: 0;
-  height: 22px;
-  box-sizing: border-box;
-  transition: opacity 0.2s, visibility 0.2s;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
-.countdown-badge.visible {
-  visibility: visible;
+.pin-ring-track {
+  stroke: rgba(255, 255, 255, 0.25);
+}
+
+.pin-ring-progress {
+  stroke: rgba(255, 255, 255, 0.85);
+  transition: stroke 0.15s ease;
+}
+
+.pin-cd-num {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+/* .cd-running：环与数字 150ms 交叉淡入替代 icon（反向同理） */
+.pin-btn.cd-running .pin-ring,
+.pin-btn.cd-running .pin-cd-num {
   opacity: 1;
+}
+
+.pin-btn.cd-running .pin-icon {
+  opacity: 0;
+}
+
+/* B-2 运行态专属三档：hover bg 0.18 + 环提亮；active scale 0.95 */
+.pin-btn.cd-running:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.pin-btn.cd-running:hover .pin-ring-progress {
+  stroke: #fff;
+}
+
+.pin-btn.cd-running:active {
+  transform: scale(0.95);
+}
+
+/* 紧迫感分级：≤10s 环/数字转 #ff9999 + 1s 脉冲；≤5s 加速 0.5s（cd-urgent 隐含 cd-warn） */
+.pin-btn.cd-running.cd-warn .pin-ring-progress {
+  stroke: #ff9999;
+}
+
+.pin-btn.cd-running.cd-warn .pin-cd-num {
+  color: #ff9999;
+}
+
+.pin-btn.cd-running.cd-warn .pin-ring,
+.pin-btn.cd-running.cd-warn .pin-cd-num {
   animation: countdownPulse 1s ease-in-out infinite;
 }
 
-.countdown-icon {
-  font-size: 10px;
-}
-
-.countdown-number {
-  font-weight: 700;
-  font-size: 12px;
-  min-width: 16px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  display: inline-block;
-}
-
-.countdown-unit {
-  font-size: 10px;
-  opacity: 0.8;
+.pin-btn.cd-running.cd-urgent .pin-ring,
+.pin-btn.cd-running.cd-urgent .pin-cd-num {
+  animation-duration: 0.5s;
 }
 
 @keyframes countdownPulse {
   0%, 100% { opacity: 0.9; }
   50% { opacity: 0.6; }
+}
+
+/* ========== header 搜索展开态（2026-09-10 搜索体验优化） ========== */
+/* 收起态：零占位（flex-basis 0% + grow 0 + opacity 0 + 不可点击）；
+   展开态（.header.search-open）：title/倒计时徽标让位，输入框 flex-grow 占满 header 中部。
+   150ms 纯 CSS 过渡（flex-grow 数字可插值 + opacity + margin），零新依赖。 */
+.header-search {
+  flex: 0 1 0%;
+  min-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  margin-right: 0;
+  /* 输入框容器必须 no-drag：否则展开态点击输入框落在 header 的 drag 区，
+     变成拖窗口手势——点击无法聚焦、鼠标无法定位光标（2026-09-10 实机 BUG 根因之一） */
+  -webkit-app-region: no-drag;
+  transition: flex-grow 0.15s ease, opacity 0.15s ease, margin-right 0.15s ease;
+}
+
+.header.search-open .header-search {
+  flex-grow: 1;
+  opacity: 1;
+  pointer-events: auto;
+  margin-right: 8px;
+}
+
+.header-search input {
+  width: 100%;
+  height: 28px; /* 公共基线：与按钮同高成组 */
+  box-sizing: border-box;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3); /* 边框透明度与按钮一致 */
+  border-radius: 7px;
+  outline: none;
+  /* header 整体 user-select:none，输入框需要可选中/可编辑 */
+  user-select: text;
+}
+
+.header-search input::placeholder {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.header-search input:focus {
+  border-color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 展开态：title 让位（display:none 释放空间，360px 宽度让渡；pin/menu 保持可见可点）。
+   倒计时已入 pin 按钮（方案 B），展开态保留 pin 内倒计时（B-4），无徽标引用。 */
+.header.search-open h1 {
+  display: none;
+}
+
+/* 搜索入口按钮（header-actions 最左，公共基线 28×28；icon 色值统一 #fff，取消 0.75 透明度） */
+.search-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.search-btn-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.header.search-open .search-btn {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.5);
 }
 
 .hint {
@@ -746,44 +883,12 @@ html, body {
   flex-shrink: 0;
 }
 
-/* 原搜索+统计行原样保留为一行 */
+/* 搜索框已上移 header（2026-09-10）：本行仅剩统计，保持右对齐（原搜索框右侧位） */
 .footer-main {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-}
-
-.search-box {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.search-box:focus-within {
-  border-color: var(--accent);
-}
-
-.search-icon {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.search-box input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  outline: none;
-}
-
-.search-box input::placeholder {
-  color: var(--muted);
 }
 
 .stats {

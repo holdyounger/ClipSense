@@ -56,8 +56,12 @@ class ClipboardSpikeApp {
       backgroundColor: '#00000000',
       // 先不抢占启动时的前台窗口；由 EdgeDetector.showInactive() 显示。
       show: false,
-      // 不成为前台窗口：鼠标点击面板时，原目标窗口仍保持焦点，Ctrl+V 可直接发送给它。
-      focusable: false,
+      // 2026-09-10 焦点模型回切：改回标准可聚焦窗口——实机三轮验证不夺焦模型
+      //（NOACTIVATE + setFocusable 按需切换）与搜索键盘交互根本冲突：Ctrl+F/
+      // 打字/输入法全部不可达。粘贴不受影响：PasteBridge 在面板显示前记录原
+      // 前台窗口，双击时原子恢复+注入（2026-09-02 恢复路径保留并回归验证）；
+      // 边缘自动显示仍走 showInactive 不抢焦点。
+      // focusable: false,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -66,9 +70,10 @@ class ClipboardSpikeApp {
     });
 
     this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-    // 鼠标点击不激活面板：目标窗口自始至终保持焦点（用户洞察 2026-09-02，
-    // 这是「双击粘贴失败」的本质修复——之前全部恢复逻辑都在为被抢走焦点打补丁）。
-    this._applyNoActivate(this.mainWindow);
+    // 2026-09-10 焦点模型回切：不再强制 NOACTIVATE——实机三轮验证不夺焦模型
+    // 与搜索键盘交互（Ctrl+F/打字/输入法）根本冲突。双击粘贴的焦点恢复由
+    // PasteBridge 原子恢复+注入承担。如需回滚：恢复下一行调用即可。
+    // this._applyNoActivate(this.mainWindow);
 
     // 独立的边缘触发条窗口。窗口本身只有 6px 宽、与 header 同高，命中区域与可见条完全一致。
     this.triggerWindow = new BrowserWindow({
@@ -286,6 +291,9 @@ class ClipboardSpikeApp {
         this.edgeDetector.toggle();
         if (this.edgeDetector.isWindowVisible) {
           this.pushHistory();
+          // 2026-09-10 焦点模型回切：显式唤出（Alt+V）后面板持键盘焦点——
+          // Ctrl+F/打字立即可用；双击粘贴由 PasteBridge 原子恢复目标前台。
+          if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.focus();
           // 快捷键弹出可能覆盖鼠标当前位置：重置触发条抑制/悬停状态，
           // 否则弹出位置恰在鼠标覆盖区域时按钮点不动（18:21 实验证实的卡死机制）
           this.edgeDetector.resetMouseStateAfterShortcutShow();
@@ -420,9 +428,7 @@ class ClipboardSpikeApp {
       // ② 双击不收面板（用户决策 2026-09-02）：保留面板支持连续操作；
       // 句柄生命周期跟面板走（setOnHidden 时 clear），不随单次粘贴清除。
       // 5 分钟过期由 getHwnd 内部处理；外部窗口切换由 pasteTo 的 IsWindow 校验兜底。
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        this.mainWindow.setFocusable(false);
-      }
+      // 2026-09-10 焦点模型回切：窗口恒为可聚焦，粘贴后不再切回不可聚焦。
       if (!result.ok) {
         // 粘贴失败时面板保持显示：用户可直接重试或改用单击复制，不打断操作流
         console.warn(`[Spike] 选中条目粘贴失败: ${result.error}`);
@@ -459,21 +465,28 @@ class ClipboardSpikeApp {
         : { isCountingDown: false, remainingMs: null };
     });
 
-    // 搜索框需要键盘焦点；仅在用户明确点击搜索框时临时允许主窗口获取焦点。
+    // 搜索框需要键盘焦点。2026-09-10 焦点模型回切：窗口恒为可聚焦，show() 保证
+    // 从后台唤起场景的前台激活，focus() 聚焦渲染层视图。
+    // [focus-debug] 临时埋点：实机定位焦点链断点用（验收后随渲染层埋点一并移除）。
     ipcMain.handle('focus-search', () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
-      this.mainWindow.setFocusable(true);
+      console.log('[focus-debug] main: IPC focus-search begin');
+      this.mainWindow.show();
+      console.log('[focus-debug] main: show() done');
+      this.mainWindow.moveTop();
       this.mainWindow.focus();
+      this.mainWindow.webContents.focus();
+      console.log('[focus-debug] main: focus chain done');
       // focus() 会触发渲染层 focus 事件 → setSearchActive(true)，
-      // 但若 focus 事件丢失（NOACTIVATE 窗口焦点路径不稳），这里兜底挂起
+      // 若 focus 事件丢失，这里兜底挂起
       if (this.edgeDetector) this.edgeDetector.setSearchActive(true);
       return true;
     });
 
-    // 搜索框失焦后关回不可聚焦，恢复“面板不抢焦点”常态（Ditto/CopyQ 模型的辅助措施）。
+    // 搜索框失焦：恢复自动隐藏（2026-09-10 焦点模型回切：不再切回不可聚焦——
+    // setFocusable(false) 会让下一次 focusSearch 重新走不可靠的激活路径）。
     ipcMain.handle('blur-search', () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
-      this.mainWindow.setFocusable(false);
       // 搜索结束：恢复自动隐藏（与渲染层 blur 事件双保险，18:42）
       if (this.edgeDetector) this.edgeDetector.setSearchActive(false);
       return true;
@@ -647,8 +660,7 @@ class ClipboardSpikeApp {
     this.edgeDetector.start();
     // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。
     this.edgeDetector.forceShow();
-    // 默认不抢目标窗口焦点；搜索框点击时由 focus-search IPC 按需开启。
-    this.mainWindow.setFocusable(false);
+    // 2026-09-10 焦点模型回切：窗口恒为可聚焦（原 setFocusable(false) 移除）。
 
     // 启动时从磁盘恢复历史（重启不丢失）
     const restoredCount = this.monitor.loadFromStorage();

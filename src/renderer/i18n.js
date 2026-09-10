@@ -24,6 +24,7 @@ const I18N = {
     yesterday: '昨天',
     backTop: '返回顶部',
     searchPlaceholder: '搜索 内容或日期（date:昨天）...',
+    searchBtn: '搜索',
     statCount: (n) => `${n} 项`,
     statFiltered: (shown, total) => `${shown} / ${total} 项`,
     // 自动打标签（2026-09-09）：标签名与筛选条文案
@@ -60,6 +61,7 @@ const I18N = {
     yesterday: 'Yesterday',
     backTop: 'Back to top',
     searchPlaceholder: 'Search text or date (date:yesterday)...',
+    searchBtn: 'Search',
     statCount: (n) => `${n} items`,
     statFiltered: (shown, total) => `${shown} / ${total} items`,
     // Auto tags (2026-09-09): tag names and filter bar labels

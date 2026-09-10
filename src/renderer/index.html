@@ -11,12 +11,19 @@
   <div id="app">
     <header class="header" id="header">
       <h1 id="title">ClipSense</h1>
+      <!-- header 搜索（2026-09-10 搜索体验优化）：收起态零占位，展开态 flex 占满中部
+           （title/倒计时徽标让位，main.css .header.search-open 控制） -->
+      <div class="header-search">
+        <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
+      </div>
       <div class="header-actions">
-        <span class="countdown-badge" id="countdownBadge">
-          <span class="countdown-icon">⏱</span>
-          <span class="countdown-number" id="countdownNumber">5</span>
-          <span class="countdown-unit">s</span>
-        </span>
+        <!-- 搜索入口：点击展开/收起（header-actions 最左，拍板 #3），与 pin/menu 同风格描边图标 -->
+        <button id="searchBtn" class="search-btn" title="搜索">
+          <svg class="search-btn-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
+            <line x1="15.8" y1="15.8" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
         <button id="pinBtn" class="pin-btn" title="固定窗口">
           <svg class="pin-icon pin-icon--unpinned" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/>
@@ -26,10 +33,24 @@
             <circle cx="12" cy="12" r="9" fill="#a29bfe" opacity="0.9"/>
             <circle cx="12" cy="12" r="4" fill="#fff"/>
           </svg>
+          <!-- 倒计时环形进度（UI 方案 B 2026-09-10）：.cd-running 时与 icon 150ms 交叉淡入。
+               轨道+进度双圆 cx=cy=14 r=12，周长 2π×12≈75.4（dasharray 同值），
+               rotate(-90) 使进度从 12 点方向顺时针消退；dashoffset 由 main.js updateCountdownDisplay 同步 -->
+          <svg class="pin-ring" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle class="pin-ring-track" cx="14" cy="14" r="12" fill="none" stroke-width="2"/>
+            <circle class="pin-ring-progress" id="pinRingProgress" cx="14" cy="14" r="12" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="75.4" stroke-dashoffset="0" transform="rotate(-90 14 14)"/>
+          </svg>
+          <span class="pin-cd-num" id="pinCdNum" aria-hidden="true"></span>
         </button>
-        <!-- 更多菜单按钮 -->
+        <!-- 更多菜单按钮（公共基线：⋮ 字符改 3 点 SVG，16×16 渲染后 r=1.6px / 垂直间距 5px） -->
         <div class="menu-wrap">
-          <button id="menuBtn" class="menu-btn" title="菜单">⋮</button>
+          <button id="menuBtn" class="menu-btn" title="菜单">
+            <svg class="menu-btn-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="12" cy="4.5" r="2.4" fill="currentColor"/>
+              <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+              <circle cx="12" cy="19.5" r="2.4" fill="currentColor"/>
+            </svg>
+          </button>
           <div class="dropdown-menu" id="dropdownMenu">
             <button class="dropdown-item" id="menuLangBtn">切换语言</button>
             <button class="dropdown-item dropdown-item--danger" id="menuClearBtn">清空历史</button>
@@ -54,13 +75,10 @@
       </svg>
     </button>
 
-    <!-- 底部状态栏：搜索 + 统计（.footer-main）+ 标签筛选条（#tagFilter，无标签时 hidden） -->
+    <!-- 底部状态栏：统计（.footer-main，搜索框已上移 header 2026-09-10）
+         + 标签筛选条（#tagFilter，无标签时 hidden，位置不变） -->
     <footer class="footer" id="footer">
       <div class="footer-main">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
-        </div>
         <div class="stats" id="stats">
           <span id="statCount">0 项</span>
         </div>

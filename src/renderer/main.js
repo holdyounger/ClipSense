@@ -52,6 +52,10 @@ function applyStaticText() {
   menuLangBtn.textContent = t('menuLang');
   menuClearBtn.textContent = t('menuClear');
   searchInput.placeholder = t('searchPlaceholder');
+  // 搜索入口 tooltip（经 getElementById 取用：applyStaticText 在脚本顶部即被调用，
+  // 此时下方搜索区的 const searchBtn 尚在 TDZ，不能直接引用）
+  const searchBtnEl = document.getElementById('searchBtn');
+  if (searchBtnEl) searchBtnEl.title = t('searchBtn');
   backTopBtn.title = t('backTop');
   backTopBtn.setAttribute('aria-label', t('backTop'));
 
@@ -371,17 +375,91 @@ menuClearBtn.addEventListener('click', async () => {
   await refresh();
 });
 
-// ========== 搜索 ==========
-// 主窗口默认 focusable:false；用户点击搜索框时按需开启焦点。
+// ========== 搜索（2026-09-10 体验优化：入口上移 header，图标点击展开） ==========
+// 主窗口默认 focusable:false（src/main/index.js 零改动）；键盘输入只在 focus-search
+// IPC 之后到达渲染层，自动隐藏联动复用 focusSearch / blurSearch / setSearchActive 链路。
+//
+// 状态机：收起态（输入框 0 宽不可达）⇄ 展开态（输入框 flex 占满 header 中部，
+// title/倒计时徽标让位，main.css .header.search-open）。
+//
+// 收起即清词（拍板 #2 统一规则）：输入框 blur / 点击 header 外区域 / Esc / 再点图标——
+// 任何收起路径一律 searchQuery='' + input.value='' + refresh()，列表回到未过滤态，
+// 杜绝「列表被过滤但看不到搜索框」的隐形过滤不一致。不隐藏窗口。
+const headerEl = document.getElementById('header');
+const searchBtn = document.getElementById('searchBtn');
+let searchOpen = false; // header 搜索展开态
+
+/** 光标移到输入框末尾（Ctrl+F 语义：已有词仅重新聚焦，不清词） */
+function setCursorToEnd() {
+  const len = searchInput.value.length;
+  if (typeof searchInput.setSelectionRange === 'function') {
+    try { searchInput.setSelectionRange(len, len); } catch (_) { /* 非可编辑元素等场景忽略 */ }
+  }
+}
+
+/**
+ * 进入展开态。
+ * @param {object} [opts]
+ * @param {boolean} [opts.focus=true] 是否走 focusSearch IPC + 输入框聚焦；
+ *   false = 仅视觉展开（重显自洽规则），绝不抢焦点、不触发 setSearchActive。
+ */
+async function openSearch({ focus = true } = {}) {
+  if (!searchOpen) {
+    searchOpen = true;
+    headerEl.classList.add('search-open');
+  }
+  if (!focus) return;
+  // 先等主进程 setFocusable(true)+focus() 完成，再做 DOM 聚焦（不夺焦架构的时序要求）
+  try {
+    await window.clipboardAPI.focusSearch();
+  } catch (_) { /* IPC 异常不阻塞聚焦尝试 */ }
+  // [focus-debug] 临时埋点（2026-09-10 实机 Ctrl+F/输入不响应排查：定位焦点链断点，验收后移除）
+  const _aeBefore = document.activeElement;
+  console.log('[focus-debug] renderer: before input.focus(), activeElement =',
+    _aeBefore ? (_aeBefore.id || _aeBefore.tagName) : 'null');
+  searchInput.focus();
+  const _aeAfter = document.activeElement;
+  console.log('[focus-debug] renderer: after input.focus(), activeElement =',
+    _aeAfter ? (_aeAfter.id || _aeAfter.tagName) : 'null');
+  setCursorToEnd();
+}
+
+/**
+ * 收起并清词（任何收起路径统一出口；幂等，可重入）。
+ * blurSearch + setSearchActive(false) 恢复自动隐藏倒计时（与主进程双保险链路一致）。
+ */
+function collapseSearch() {
+  if (!searchOpen && searchQuery === '') return; // 幂等短路（blur 重入不再重复走 IPC）
+  searchOpen = false;
+  searchQuery = '';
+  headerEl.classList.remove('search-open');
+  searchInput.value = '';
+  refresh(); // 列表回到未过滤态（async，fire-and-forget）
+  // 输入框若仍持焦则主动失焦（真实 DOM：已失焦时 .blur() 不再派发 blur 事件，无重入）
+  searchInput.blur();
+  window.clipboardAPI.blurSearch();
+  window.clipboardAPI.setSearchActive(false);
+}
+
+/**
+ * Esc：展开态 = 清词+收起+恢复自动隐藏（一次完成）；未展开 = 无动作；
+ * IME 组合中（e.isComposing）忽略；标签筛选态不受影响（独立维度，拍板 #1）。
+ */
+function handleSearchEscape(e) {
+  // 仅响应 Esc（2026-09-10 实机 BUG2 根因：此函数挂在输入框 keydown 上却缺按键
+  // 检查——打字的每个字母都触发清词收起。不夺焦时代按键不可达故潜伏，焦点模型
+  // 回切后引爆）。keyCode 27 兼容旧派发路径。
+  if (e.key !== 'Escape' && e.keyCode !== 27) return;
+  if (e.isComposing) return;
+  if (!searchOpen) return;
+  if (typeof e.preventDefault === 'function') e.preventDefault();
+  collapseSearch();
+}
+
+// 主窗口默认 focusable:false；点击输入框时按需开启焦点（原链路保留：
+// 覆盖重显自洽态下直接点输入框的场景）
 searchInput.addEventListener('pointerdown', () => {
   window.clipboardAPI.focusSearch();
-});
-
-// 失焦时通知主进程关回 focusable，双击粘贴不再依赖 simulate-input 里的补救。
-searchInput.addEventListener('blur', () => {
-  window.clipboardAPI.blurSearch();
-  // 搜索结束：恢复自动隐藏（若鼠标仍在外则立即走正常倒计时）
-  window.clipboardAPI.setSearchActive(false);
 });
 
 // 聚焦/输入期间挂起自动隐藏：用户正在打字，鼠标移出不应隐藏面板（18:42）
@@ -389,11 +467,79 @@ searchInput.addEventListener('focus', () => {
   window.clipboardAPI.setSearchActive(true);
 });
 
+// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
+// 例外：blur 落在搜索图标上（pointerdown preventDefault 失效时的兜底），
+// 由图标 click toggle 接管，避免「blur 先收起、click 再展开」竞态。
+// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
+// 例外一：blur 落在搜索图标上（pointerdown preventDefault 失效时的兑底）。
+// 例外二（2026-09-10 实机 BUG2「任意输入都收起」）：IME 组合、窗口失活、
+// setFocusable(true⇄false) 激活切换都会在输入框持焦期间派发 blur，但 DOM 焦点
+// 实际未转移（activeElement 仍是输入框或仍在 header 内）——这类「伪 blur」不收起，
+// 避免打字/输入法过程被误清词。真实焦点转移（activeElement 离开 header）才收起；
+// 鼠标点击 header 外的非焦点区由 document click-outside 处理器兑底收起。
+searchInput.addEventListener('blur', () => {
+  if (document.activeElement === searchBtn) return;
+  if (document.activeElement === searchInput) return;
+  if (document.activeElement && headerEl.contains(document.activeElement)) return;
+  collapseSearch();
+});
+
 searchInput.addEventListener('input', () => {
   searchQuery = searchInput.value;
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
   updateStats();
+});
+
+// Esc：输入框持焦时直接接住；document 级兕底覆盖「展开但未持焦」（重显自洽态）。
+// 两处都触发时，先到者已把 searchOpen 置 false，后者幂等短路，单次执行。
+searchInput.addEventListener('keydown', handleSearchEscape);
+
+// document 级键盘：
+// 1) Esc 兕底（见上，未展开时 handleSearchEscape 内部直接返回，无动作）；
+// 2) Ctrl+F 直达搜索——面板持键盘焦点期间生效（不夺焦架构属性：无焦点时按键物理
+//    不可达属预期，落到前台应用；不做 globalShortcut，不做唤出自动聚焦）。
+//    已有词时仅重新聚焦（光标到末尾），不清词。
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || e.keyCode === 27) handleSearchEscape(e);
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF' && !e.isComposing) {
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    openSearch();
+  }
+});
+
+// 搜索图标：pointerdown 阻止默认聚焦转移（避免输入框 blur 先行收起、click 再展开
+// 的竞态；取消 pointerdown 不影响 click 派发）；click 做 toggle——
+// 展开且持焦 = 收起（清词），否则展开/恢复主动搜索并聚焦。
+searchBtn.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+});
+
+searchBtn.addEventListener('click', (e) => {
+  e.stopPropagation(); // 不冒泡到「header 外点击收起」逻辑
+  if (searchOpen && document.activeElement === searchInput) {
+    collapseSearch();
+  } else {
+    openSearch();
+  }
+});
+
+// 面板任意处按下 → 按需启用键盘焦点（2026-09-10 实机 BUG1「Ctrl+F 不响应」修复）：
+// 不夺焦架构下键盘事件只在面板持焦后可达，此前仅搜索框/图标两条路径启用——用户
+// 唤出后直接按 Ctrl+F 或点击列表再按，物理不可达。现扩展为面板任意 pointerdown
+// 都走 focusSearch（幂等：setFocusable(true)+focus+webContents.focus 重复调用无
+// 副作用）。不夺焦承诺不变：Alt+V 唤出仍不自动聚焦，仅用户显式点击面板才启用；
+// 双击粘贴由 paste-bridge 双击瞬间重抓目标前台，不受影响（实机回归项）。
+document.addEventListener('pointerdown', () => {
+  window.clipboardAPI.focusSearch();
+});
+
+// 点击 header 外区域收起（展开但未持焦态的主要收起路径；持焦态由 blur 先行收起，
+// 此处幂等）。header 内点击（含 pin/menu/输入框/图标本身）不在此收起。
+document.addEventListener('click', (e) => {
+  if (!searchOpen) return;
+  if (headerEl.contains(e.target)) return;
+  collapseSearch();
 });
 
 // ========== 标签筛选条：容器委托点击（全量重建不丢监听） ==========
@@ -414,6 +560,12 @@ tagFilterEl.addEventListener('click', (e) => {
 // ⚠ Windows 实机验证点；若不触发，fallback = 主进程 show 路径推 window-shown IPC。
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  // 重显自洽（2026-09-10 拍板 #2 配套规则）：搜索词非空 → 搜索框自动视觉展开
+  // 但不抢焦点（不调 focusSearch、不触发 setSearchActive），保证
+  // 「列表过滤态与搜索框可见性」强一致；窗口隐藏不是收起路径，词保留。
+  if (searchQuery.trim() !== '') {
+    openSearch({ focus: false });
+  }
   const had = activeTagFilter !== null;
   activeTagFilter = null;
   renderTagFilter();
@@ -470,16 +622,22 @@ window.clipboardAPI.onHistoryUpdated((history) => {
   updateStats();
 });
 
-// ========== 倒计时显示（同步 KeySense） ==========
-const countdownBadge = document.getElementById('countdownBadge');
-const countdownNumber = document.getElementById('countdownNumber');
+// ========== 倒计时显示（方案 B：环形入固定按钮，2026-09-10） ==========
+// 倒计时徽标已从 header-actions 移除（空洞根治）；倒计时改由 pinBtn 三态表达：
+// .cd-running（环形进度 + 环心秒数）/ 静止（空心 icon，现状）/.pinned（实心紫+光晕，现状）。
+// 主进程协议零改动：仍消费 countdown-update（isCountingDown/remainingMs）。
+const pinRingProgress = document.getElementById('pinRingProgress');
+const pinCdNum = document.getElementById('pinCdNum');
+const PIN_RING_CIRCUMFERENCE = 75.4; // 2π×12，与 index.html 进度圆 dasharray 保持一致
+let countdownTotalMs = 0; // 本次倒计时总时长（首拍记录，续期取 max；静止/固定时清零）
 
 function handleCountdownUpdate(data) {
   const isCountingDown = data.isCountingDown;
   const remaining = data.remainingMs;
 
   if (isCountingDown && remaining !== null && remaining > 0) {
-    countdownBadge.classList.add('visible');
+    // 环形比例基准：倒计时启动（或续期延长）时记录总时长，max 兜底保持比例不越界
+    countdownTotalMs = Math.max(countdownTotalMs, remaining);
     updateCountdownDisplay(remaining);
 
     if (!countdownInterval) {
@@ -504,11 +662,24 @@ function handleCountdownUpdate(data) {
 }
 
 function updateCountdownDisplay(remainingMs) {
-  countdownNumber.textContent = Math.max(0, Math.ceil(remainingMs / 1000));
+  const secs = Math.max(0, Math.ceil(remainingMs / 1000));
+  pinCdNum.textContent = String(secs); // 环心秒数
+  // 环形进度：dashoffset = 周长 × (1 − 剩余比例)，从 12 点顺时针消退（rotate(-90) 固化在 SVG 属性）
+  if (pinRingProgress && countdownTotalMs > 0) {
+    const ratio = Math.min(1, Math.max(0, remainingMs / countdownTotalMs));
+    pinRingProgress.style.strokeDashoffset = (PIN_RING_CIRCUMFERENCE * (1 - ratio)).toFixed(2);
+  }
+  // 三态 + 紧迫感分级：≤10s .cd-warn；≤5s .cd-urgent（隐含 warn，CSS 里只改脉冲时长）
+  pinBtn.classList.add('cd-running');
+  pinBtn.classList.toggle('cd-warn', secs <= 10);
+  pinBtn.classList.toggle('cd-urgent', secs <= 5);
 }
 
 function hideCountdown() {
-  countdownBadge.classList.remove('visible');
+  // 回到静止/已固定图标态：清理环形三态类并复位进度环
+  pinBtn.classList.remove('cd-running', 'cd-warn', 'cd-urgent');
+  countdownTotalMs = 0;
+  if (pinRingProgress) pinRingProgress.style.strokeDashoffset = '0';
 }
 
 window.clipboardAPI.onCountdownUpdate(handleCountdownUpdate);
