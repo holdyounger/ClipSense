@@ -149,6 +149,56 @@ function fileIcon(name) {
 }
 
 /**
+ * 标签 chips 展示常量（2026-09-09 自动打标签；v2 2026-09-10 扩 12 类）。
+ * 顺序与 src/common/tag-utils.js 的 TAG_PRIORITY 保持一致（识别在主进程完成，
+ * 渲染层只消费 item.tags；此处仅为防御性重排与白名单过滤，不重复识别）。
+ */
+const TAG_DISPLAY_PRIORITY = [
+  'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
+  'ip', 'hash', 'link', 'email', 'snippet', 'path',
+];
+/** 条目上最多展示的 chip 数，超出以 "+N" 溢出计数 */
+const TAG_CHIPS_MAX = 2;
+
+/**
+ * 构建条目标签 chips（纯展示 span，非 button；筛选入口只有筛选条，scope 纪律）。
+ * 过滤 disabled 类型（ctx.enabledTags）→ 按 TAG_PRIORITY 取前 TAG_CHIPS_MAX 个 + "+N"。
+ * @param {Object} item 历史条目（text 类才有 item.tags）
+ * @param {Object} ctx 渲染上下文 { t, enabledTags?: Set<string>|null }
+ * @returns {HTMLElement|null} 无可见标签时返回 null
+ */
+function buildTagChips(item, ctx) {
+  const tags = Array.isArray(item.tags) ? item.tags : [];
+  if (tags.length === 0) return null;
+  const allowed = (ctx && ctx.enabledTags) ? ctx.enabledTags : null;
+  const visible = tags
+    .filter(id => TAG_DISPLAY_PRIORITY.includes(id))
+    .filter(id => !allowed || allowed.has(id));
+  if (visible.length === 0) return null;
+  visible.sort((a, b) =>
+    TAG_DISPLAY_PRIORITY.indexOf(a) - TAG_DISPLAY_PRIORITY.indexOf(b));
+  const shown = visible.slice(0, TAG_CHIPS_MAX);
+  const overflow = visible.length - shown.length;
+
+  const wrap = document.createElement('span');
+  wrap.className = 'tag-chips';
+  for (const id of shown) {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip' + (id === 'sensitive' ? ' tag-chip--sensitive' : '');
+    chip.textContent = ctx.t(tagI18nKey(id));
+    wrap.appendChild(chip);
+  }
+  if (overflow > 0) {
+    const more = document.createElement('span');
+    more.className = 'tag-chip tag-chip--more';
+    more.textContent = '+' + overflow;
+    more.title = visible.slice(TAG_CHIPS_MAX).map(id => ctx.t(tagI18nKey(id))).join('、');
+    wrap.appendChild(more);
+  }
+  return wrap;
+}
+
+/**
  * 各条目类型的 DOM 构建器。
  * 每个 builder 返回 { previewEl, metaText, extraEls }。
  * 后续新增类型只需在此注册。
@@ -441,7 +491,13 @@ function renderHistory(container, history, handlers, ctx) {
 
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = metaText || '';
+    // meta 行 = meta-text（原 metaText 文案）+ 标签 chips（2026-09-09 自动打标签）
+    const metaTextEl = document.createElement('span');
+    metaTextEl.className = 'meta-text';
+    metaTextEl.textContent = metaText || '';
+    meta.appendChild(metaTextEl);
+    const chipsEl = buildTagChips(item, ctx);
+    if (chipsEl) meta.appendChild(chipsEl);
     // 悬停查看完整入库时间（列表内只显日期+时分秒，跨天条目日期已可见）
     meta.title = new Date(item.timestamp).toLocaleString(undefined, { hour12: false });
 

@@ -29,6 +29,8 @@ class ClipboardSpikeApp {
       intervalMs: 600,
       maxHistory: this.storage.getMaxHistory(),
       storage: this.storage,
+      // 自动打标签设置注入（2026-09-09）：识别时 disabled 类直接跳过
+      tagOptions: this.storage.getTagSettings(),
     });
     this.edgeDetector = null;
   }
@@ -146,6 +148,10 @@ class ClipboardSpikeApp {
         label: '历史上限',
         submenu: this._buildMaxHistorySubmenu(),
       },
+      {
+        label: '自动打标签',
+        submenu: this._buildTagSettingsSubmenu(),
+      },
       { type: 'separator' },
       { label: '退出', click: () => app.exit(0) },
     ]));
@@ -190,6 +196,74 @@ class ClipboardSpikeApp {
         if (this.edgeDetector) this.edgeDetector.setHideDelay(opt.value);
       },
     }));
+  }
+
+  /**
+   * 构建「自动打标签」子菜单（总开关 + 分隔线 + 12 标签三组独立开关，v2 2026-09-10）
+   *
+   * 分组：基础（链接/邮箱/验证码）｜开发（命令行/堆栈日志/配置/IP 地址/哈希指纹/文件路径）｜安全（敏感信息/漏洞编号）。
+   * 语义 = AND(总开关, 单项)；不做动态置灰（避免整菜单重建复杂度）。
+   * 关闭语义：仅影响「展示与继续打标」，已打数据保留，重开即恢复。
+   * 文案沿托盘既有惯例硬编码中文（托盘当前无 i18n，既有债务，不在本期扩散）。
+   */
+  _buildTagSettingsSubmenu() {
+    const s = this.storage.getTagSettings();
+    const apply = (next) => {
+      this.storage.setTagSettings(next);
+      this.monitor.setTagOptions(next);
+      this.pushHistory();
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('tag-settings-updated', next);
+      }
+    };
+    const items = [
+      {
+        label: '总开关',
+        type: 'checkbox',
+        checked: s.enabled !== false,
+        click: (menuItem) => {
+          const cur = this.storage.getTagSettings();
+          apply({ ...cur, enabled: menuItem.checked });
+        },
+      },
+      { type: 'separator' },
+    ];
+    // v2 12 类三组分隔线（拍板 #3：平铺 + 分隔线，非二级菜单）
+    const tagGroups = [
+      [ // 基础（v1 通用类；代码片段为 v1 粗桶，随 v1 标签留在本组，凑齐 12 项，见交付报告偏离记录）
+        { id: 'link', label: '链接' },
+        { id: 'email', label: '邮箱' },
+        { id: 'otp', label: '验证码' },
+        { id: 'snippet', label: '代码片段' },
+      ],
+      [ // 开发（结构类，v2 新增除 path 外含 cmd/stack/config/ip/hash）
+        { id: 'cmd', label: '命令行' },
+        { id: 'stack', label: '堆栈日志' },
+        { id: 'config', label: '配置' },
+        { id: 'ip', label: 'IP 地址' },
+        { id: 'hash', label: '哈希指纹' },
+        { id: 'path', label: '文件路径' },
+      ],
+      [ // 安全
+        { id: 'sensitive', label: '敏感信息' },
+        { id: 'vuln', label: '漏洞编号' },
+      ],
+    ];
+    tagGroups.forEach((group, gi) => {
+      if (gi > 0) items.push({ type: 'separator' });
+      for (const def of group) {
+        items.push({
+          label: def.label,
+          type: 'checkbox',
+          checked: !s.tags || s.tags[def.id] !== false,
+          click: (menuItem) => {
+            const cur = this.storage.getTagSettings();
+            apply({ ...cur, tags: { ...cur.tags, [def.id]: menuItem.checked } });
+          },
+        });
+      }
+    });
+    return items;
   }
 
   toggleWindow() {
@@ -373,6 +447,9 @@ class ClipboardSpikeApp {
       this.monitor.clear();
       return this.monitor.getHistory();
     });
+
+    // 自动打标签设置（渲染层启动拉取；变更经 tag-settings-updated 广播）
+    ipcMain.handle('get-tag-settings', () => this.storage.getTagSettings());
 
     // ========== 倒计时 ==========
 

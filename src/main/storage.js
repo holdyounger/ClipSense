@@ -248,19 +248,51 @@ class HistoryStorage {
   }
 
   /**
+   * 配置文件路径（clip-history-config.json，与历史数据分离的轻量配置）
+   */
+  _getConfigPath() {
+    return path.join(app.getPath('userData'), 'clip-history-config.json');
+  }
+
+  /**
+   * 读取配置文件（read-modify-write 的读半）。
+   * 文件缺失/损坏/非法 JSON → 返回 {}（调用方各自回落默认值）。
+   * @returns {Object}
+   */
+  _readConfig() {
+    const configPath = this._getConfigPath();
+    if (!fs.existsSync(configPath)) return {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch (err) {
+      console.error(`[Storage] 读取配置失败: ${err.message}`);
+    }
+    return {};
+  }
+
+  /**
+   * 合并写入配置（read-modify-write 的写半，复用原子写）。
+   * 修复历史隐患：旧 setMaxHistory 用 { maxHistory } 整文件覆写，
+   * 同文件其他配置（如 tagSettings）会被清掉；统一走本方法后不再发生。
+   * @param {Object} patch 要合并的增量字段
+   */
+  _writeConfig(patch) {
+    const config = { ...this._readConfig(), ...patch };
+    try {
+      this._atomicWrite(this._getConfigPath(), JSON.stringify(config, null, 2));
+    } catch (err) {
+      console.error(`[Storage] 保存配置失败: ${err.message}`);
+    }
+  }
+
+  /**
    * 更新最大历史上限（持久化到独立配置，供用户选择）
    * @param {number} max
    */
   setMaxHistory(max) {
     this.maxHistory = max;
-    // 简单 config 文件存储
-    const config = { maxHistory: max };
-    const configPath = path.join(app.getPath('userData'), 'clip-history-config.json');
-    try {
-      this._atomicWrite(configPath, JSON.stringify(config, null, 2));
-    } catch (err) {
-      console.error(`[Storage] 保存配置失败: ${err.message}`);
-    }
+    this._writeConfig({ maxHistory: max });
   }
 
   /**
@@ -268,17 +300,74 @@ class HistoryStorage {
    * @returns {number}
    */
   getMaxHistory() {
-    const configPath = path.join(app.getPath('userData'), 'clip-history-config.json');
-    if (!fs.existsSync(configPath)) return this.maxHistory;
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (config && typeof config.maxHistory === 'number') {
-        return config.maxHistory;
-      }
-    } catch (err) {
-      console.error(`[Storage] 读取配置失败: ${err.message}`);
+    const config = this._readConfig();
+    if (config && typeof config.maxHistory === 'number') {
+      return config.maxHistory;
     }
     return this.maxHistory;
+  }
+
+  /**
+   * 自动打标签默认设置（总开关 + 逐标签开关，2026-09-09；
+   * v2 2026-09-10 扩到 12 类，方案 §3.2/§3.3，全部默认开）
+   */
+  static get DEFAULT_TAG_SETTINGS() {
+    return {
+      enabled: true,
+      tags: {
+        link: true, email: true, otp: true, snippet: true, sensitive: true,
+        vuln: true, cmd: true, stack: true, config: true,
+        ip: true, hash: true, path: true,
+      },
+    };
+  }
+
+  /**
+   * 读取标签设置（与默认值合并，存量/手改配置缺 key 时回落默认）。
+   * v2 存量兼容：老配置只存 5 键 → 展开后 7 个新键自动补 true（缺省即开）。
+   * @returns {{enabled: boolean, tags: Object<string, boolean>}}
+   */
+  getTagSettings() {
+    const def = HistoryStorage.DEFAULT_TAG_SETTINGS;
+    const saved = this._readConfig().tagSettings;
+    const src = (saved && typeof saved === 'object') ? saved : {};
+    const savedTags = (src.tags && typeof src.tags === 'object') ? src.tags : {};
+    return {
+      enabled: src.enabled !== false,
+      tags: {
+        ...def.tags,
+        ...savedTags,
+      },
+    };
+  }
+
+  /**
+   * 保存标签设置（合并写入，不影响同文件其他配置）
+   * @param {{enabled: boolean, tags: Object<string, boolean>}} settings
+   */
+  setTagSettings(settings) {
+    if (!settings || typeof settings !== 'object') return;
+    this._writeConfig({ tagSettings: settings });
+  }
+
+  /**
+   * 标签 schema 版本（2026-09-10 v2 标签集扩展引入，方案 §5）。
+   * 语义：缺省视为 1（v1 五类引擎产物）；v2 全量重迁移完成后写 2，
+   * 二次启动读到 ≥2 直接跳过迁移（幂等，验收 5）。
+   * @returns {number}
+   */
+  getTagSchemaVersion() {
+    const v = this._readConfig().tagSchemaVersion;
+    return (typeof v === 'number' && v >= 1) ? v : 1;
+  }
+
+  /**
+   * 写入标签 schema 版本（合并写入，不影响同文件其他配置）
+   * @param {number} v
+   */
+  setTagSchemaVersion(v) {
+    if (typeof v !== 'number' || v < 1) return;
+    this._writeConfig({ tagSchemaVersion: v });
   }
 }
 

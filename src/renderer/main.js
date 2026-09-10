@@ -20,6 +20,16 @@ let countdownInterval = null;
 let searchQuery = '';
 let fullHistory = []; // 完整历史（未过滤）
 
+// ========== 自动打标签（2026-09-09） ==========
+const tagFilterEl = document.getElementById('tagFilter');
+// 标签展示顺序（与 src/common/tag-utils.js 的 TAG_PRIORITY 保持一致，v2 12 类）
+const TAG_ORDER = [
+  'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
+  'ip', 'hash', 'link', 'email', 'snippet', 'path',
+];
+let activeTagFilter = null; // null | tagId；窗口隐藏不销毁页面，visibilitychange 时显式重置
+let tagSettings = null;     // 最近一次 { enabled, tags }；null = 尚未拉取（全部视为可用，降级开放）
+
 // 初始化国际化
 initLang();
 applyStaticText();
@@ -101,6 +111,7 @@ const renderCtx = {
   t,
   timeStr,
   flashItem,
+  enabledTags: null, // Set<tagId> | null（null = 全部可用）；由 applyTagSettings 维护
 };
 
 const renderHandlers = {
@@ -184,8 +195,13 @@ function itemDayKey(ts) {
  * 3) 其余按内容文本匹配
  */
 function filterHistory(history) {
+  let list = history;
+  // 标签筛选（前置交集）：标签 ∩ 搜索子串 ∩ date:（2026-09-09 自动打标签）
+  if (activeTagFilter) {
+    list = list.filter(item => Array.isArray(item.tags) && item.tags.includes(activeTagFilter));
+  }
   const q = searchQuery.toLowerCase().trim();
-  if (!q) return history;
+  if (!q) return list;
 
   let dateCond = null;
   let textQ = q;
@@ -204,7 +220,7 @@ function filterHistory(history) {
     textQ = '';
   }
 
-  return history.filter(item => {
+  return list.filter(item => {
     if (dateCond) {
       if (dateCond.key) {
         if (itemDayKey(item.timestamp) !== dateCond.key) return false;
@@ -236,10 +252,93 @@ function updateStats() {
   }
 }
 
+// ========== 自动打标签：筛选条与设置（2026-09-09） ==========
+
+/**
+ * 计算当前启用的标签集合
+ * @returns {Set<string>|null} null = 设置未拉取，降级视为全部可用
+ */
+function computeEnabledTagIds() {
+  if (!tagSettings) return null;
+  if (tagSettings.enabled === false) return new Set();
+  const tags = tagSettings.tags || {};
+  const enabled = new Set();
+  for (const id of TAG_ORDER) {
+    if (tags[id] !== false) enabled.add(id);
+  }
+  return enabled;
+}
+
+/**
+ * 渲染底部标签筛选条（全量重建 + 容器委托，PROJECT.md 硬性结论）。
+ * chip 集 = fullHistory 实际存在标签 ∩ enabled 设置；「全部」恒在；无 chip 时整体 hidden。
+ */
+function renderTagFilter() {
+  if (!tagFilterEl) return;
+  const present = new Set();
+  for (const item of fullHistory) {
+    if (Array.isArray(item.tags)) {
+      for (const id of item.tags) {
+        if (TAG_ORDER.includes(id)) present.add(id);
+      }
+    }
+  }
+  const enabled = computeEnabledTagIds();
+  const ids = TAG_ORDER.filter(id => present.has(id) && (!enabled || enabled.has(id)));
+  if (ids.length === 0) {
+    tagFilterEl.hidden = true;
+    tagFilterEl.innerHTML = '';
+    return;
+  }
+  tagFilterEl.hidden = false;
+  tagFilterEl.innerHTML = ''; // 全量重建
+  const mkChip = (id, label) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'tag-filter-chip' + (activeTagFilter === id ? ' active' : '');
+    chip.dataset.tag = id || '';
+    chip.textContent = label;
+    return chip;
+  };
+  tagFilterEl.appendChild(mkChip(null, t('filterAll')));
+  for (const id of ids) {
+    tagFilterEl.appendChild(mkChip(id, t(tagI18nKey(id))));
+  }
+}
+
+/**
+ * 应用标签设置（启动拉取 / 托盘变更广播共用入口）：
+ * 更新渲染上下文可见集 → 筛选条与列表重渲染；
+ * 当前筛选的标签被禁用时自动回到「全部」。
+ */
+function applyTagSettings(settings) {
+  tagSettings = (settings && typeof settings === 'object') ? settings : null;
+  const enabled = computeEnabledTagIds();
+  renderCtx.enabledTags = enabled;
+  if (activeTagFilter && (!enabled || !enabled.has(activeTagFilter))) {
+    activeTagFilter = null;
+  }
+  renderTagFilter();
+  renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+  updateStats();
+}
+
+/** 启动时拉取一次标签设置（失败降级为全部可用，不阻塞列表） */
+async function initTagSettings() {
+  try {
+    if (!window.clipboardAPI || typeof window.clipboardAPI.getTagSettings !== 'function') return;
+    const s = await window.clipboardAPI.getTagSettings();
+    applyTagSettings(s);
+  } catch (err) {
+    console.warn('[Tags] 读取标签设置失败（按全部可用降级）:', err && err.message);
+  }
+}
+
 async function refresh() {
   fullHistory = await window.clipboardAPI.getHistory();
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  renderTagFilter();
   updateStats();
 }
 
@@ -297,6 +396,33 @@ searchInput.addEventListener('input', () => {
   updateStats();
 });
 
+// ========== 标签筛选条：容器委托点击（全量重建不丢监听） ==========
+// 同 chip 再点取消回全部；条目上的 tag-chip 是纯展示 span，不参与点击。
+tagFilterEl.addEventListener('click', (e) => {
+  const chip = e.target && e.target.closest ? e.target.closest('.tag-filter-chip') : null;
+  if (!chip || !tagFilterEl.contains(chip)) return;
+  const id = chip.dataset.tag || null;
+  activeTagFilter = (id && activeTagFilter !== id) ? id : null;
+  renderTagFilter();
+  renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+  updateStats();
+});
+
+// ========== 筛选态重置（visibilitychange，零新 IPC） ==========
+// 窗口 hide()/show() 触发 Chromium 页面可见性事件：重新可见时清空标签筛选态
+// 并重渲染（边缘唤出短交互不保留筛选，PRD）。
+// ⚠ Windows 实机验证点；若不触发，fallback = 主进程 show 路径推 window-shown IPC。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const had = activeTagFilter !== null;
+  activeTagFilter = null;
+  renderTagFilter();
+  if (had) {
+    renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+    updateStats();
+  }
+});
+
 // ========== 返回顶部 ==========
 // 监听挂在 listEl 上（renderHistory 只重建 innerHTML，容器本身不重建，监听不丢）。
 // 阈值 120px：列表 barely 滚动时不出按钮，避免和条目操作区视觉拥挤。
@@ -340,6 +466,7 @@ window.clipboardAPI.onHistoryUpdated((history) => {
   fullHistory = history;
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  renderTagFilter();
   updateStats();
 });
 
@@ -424,5 +551,11 @@ document.addEventListener('mousemove', (e) => {
 // 使用 CSS -webkit-app-region: drag 原生拖拽（同步 KeySense），
 // 由 Electron 系统原生管理窗口位置/尺寸，不会出现 JS 手动 setPosition 的漂移变大问题。
 // 无需 JS 手动 mousedown/mousemove 拖拽。
+
+// 自动打标签：启动拉取设置 + 订阅变更（托盘开关下发），随后首刷列表
+initTagSettings();
+if (window.clipboardAPI && window.clipboardAPI.onTagSettingsUpdated) {
+  window.clipboardAPI.onTagSettingsUpdated((s) => applyTagSettings(s));
+}
 
 refresh();

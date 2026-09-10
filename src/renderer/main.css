@@ -568,8 +568,86 @@ html, body {
 }
 
 .meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 4px;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* 标签 chips（纯展示 span，非 button；筛选入口只有筛选条） */
+.tag-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.tag-chip {
+  display: inline-block;
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* 敏感信息：琥珀色中性提示（不做遮罩/模糊，PRD D3） */
+.tag-chip--sensitive {
+  color: #e6a23c;
+  border-color: rgba(230, 162, 60, 0.55);
+}
+
+.tag-chip--more {
+  color: var(--muted);
+}
+
+/* ========== 标签筛选条（搜索框下方一行，无标签存在时整体 hidden） ========== */
+.tag-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* hidden 属性优先级必须高于 .tag-filter 的 display:flex（作者样式会盖过 UA 的 [hidden]） */
+.tag-filter[hidden] {
+  display: none;
+}
+
+.tag-filter::-webkit-scrollbar {
+  display: none;
+}
+
+.tag-filter-chip {
+  flex-shrink: 0;
+  padding: 1px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.tag-filter-chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.tag-filter-chip.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent-hover);
 }
 
 .actions {
@@ -657,15 +735,22 @@ html, body {
   text-decoration: underline;
 }
 
-/* ========== 底部状态栏 ========== */
+/* ========== 底部状态栏（纵向：搜索+统计行 / 标签筛选条行，2026-09-09） ========== */
 .footer {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   background: var(--bg2);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* 原搜索+统计行原样保留为一行 */
+.footer-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .search-box {

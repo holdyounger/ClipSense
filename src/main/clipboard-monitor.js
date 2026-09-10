@@ -32,6 +32,8 @@ class ClipboardMonitor {
     this.intervalId = null;
     /** 持久化存储实例（可选，注入后启用持久化） */
     this.storage = options.storage || null;
+    /** 标签识别选项（{ enabled, tags }，托盘设置下发；null = 全部默认开启，2026-09-09 自动打标签） */
+    this._tagOptions = options.tagOptions || null;
     /** 变化后的持久化回调（由外部注入 storage 后自动设置） */
     this._onPersist = null;
   }
@@ -353,6 +355,15 @@ class ClipboardMonitor {
           const { extractLinks } = require('../common/link-utils');
           links = extractLinks(text);
         } catch (err) { /* 识别失败不影响入库，静默降级 */ }
+        // 自动打标签（2026-09-09）：入库时计算 item.tags。
+        // 失败留白 undefined → 下次启动迁移自愈；无命中显式 null（幂等标记，§5.1）
+        let tags;
+        try {
+          const { computeTags } = require('../common/tag-utils');
+          tags = computeTags(text, { links, enabled: this._tagOptions });
+        } catch (err) {
+          console.warn('[Monitor] computeTags failed:', err.message);
+        }
         return {
           ...base,
           type: 'text',
@@ -363,6 +374,7 @@ class ClipboardMonitor {
             : (text.length > 80 ? text.slice(0, 80) + '…' : text),
           length: text.length,
           ...(links ? { links } : {}),
+          ...(tags !== undefined ? { tags } : {}),
         };
       }
       case 'image': {
@@ -507,6 +519,14 @@ class ClipboardMonitor {
   }
 
   /**
+   * 设置标签识别选项（托盘「自动打标签」下发；识别时 disabled 类直接跳过）
+   * @param {{enabled: boolean, tags: Object<string, boolean>}|null} opts
+   */
+  setTagOptions(opts) {
+    this._tagOptions = opts;
+  }
+
+  /**
    * 获取当前全部历史
    */
   getHistory() {
@@ -554,6 +574,13 @@ class ClipboardMonitor {
       this.history = Array.isArray(items) ? items : [];
       // 迁移：旧数据无 item.links（链接识别 2026-09-01 新增），补算一次并回写
       this._migrateLinks();
+      // 迁移：旧数据无 item.tags（自动打标签 2026-09-09 新增），补算一次并回写。
+      // 迁移始终按「全部标签开启」计算（不传 enabled），保证重开开关后历史数据完整。
+      this._migrateTags();
+      // 迁移：v2 标签集扩展（2026-09-10，5→12 类）——tagSchemaVersion<2 时全量重算。
+      // 与 _migrateTags 幂等叠加：本方法先做 schema 门控全量重算，完成后 _migrateTags
+      // 对残留 undefined（单条识别失败的留白）自愈，二次启动两者均为零工作。
+      this._migrateTagsV2();
       // 重建去重集合：恢复的条目不应在下次复制时被重复归档
       this._seenHashes = new Set();
       for (const item of this.history) {
@@ -562,8 +589,8 @@ class ClipboardMonitor {
           this._seenHashes.add(this._hash(hashSource));
         }
       }
-      // 迁移：旧数据无 links 字段，补算并回写存储
-      this._migrateLinks();
+      // （2026-09-09 清理：此处原有重复的第二处 _migrateLinks() 调用，
+      //  幂等无害但首次启动多一次全量扫描，已删除；新迁移严禁复制该模式）
       // 首次轮询比对基准：保持 null，让启动时的立即 tick() 能把系统剪贴板
       // 里「未同步过的新内容」归档进来（已同步的由 _seenHashes 去重，保持原位）
       this._lastHash = null;
@@ -601,6 +628,88 @@ class ClipboardMonitor {
       }
     } catch (err) {
       console.warn(`[Monitor] 链接标记迁移失败（不影响使用）: ${err.message}`);
+    }
+    return migrated;
+  }
+
+  /**
+   * 历史数据迁移：为无 tags 字段的 text 条目补算标签（幂等）。
+   * 语义（架构 §5.1）：undefined = 未迁移；null = 已识别、无命中；string[] = 已打标。
+   * 迁移结束后一次性 save()；失败静默降级，绝不阻塞入库。
+   * @returns {number} 补算的条目数
+   */
+  _migrateTags() {
+    let migrated = 0;
+    try {
+      const { computeTags } = require('../common/tag-utils');
+      for (const item of this.history) {
+        if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
+        if (item.tags !== undefined) continue; // 幂等：null/数组均视为已处理
+        try {
+          item.tags = computeTags(item.text, { links: item.links });
+          migrated++;
+        } catch (err) {
+          // 单条失败留白 undefined，下次启动迁移重试（自愈）
+        }
+      }
+      if (migrated > 0 && this.storage && typeof this.storage.save === 'function') {
+        this.storage.save(this.history);
+        console.log(`[Monitor] 标签迁移完成: ${migrated} 条已回写存储`);
+      }
+    } catch (err) {
+      console.warn(`[Monitor] 标签迁移失败（不影响使用）: ${err.message}`);
+    }
+    return migrated;
+  }
+
+  /**
+   * 历史数据迁移 v2（2026-09-10 标签集扩展 5→12 类，方案 §5）：
+   * 读 config 中 tagSchemaVersion（缺省 1），<2 时对全部 text 条目按 v2 引擎
+   * 全量重算 tags 并回写，完成后写 2。
+   *
+   * 设计（方案 §5 + 架构 §5.2 先例）：
+   *   - 幂等：版本门控，version≥2 直接返回零工作（验收 5：二次启动不重算）
+   *   - 全量重算（拍板 #6）：按 v2 优先级重排旧标签顺序属预期行为，语义最干净
+   *   - 迁移始终按「全部标签开启」计算（不传 enabled），保证重开开关后历史完整
+   *   - 失败静默降级：整体 try/catch + 逐条防御；任何失败不写版本号，
+   *     下次启动自动重试（自愈）；绝不阻塞入库
+   *   - 末尾一次性 save()（架构 §12 注意事项 3：严禁逐条 save）
+   *   - 隐私红线（验收 8）：只改 item.tags 字段，不触碰加密链路
+   * @returns {number} 重算的条目数
+   */
+  _migrateTagsV2() {
+    const storage = this.storage;
+    let version = 1;
+    try {
+      version = (storage && typeof storage.getTagSchemaVersion === 'function')
+        ? storage.getTagSchemaVersion() : 1;
+    } catch (err) { /* 读失败按未迁移处理，走全量重算 */ }
+    if (version >= 2) return 0;
+
+    let migrated = 0;
+    try {
+      const { computeTags } = require('../common/tag-utils');
+      for (const item of this.history) {
+        if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
+        try {
+          item.tags = computeTags(item.text, { links: item.links });
+          migrated++;
+        } catch (err) {
+          // 单条失败留白 undefined：渲染无 chip（正确降级），_migrateTags 下次启动自愈
+        }
+      }
+      if (migrated > 0 && storage && typeof storage.save === 'function') {
+        storage.save(this.history); // 末尾一次性回写
+      }
+      // 全部成功后才写版本号；写失败仅告警（下次启动重复迁移一次，重算幂等无害）
+      if (storage && typeof storage.setTagSchemaVersion === 'function') {
+        storage.setTagSchemaVersion(2);
+      }
+      if (migrated > 0) {
+        console.log(`[Monitor] 标签 v2 迁移完成: ${migrated} 条已按 12 类引擎重算回写`);
+      }
+    } catch (err) {
+      console.warn(`[Monitor] 标签 v2 迁移失败（不影响使用，下次启动重试）: ${err.message}`);
     }
     return migrated;
   }

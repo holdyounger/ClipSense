@@ -26,6 +26,21 @@ const I18N = {
     searchPlaceholder: '搜索 内容或日期（date:昨天）...',
     statCount: (n) => `${n} 项`,
     statFiltered: (shown, total) => `${shown} / ${total} 项`,
+    // 自动打标签（2026-09-09）：标签名与筛选条文案
+    tagLink: '链接',
+    tagEmail: '邮箱',
+    tagOtp: '验证码',
+    tagSnippet: '代码',
+    tagSensitive: '敏感',
+    // v2 扩展（2026-09-10）：命令行/堆栈日志/配置/IP 地址/哈希指纹/漏洞编号/文件路径
+    tagCmd: '命令行',
+    tagStack: '堆栈日志',
+    tagConfig: '配置',
+    tagIp: 'IP 地址',
+    tagHash: '哈希指纹',
+    tagVuln: '漏洞编号',
+    tagPath: '文件路径',
+    filterAll: '全部',
   },
   en: {
     title: 'ClipSense',
@@ -47,6 +62,21 @@ const I18N = {
     searchPlaceholder: 'Search text or date (date:yesterday)...',
     statCount: (n) => `${n} items`,
     statFiltered: (shown, total) => `${shown} / ${total} items`,
+    // Auto tags (2026-09-09): tag names and filter bar labels
+    tagLink: 'Link',
+    tagEmail: 'Email',
+    tagOtp: 'OTP',
+    tagSnippet: 'Code',
+    tagSensitive: 'Sensitive',
+    // v2 expansion (2026-09-10): Command/Stack/Config/IP/Hash/Vuln ID/Path
+    tagCmd: 'Command',
+    tagStack: 'Stack',
+    tagConfig: 'Config',
+    tagIp: 'IP',
+    tagHash: 'Hash',
+    tagVuln: 'Vuln ID',
+    tagPath: 'Path',
+    filterAll: 'All',
   },
 };
 
@@ -84,6 +114,13 @@ function loadSavedLang() {
 function initLang() {
   const saved = loadSavedLang();
   currentLang = saved || detectLang();
+}
+
+/**
+ * 标签 id → i18n key（link → tagLink；字典为驼峰命名）
+ */
+function tagI18nKey(id) {
+  return 'tag' + String(id).charAt(0).toUpperCase() + String(id).slice(1);
 }
 
 /**

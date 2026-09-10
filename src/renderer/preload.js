@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   blurSearch: () => ipcRenderer.invoke('blur-search'),
   focusSearch: () => ipcRenderer.invoke('focus-search'),
 
+  // ========== 自动打标签设置（2026-09-09） ==========
+  getTagSettings: () => ipcRenderer.invoke('get-tag-settings'),
+  onTagSettingsUpdated: (callback) => {
+    ipcRenderer.on('tag-settings-updated', (event, settings) => callback(settings));
+  },
+
   // ========== 诊断（命中偏移排查，定位后可移除） ==========
   diagHit: (data) => ipcRenderer.send('diag-hit', data),
 });

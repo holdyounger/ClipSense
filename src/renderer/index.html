@@ -54,15 +54,18 @@
       </svg>
     </button>
 
-    <!-- 底部状态栏：搜索 + 统计 -->
+    <!-- 底部状态栏：搜索 + 统计（.footer-main）+ 标签筛选条（#tagFilter，无标签时 hidden） -->
     <footer class="footer" id="footer">
-      <div class="search-box">
-        <span class="search-icon">🔍</span>
-        <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
+      <div class="footer-main">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
+        </div>
+        <div class="stats" id="stats">
+          <span id="statCount">0 项</span>
+        </div>
       </div>
-      <div class="stats" id="stats">
-        <span id="statCount">0 项</span>
-      </div>
+      <div class="tag-filter" id="tagFilter" hidden></div>
     </footer>
   </div>
 
