@@ -30,6 +30,71 @@ const TAG_ORDER = [
 let activeTagFilter = null; // null | tagId；窗口隐藏不销毁页面，visibilitychange 时显式重置
 let tagSettings = null;     // 最近一次 { enabled, tags }；null = 尚未拉取（全部视为可用，降级开放）
 
+// ========== 标签搜索（2026-09-11，[ClipSense] 标签搜索支持） ==========
+// 12 类标签 id → i18n 显示名 key（tagI18nKey 驼峰命名），搜索按显示名与 id 双轨匹配
+const TAG_DISPLAY_KEYS = {
+  sensitive: 'tagSensitive', vuln: 'tagVuln', otp: 'tagOtp', cmd: 'tagCmd',
+  stack: 'tagStack', config: 'tagConfig', ip: 'tagIp', hash: 'tagHash',
+  link: 'tagLink', email: 'tagEmail', snippet: 'tagSnippet', path: 'tagPath',
+};
+
+/** 标签 id → 当前语言显示名（未收录 id 返回 null） */
+function getTagDisplayName(id) {
+  const key = TAG_DISPLAY_KEYS[id];
+  return key ? t(key) : null;
+}
+
+/**
+ * 标签别名索引（懒构建）：显示名/小写显示名/tag id（含小写）→ tagId。
+ * 同一 id 命中优先级：精确显示名 > 小写显示名 > id。
+ */
+let _tagAliasIndex = null;
+function buildTagIndex() {
+  const index = new Map();
+  for (const id of TAG_ORDER) {
+    const display = getTagDisplayName(id);
+    if (display) {
+      index.set(display, id);
+      index.set(display.toLowerCase(), id);
+    }
+    index.set(id, id);
+    index.set(id.toLowerCase(), id);
+  }
+  return index;
+}
+function getTagIndex() {
+  if (!_tagAliasIndex) _tagAliasIndex = buildTagIndex();
+  return _tagAliasIndex;
+}
+
+/**
+ * 解析搜索词中的 #tag 前缀（2026-09-11 标签搜索）：
+ * - `#tagname` / `#tagname query`；tagname 匹配 12 类标签显示名或 tag id（忽略大小写）
+ * - 多个 #tag 允许，语义 = 交集（与筛选条一致）
+ * - 未知 #词 → invalid（上层无匹配；对齐 date: 非日期语义，不做静默 fallback）
+ * - `date:` 段不参与 # 解析（两种前缀互不吞噬）
+ * @returns {{ tagIds: string[], textQ: string, invalid: boolean }}
+ */
+function parseTagQuery(q) {
+  const tagIds = [];
+  const keep = [];
+  let invalid = false;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    if (token.startsWith('date:')) { keep.push(token); continue; }
+    if (token.startsWith('#')) {
+      const name = token.slice(1);
+      if (!name) { invalid = true; continue; } // 裸 # 视为无效词
+      const id = getTagIndex().get(name) || getTagIndex().get(name.toLowerCase());
+      if (!id) { invalid = true; continue; } // 未知标签 → 无匹配
+      if (!tagIds.includes(id)) tagIds.push(id);
+      continue;
+    }
+    keep.push(token);
+  }
+  return { tagIds, textQ: keep.join(' ').trim(), invalid };
+}
+
 // 初始化国际化
 initLang();
 applyStaticText();
@@ -195,8 +260,11 @@ function itemDayKey(ts) {
  * 1) `date:` 前缀 → 第一个词必须是日期（今天/昨天/YY-MM-DD/YYYY-MM-DD/YYYY），
  *    不是日期 → 无匹配；是日期 → 剩余词继续内容过滤（可组合：date:昨天 评审、
  *    date:今天 10:30 —— 内容不含时附带匹配入库时间串，实现按时间定位）
- * 2) 输入整体是日期串（YYYY-MM-DD / MM-DD）→ 自动按日期过滤
- * 3) 其余按内容文本匹配
+ * 2) `#tag` 前缀（2026-09-11 标签搜索）→ 按 12 类标签显示名/id 交集过滤，
+ *    可与 date: 组合（如 `#验证码 date:昨天`）；未知 #tag → 无匹配
+ * 3) 输入整体是日期串（YYYY-MM-DD / MM-DD）→ 自动按日期过滤
+ * 4) 其余按内容文本匹配，OR 标签显示名子串（搜「验证码」能出 otp 标签条目），
+ *    再 OR 入库时间串
  */
 function filterHistory(history) {
   let list = history;
@@ -207,11 +275,15 @@ function filterHistory(history) {
   const q = searchQuery.toLowerCase().trim();
   if (!q) return list;
 
-  let dateCond = null;
-  let textQ = q;
+  // #tag 前缀解析（2026-09-11）：与 date: 交集组合（如 `#验证码 date:昨天`）
+  const { tagIds, textQ: tagRest, invalid } = parseTagQuery(q);
+  if (invalid) return []; // 未知 #tag = 无匹配（对齐 date: 非日期语义）
 
-  if (q.startsWith('date:')) {
-    const rest = q.slice(5).trim();
+  let dateCond = null;
+  let textQ = tagRest;
+
+  if (tagRest.startsWith('date:')) {
+    const rest = tagRest.slice(5).trim();
     const firstToken = rest.split(/\s+/)[0] || '';
     const dateParsed = parseDateQuery(firstToken);
     // date: 模式必须日期开头，非日期 = 无匹配（2026-09-03 用户定）
@@ -219,11 +291,12 @@ function filterHistory(history) {
     dateCond = dateParsed;
     // 剩余词作为内容过滤（可为空 = 只按日期）
     textQ = rest.slice(firstToken.length).trim();
-  } else if (/^(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})$/.test(q)) {
-    dateCond = parseDateQuery(q);
+  } else if (/^(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})$/.test(tagRest)) {
+    dateCond = parseDateQuery(tagRest);
     textQ = '';
   }
 
+  // 条件交集：date:（若在）∩ #tag（若在）∩ 内容/时间/标签名子串（若在）
   return list.filter(item => {
     if (dateCond) {
       if (dateCond.key) {
@@ -232,15 +305,34 @@ function filterHistory(history) {
         return false;
       }
     }
+    // #tag 前缀交集（多 tag = 交集，与筛选条语义一致）
+    if (tagIds.length > 0) {
+      if (!Array.isArray(item.tags)) return false;
+      for (const tid of tagIds) {
+        if (!item.tags.includes(tid)) return false;
+      }
+    }
     if (!textQ) return true;
     const text = (item.text || item.preview || item.name || '').toLowerCase();
-    if (text.includes(textQ)) return true;
+    if (text.includes(textQ)) return true; // 内容命中（OR 第一支）
+    // 标签名命中（2026-09-11 标签搜索）：搜「验证码」能出 otp 标签条目，即使正文不含
+    if (Array.isArray(item.tags)) {
+      for (const tid of item.tags) {
+        const display = getTagDisplayName(tid);
+        if (display && display.toLowerCase().includes(textQ)) return true;
+      }
+    }
     // 内容未命中 → 尝试入库时间文本（YYYY-MM-DD HH:MM:SS），支持按时间定位条目
     const d = new Date(item.timestamp);
     const fullTime = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
       `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     return fullTime.includes(textQ);
   });
+  // TODO（标签自动补全，可选加分项，2026-09-11 暂不实现）：输入框 value 以 # 结尾或
+  // 正在输入 # 后片段时，浮层列出 12 类标签中文名（TAG_ORDER × t(tagI18nKey(id))），
+  // Tab/点击填充为 `#<显示名> `。实现位置：searchInput keydown（Tab 拦截）+ 绝对定位
+  // 浮层元素（须挂 header 内 no-drag 区，点击 mousedown preventDefault 防输入框 blur
+  // 误收起）。约束：零依赖、innerHTML 全量重建、不改伪 blur/Escape/焦点链路。
 }
 
 /**
