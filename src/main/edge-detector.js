@@ -438,8 +438,12 @@ class EdgeDetector {
         height: triggerHeight,
       });
       this.triggerWindow._edge = targetEdge;
+      // 边样式（className/cavity 渐变方向/光珠锚点）统一走注入脚本的
+      // __clipSenseBarApplyEdge（V0.5 真抽屉：单一来源，左右贴边同构）
       this.triggerWindow.webContents.executeJavaScript(
-        `document.getElementById('bar').className = '${targetEdge === 'right' ? 'right' : 'left'}'`
+        `window.__clipSenseBarApplyEdge
+           ? window.__clipSenseBarApplyEdge('${targetEdge === 'right' ? 'right' : 'left'}')
+           : (document.getElementById('bar').className = '${targetEdge === 'right' ? 'right' : 'left'}')`
       ).catch(() => {});
       this.triggerWindow.setIgnoreMouseEvents(false);
       this.triggerWindow.showInactive();

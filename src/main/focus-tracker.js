@@ -39,6 +39,25 @@ class FocusTracker {
     return false;
   }
 
+  /**
+   * 面板抢焦前刷新目标（2026-09-11 双击粘贴回归修复）：
+   * 焦点模型回切后窗口恒可聚焦 + 全局 pointerdown→focusSearch 会在点击面板瞬间
+   * 把前台抢成自身窗口，双击时 captureForeground 被自身过滤→只能回退 tracked。
+   * 因此每次面板即将抢焦（focus-search IPC）都先同步刷一次目标：
+   * 抓到有效窗口则刷新（覆盖用户切窗后的陈旧记录），抓到 0（前台已是自身/瞬态）
+   * 则保留旧记录——与 capture() 不同，**绝不清空**。
+   * @returns {boolean} 是否刷新成功
+   */
+  refresh() {
+    const hwnd = this._bridge ? this._bridge.captureForeground() : 0;
+    if (hwnd > 0) {
+      this._targetHwnd = hwnd;
+      this._trackedAt = Date.now();
+      return true;
+    }
+    return false;
+  }
+
   /** 取当前记录的目标窗口句柄（未记录/过期返回 0）；不清除记录 */
   getHwnd() {
     if (!this._targetHwnd) return 0;

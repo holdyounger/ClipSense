@@ -95,6 +95,51 @@ function parseTagQuery(q) {
   return { tagIds, textQ: keep.join(' ').trim(), invalid };
 }
 
+/**
+ * 入场动画统一入口：prefers-reduced-motion 命中 → 跳过动画直接落位（设计稿通用说明，
+ * 不做 A 方案降级）；否则 V0.3「文档入柜」物理叙事（spring-anim.js）：
+ *   onStart（与下落同步起跑）→ 旧条目推入波（位移 = 新条目实高，让位先于落位）
+ *   onLand（落位帧）→ 落位光晕 + 标签插纸（tag chips 依次插进纸张右缘）。
+ * @param {HTMLElement} el 顶部条目卡片元素
+ * @param {Object} _item  条目数据（预留：后续按类型差异化入场）
+ * @returns {boolean} 是否实际播放
+ */
+function playEntryAnimIfAllowed(el, _item) {
+  if (!el) return false;
+  if (typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return false; // 系统减弱动效：跳过，直接落位（DOM 已在最终位置）
+  }
+  return playEntryAnim(el, {
+    onStart: () => {
+      // 推入波与下落同步起跑：让位先于落位（推入弹簧 420/30 硬于入场 180/14）
+      playSettleWave(listEl);
+    },
+    onLand: () => {
+      playLandingGlow(el); // 落位光晕：纸落入槽位的着地反馈
+      playTagInsert(el);   // 标签插纸：chips 依次插进纸张右缘
+    },
+  });
+}
+
+// ========== 新条目入场动画（V0.3 文档入柜物理叙事，2026-09-12 小M 定稿） ==========
+// 触发判定/贴边补播逻辑见 entry-anim.js（设计稿 Docs/UI方案-新条目动画-2026-09-11.md）。
+// 仅 refresh() 与 onHistoryUpdated 两处数据重建后调 handleRendered；搜索/筛选重渲染
+// 不接（顶部条目 id 不变或 timestamp 陈旧，天然不播）。reduced-motion 在 animate 桥内判定。
+const entryAnim = createEntryAnim({
+  play: ({ el, item }) => playEntryAnimIfAllowed(el, item),
+  visibility: () => document.visibilityState,
+  onPulse: (id) => {
+    // 贴边收起态新内容到达：主进程对 triggerWindow #bar 下发 180ms 一次性脉冲。
+    // IPC 不可达（旧主进程）时静默降级，不影响状态标记与补播链路。
+    try {
+      if (window.clipboardAPI && window.clipboardAPI.requestEntryPulse) {
+        window.clipboardAPI.requestEntryPulse(id);
+      }
+    } catch (_) { /* 降级：仅状态标记，无脉冲 */ }
+  },
+});
+
 // 初始化国际化
 initLang();
 applyStaticText();
@@ -434,6 +479,7 @@ async function refresh() {
   fullHistory = await window.clipboardAPI.getHistory();
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  entryAnim.handleRendered(listEl); // 新条目入场判定（方案 B）
   renderTagFilter();
   updateStats();
 }
@@ -667,6 +713,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// 贴边态补播监听（方案 B，独立监听器，注册在上方筛选重置之后）：
+// 收起期间到达的新条目在展开后补播一次入场。排在筛选重置之后，保证标签筛选
+// 重渲染后的顶部卡片可被命中；无待办时幂等零动作；未命中则留给后续渲染 tick 兑底。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  entryAnim.playPending(listEl);
+});
+
 // ========== 返回顶部 ==========
 // 监听挂在 listEl 上（renderHistory 只重建 innerHTML，容器本身不重建，监听不丢）。
 // 阈值 120px：列表 barely 滚动时不出按钮，避免和条目操作区视觉拥挤。
@@ -685,6 +739,12 @@ async function togglePin() {
   isPinned = !isPinned;
   updatePinUI();
   await window.clipboardAPI.setPinned(isPinned);
+  if (!isPinned) {
+    // BUG1（2026-09-11 实机）兑底：解锁 = 恢复自动隐藏语义，主动清一次「搜索中」
+    // 挂起标志（防主进程侧 _searchActive 因历史交互误闩后无人解除，
+    // 解锁后倒计时永不启动）。若搜索框仍真实持焦，下一个 focus 事件会重新挂起。
+    window.clipboardAPI.setSearchActive(false);
+  }
 }
 
 function updatePinUI() {
@@ -710,6 +770,7 @@ window.clipboardAPI.onHistoryUpdated((history) => {
   fullHistory = history;
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  entryAnim.handleRendered(listEl); // 轮询 tick 新条目入场判定（600ms 轮询链路）
   renderTagFilter();
   updateStats();
 });

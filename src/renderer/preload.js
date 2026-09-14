@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
     ipcRenderer.on('tag-settings-updated', (event, settings) => callback(settings));
   },
 
+  // ========== 新条目动画：贴边态触发条脉冲（2026-09-11，方案 B） ==========
+  // 渲染层在面板隐藏（贴边收起）期间收到新内容时通知一次；主进程对 triggerWindow
+  // executeJavaScript 脉冲 180ms。id 仅作日志/未来扩展，脉冲本身与条目无关。
+  requestEntryPulse: (id) => ipcRenderer.send('window-entry-pulse', id),
+
   // ========== 诊断（命中偏移排查，定位后可移除） ==========
   diagHit: (data) => ipcRenderer.send('diag-hit', data),
 });

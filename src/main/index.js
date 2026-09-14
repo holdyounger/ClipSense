@@ -18,6 +18,7 @@ const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector');
 const HistoryStorage = require('./storage');
 const { PasteBridge } = require('./paste-bridge');
+const { buildTriggerScript, DRAWER, TOTAL_MS } = require('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker');
 
 class ClipboardSpikeApp {
@@ -96,15 +97,42 @@ class ClipboardSpikeApp {
       <!doctype html><html><head><style>
         html,body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; }
         #bar { position:fixed; top:0; bottom:0; left:0; width:6px; background:linear-gradient(180deg,#a29bfe,#6c5ce7); border-radius:0 6px 6px 0; box-shadow:0 0 8px rgba(108,92,231,.8); }
-        #bar.right { left:auto; right:0; border-radius:6px 0 0 6px; }
-        #bar.left { left:0; border-radius:0 6px 6px 0; }
-      </style></head><body><div id="bar"></div></body></html>
+        #bar.right { left:auto; right:0; border-radius:6px 0 0 6px; transform-origin:right center; }
+        #bar.left { left:0; border-radius:0 6px 6px 0; transform-origin:left center; }
+        /* 新条目动画·贴边态 V0.5「真抽屉」（2026-09-12，小M 核定）：
+           新内容到达 = 抽屉拉开 → 内容塞入 → 抽屉推回关上（三段状态迁移，
+           「关好了」=「已收纳」的确认感）。窗口静止 6px（命中区决策不变），
+           动画期间由主进程临时扩宽 DRAWER.travel px 给横向拉出空间，播完缩回。
+           #cavity = 柜内亮光层：抽屉拉开后露出的柜体内辉（#bar 下层，
+           拉开段随开口渐亮，推回段指数收熄——能量被封闭在柜内）。
+           #bead = 光珠（新内容具象）：坠入缝隙被吞。方向由回放器按 bar.className
+           镜像（right 边向左拉出 = -dx，left 边向右拉出 = +dx）。 */
+        #cavity {
+          position:fixed; top:4px; bottom:4px; width:24px; pointer-events:none;
+          border-radius:4px; opacity:0;
+        }
+        #bead {
+          position:fixed; top:50%; margin-top:-2px;
+          width:4px; height:4px; border-radius:50%; pointer-events:none;
+          background:radial-gradient(circle, rgba(255,255,255,.95), rgba(162,155,254,.55) 45%, transparent 72%);
+          opacity:0;
+        }
+      </style></head><body><div id="cavity"></div><div id="bead"></div><div id="bar"></div>
+      <script>
+        // 关键帧与回放器由主进程 trigger-anim.js 预积分生成（buildTriggerScript）：
+        // __clipSenseBarPulse() 协议不变（无参调用，连续重触发由 __clipSenseBarStop 复位）。
+        ${buildTriggerScript()}
+      </script></body></html>
     `)}`);
     this.triggerWindow.setIgnoreMouseEvents(false);
     this.triggerWindow.webContents.on('did-finish-load', () => {
+      // 边样式（className/cavity 渐变方向/光珠锚点）统一由注入脚本的
+      // __clipSenseBarApplyEdge 设置（trigger-anim.js 单一来源，左右贴边同构）
       const edge = this.triggerWindow._edge || 'right';
       this.triggerWindow.webContents.executeJavaScript(
-        `document.getElementById('bar').className = '${edge}'`
+        `window.__clipSenseBarApplyEdge
+           ? window.__clipSenseBarApplyEdge('${edge}')
+           : (document.getElementById('bar').className = '${edge}')`
       ).catch(() => {});
     });
 
@@ -409,8 +437,9 @@ class ClipboardSpikeApp {
       const copied = this.monitor.copyToClipboard(item);
       if (!copied) return { ok: false, error: '写入系统剪贴板失败' };
 
-      // 取目标句柄（16:34 根因修复）：双击瞬间重新抓前台——NOACTIVATE 面板不抢焦点，
-      // 此刻前台就是真实目标窗口；弹出时冻结记录的 tracked 句柄仅作兜底。
+      // 取目标句柄（16:34 根因修复）：双击瞬间重新抓前台；fgNow 被自身/瞬态过滤时
+      // 回退 tracked（焦点模型回切后 tracked 由 focus-search 抢焦前 refresh 保持新鲜，
+      // 2026-09-11 双击粘贴回归修复）。
       // fgNow=0 是窗口切换真空态（合法瞬态），用 captureForegroundRetry 忙等重试。
       const fgNow = this.pasteBridge ? this.pasteBridge.captureForegroundRetry() : 0;
       const trackedHwnd = this.focusTracker ? this.focusTracker.getHwnd() : 0;
@@ -471,15 +500,21 @@ class ClipboardSpikeApp {
     ipcMain.handle('focus-search', () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
       console.log('[focus-debug] main: IPC focus-search begin');
+      // 双击粘贴回归修复（2026-09-11）：show/focus 抢焦前同步刷新粘贴目标。
+      // 抢焦后前台变自身窗口，captureForeground 会被过滤，双击时只能回退 tracked；
+      // 不在此刷新则搜索/点击交互后 tracked 陈旧或被清空 → 粘贴焦点留在面板。
+      if (this.focusTracker) this.focusTracker.refresh();
       this.mainWindow.show();
       console.log('[focus-debug] main: show() done');
       this.mainWindow.moveTop();
       this.mainWindow.focus();
       this.mainWindow.webContents.focus();
       console.log('[focus-debug] main: focus chain done');
-      // focus() 会触发渲染层 focus 事件 → setSearchActive(true)，
-      // 若 focus 事件丢失，这里兜底挂起
-      if (this.edgeDetector) this.edgeDetector.setSearchActive(true);
+      // BUG1（2026-09-11 实机）修复：此处不再兜底 setSearchActive(true)——
+      // 自「面板任意 pointerdown 都走 focusSearch」（2026-09-10 焦点模型）后，
+      // 无条件挂起会把「点击过面板」误标成「搜索输入中」，固定→解锁后
+      // _startHideTimer 被 _searchActive 卡死，倒计时永不启动（实机复现 BUG1）。
+      // 挂起改由渲染层 searchInput 的 focus 事件统一触发（真实输入框聚焦才挂起）。
       return true;
     });
 
@@ -513,6 +548,49 @@ class ClipboardSpikeApp {
     // 鼠标离开窗口
     ipcMain.on('mouse-leave', () => {
       if (this.edgeDetector) this.edgeDetector.onMouseLeaveDebounced();
+    });
+
+    // ========== 新条目动画：贴边态触发条脉冲（2026-09-11，方案 B） ==========
+    // 渲染层在面板隐藏（贴边收起/托盘隐藏）期间收到新内容时发送一次；复用
+    // EdgeDetector 的触发条窗口（triggerWindow）执行 180ms CSS 脉冲，不新增窗口/轮询。
+    // 主窗口可见时渲染层不会发送此事件；触发条未显示时静默执行，无视觉副作用。
+    // ========== 新条目动画：贴边态「真抽屉」收纳（2026-09-12 V0.5，小M 核定） ==========
+    // 渲染层在面板隐藏（贴边收起）期间收到新内容 → 本处理器编排三件事：
+    //   ① 临时扩窗：静止 6px（命中区=可见条，5b92598 决策），动画期间向屏内扩
+    //      DRAWER.travel px 给抽屉拉出空间（right 边向左扩 / left 边向右扩），播完缩回
+    //   ② 触发条内回放预积分关键帧（trigger-anim.buildTriggerScript 注入）
+    //   ③ 回缩兑底：TOTAL_MS + 60ms 后恢复原 bounds；连续到达时重置计时
+    //      （上一轮回放由 __clipSenseBarStop 复位重开，抽屉重新开合）
+    // 主窗口可见时渲染层不会发送此事件；触发条隐藏时仅回放（不可见无视觉副作用）。
+    // 已知代价（小M 豁免约束）：动画 ~490ms 内热区临时 24px；transparent 窗口
+    // resize 在部分机器可能有单帧重绘闪动，实机验收确认。
+    ipcMain.on('window-entry-pulse', () => {
+      const tw = this.triggerWindow;
+      if (!tw || tw.isDestroyed()) return;
+      if (tw.isVisible()) {
+        const b = tw.getBounds();
+        const edge = tw._edge === 'left' ? 'left' : 'right';
+        const wide = {
+          x: edge === 'right' ? b.x - DRAWER.travel : b.x,
+          y: b.y,
+          width: b.width + DRAWER.travel,
+          height: b.height,
+        };
+        try { tw.setBounds(wide); } catch (_) { /* 失败则回放照播（超宽被裁剪兑底） */ }
+        if (this._drawerRestoreTimer) clearTimeout(this._drawerRestoreTimer);
+        const expandedEdge = edge;
+        this._drawerRestoreTimer = setTimeout(() => {
+          this._drawerRestoreTimer = null;
+          // 边守卫：动画中途用户切边时，edge-detector 已按新位置 setBounds，
+        // 旧 bounds 回缩不能覆盖（否则触发条飘到旧坐标）
+          if (!tw.isDestroyed() && tw._edge === expandedEdge) {
+            try { tw.setBounds(b); } catch (_) { /* 窗口已销毁 */ }
+          }
+        }, TOTAL_MS + 60);
+      }
+      tw.webContents.executeJavaScript(
+        'window.__clipSenseBarPulse && window.__clipSenseBarPulse()'
+      ).catch(() => {});
     });
 
     // ========== 命中偏移诊断（2026-09-08，定位后可移除） ==========
@@ -702,9 +780,21 @@ class ClipboardSpikeApp {
 
 const spikeApp = new ClipboardSpikeApp();
 
-app.whenReady().then(async () => {
-  await spikeApp.init();
-});
+// 单实例锁（2026-09-11 22:24）：双实例并行会争抢全局快捷键与剪贴板监听，
+// 粘贴目标跟踪互相污染（实测 21:22 起双实例并行）。抢不到锁 = 已有实例在跑，直接退出。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 重复启动尝试：唤出已有实例的面板（未初始化完成时静默）
+    if (spikeApp.mainWindow && !spikeApp.mainWindow.isDestroyed()) {
+      spikeApp.mainWindow.show();
+    }
+  });
+  app.whenReady().then(async () => {
+    await spikeApp.init();
+  });
+}
 
 app.on('window-all-closed', () => {
   // 有托盘，保持后台；spike 也允许通过托盘退出

@@ -127,7 +127,20 @@ class PasteBridge {
       let attempts = 0;
       while (Date.now() < deadline) {
         hwnd = Number(_user32.GetForegroundWindow());
-        if (hwnd) return hwnd;
+        if (hwnd) {
+          // 2026-09-11 20:40 双击粘贴回归根因修复：焦点模型回切（窗口恒可聚焦）后，
+          // 双击瞬间前台就是面板自身窗口。旧版只判 hwnd 非零就直接返回 →
+          // fgNow=面板自身 → pasteTo 对自己 Ctrl+V，表现为「粘贴没生效」。
+          // 自身进程窗口等待无意义（面板保持前台直到 pasteTo 切焦），立即返回 0，
+          // 由调用方回退 tracked（focus-search 抢焦前 refresh 保持新鲜）。
+          const selfPidBuf = Buffer.alloc(4);
+          _user32.GetWindowThreadProcessId(hwnd, selfPidBuf);
+          if (selfPidBuf.readUInt32LE(0) === _kernel32.GetCurrentProcessId()) {
+            console.log('[PasteBridge] captureForegroundRetry: 前台=自身进程窗口，返回 0（tracked 兜底）');
+            return 0;
+          }
+          return hwnd;
+        }
         attempts++;
         this._sleep(15);
       }
@@ -302,6 +315,17 @@ class PasteBridge {
         }
         console.log(`[PasteBridge] pasteTo 放弃: hwnd=${hwnd} IsWindow=${!!(hwnd && _user32.IsWindow(hwnd))} class=${cls}`);
         return { ok: false, restored: 'dead', error: `target-window-closed(hwnd=${hwnd},class=${cls})` };
+      }
+
+      // R7 防御（2026-09-11 双击粘贴回归）：目标绝不能是自身进程窗口。
+      // 粘贴到自己无意义；宁可拒绝也不把 Ctrl+V 发进面板。
+      {
+        const selfPidBuf = Buffer.alloc(4);
+        _user32.GetWindowThreadProcessId(hwnd, selfPidBuf);
+        if (selfPidBuf.readUInt32LE(0) === _kernel32.GetCurrentProcessId()) {
+          console.log(`[PasteBridge] pasteTo 拒绝: 目标 hwnd=${hwnd} 是自身进程窗口`);
+          return { ok: false, error: 'target-is-self' };
+        }
       }
 
       // R5：前台锁定超时临时清零，用完恢复（Ditto 同款：读旧值→置 0→finally 恢复）

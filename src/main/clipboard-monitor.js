@@ -267,12 +267,17 @@ class ClipboardMonitor {
     this._lastHash = hash;
 
     // 去重：整个会话内已出现过的内容不再重复归档，
-    // 改为「刷新时间戳 + 置顶」——用户重新复制旧内容 = 最近使用（2026-09-08 需求）
+    // 改为「刷新时间戳 + 置顶」——用户重新复制旧内容 = 最近使用（2026-09-08 需求，
+    // 2026-09-12 BUG-3 收口：bump 定位失败时落回正常归档路径重新入库）
     if (this._seenHashes.has(hash)) {
-      if (allowBump) {
-        return this._bumpExisting(hash);
-      }
-      return { changed: false, item: null };
+      if (!allowBump) return { changed: false, item: null };
+      const bump = this._bumpExisting(hash);
+      if (bump.changed) return bump;
+      // LRU 兜底：hash 在 seen 集合但 history 中已不存在（maxHistory 裁剪 /
+      // 脏数据）。既不能置顶也无条目可刷新——移出 seen 集合，落到底部
+      // 正常归档路径按「新内容」重新入库，否则该内容在本次会话内永远无法再现。
+      this._seenHashes.delete(hash);
+      console.warn('[Monitor] bump 定位失败（seen 有 history 无），重新归档:', hash);
     }
     this._seenHashes.add(hash);
 
@@ -301,7 +306,9 @@ class ClipboardMonitor {
   }
 
   /**
-   * 已存在条目再次被复制：刷新时间戳并移到列表顶部（已在顶部时仅刷新时间）
+   * 已存在条目再次被复制：刷新时间戳并移到列表顶部（已在顶部时仅刷新时间）。
+   * 定位失败（hash 在 _seenHashes 但 history 中无此条目）返回 changed:false，
+   * 由调用方 tick() 落回正常归档路径重新入库（LRU 兜底）。
    * @param {string} hash 内容 hash（用于在历史中定位原条目）
    * @returns {{changed: boolean, item: Object|null}}
    */

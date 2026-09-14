@@ -567,11 +567,38 @@ html, body {
   border: 1px solid var(--border);
   border-radius: 8px;
   transition: border-color 0.2s, background 0.2s;
+  position: relative; /* 落位光晕 .item-landing::after 定位基准（2026-09-12 方案 C） */
 }
 
 .item.flash {
   border-color: var(--accent);
   background: #3d3a55;
+}
+
+/* 落位光晕（方案 C ②）：新条目 spring 落位瞬间底部泛起紫色光晕，
+   只动 opacity/transform（合成层）；节点重建时 class 随之丢弃，无残留。 */
+.item-landing {
+  position: relative;
+}
+
+.item-landing::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 0%,
+    rgba(162, 155, 254, 0.5),
+    rgba(108, 92, 231, 0.22) 45%,
+    transparent 72%);
+  opacity: 0;
+  animation: item-land-glow 360ms ease-out 1;
+}
+
+@keyframes item-land-glow {
+  0%   { opacity: 0; transform: scale(0.96); }
+  35%  { opacity: 0.9; transform: scale(1.01); }
+  100% { opacity: 0; transform: scale(1.03); }
 }
 
 .preview {
