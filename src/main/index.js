@@ -568,24 +568,46 @@ class ClipboardSpikeApp {
       const tw = this.triggerWindow;
       if (!tw || tw.isDestroyed()) return;
       if (tw.isVisible()) {
-        const b = tw.getBounds();
+        // BUG 终版修复（2026-09-16 实机三轮：位置漂移 → 弹出效果消失 → 贴边逐周期缩小）：
+        // 根因：快照回缩链 + 严格像素门在 Windows DPI 取整下不可靠——
+        //   ① 每次 pulse 现抓 bounds 作回缩基准，中间态被锁定 → 位置累积漂移
+        //   ② 严格等值门（width===6/24）在 DPI 取整下永远不命中 → 扩窗被门死/回缩跳过
+        //   ③ 每轮 setBounds 都经过 DIP→物理→DIP 舍入，快照链把舍入误差逐轮前馈累积
+        // 终版：**屏缘锚定，几何现算，零快照**——静止位永远由 workArea 边缘
+        // 推导（x 锚定屏缘、宽恒 restWidth、y/h 保留 header 实测值），
+        // 扩展位 = 静止位 ± travel。无论历史状态如何污染，每轮都收敛到
+        // 同一正确几何，漂移/缩小/走屏在结构上不可能再发生。
+        const cb = tw.getBounds();
         const edge = tw._edge === 'left' ? 'left' : 'right';
+        const wa = screen.getDisplayNearestPoint({
+          x: cb.x + cb.width / 2, y: cb.y + cb.height / 2,
+        }).workArea;
+        const rest = edge === 'right'
+          ? { x: wa.x + wa.width - DRAWER.restWidth, y: cb.y, width: DRAWER.restWidth, height: cb.height }
+          : { x: wa.x, y: cb.y, width: DRAWER.restWidth, height: cb.height };
         const wide = {
-          x: edge === 'right' ? b.x - DRAWER.travel : b.x,
-          y: b.y,
-          width: b.width + DRAWER.travel,
-          height: b.height,
+          x: edge === 'right' ? rest.x - DRAWER.travel : rest.x,
+          y: rest.y,
+          width: DRAWER.restWidth + DRAWER.travel,
+          height: rest.height,
         };
         try { tw.setBounds(wide); } catch (_) { /* 失败则回放照播（超宽被裁剪兑底） */ }
         if (this._drawerRestoreTimer) clearTimeout(this._drawerRestoreTimer);
         const expandedEdge = edge;
         this._drawerRestoreTimer = setTimeout(() => {
           this._drawerRestoreTimer = null;
-          // 边守卫：动画中途用户切边时，edge-detector 已按新位置 setBounds，
-        // 旧 bounds 回缩不能覆盖（否则触发条飘到旧坐标）
-          if (!tw.isDestroyed() && tw._edge === expandedEdge) {
-            try { tw.setBounds(b); } catch (_) { /* 窗口已销毁 */ }
-          }
+          // 火线重算：以「当前 bounds 所在屏幕」重新锚定静止位（防周期内换屏/重定位）。
+          // 面板被唤出（触发条隐藏/销毁）或已换边 → edge-detector 全权接管，跳过回缩。
+          if (tw.isDestroyed() || !tw.isVisible()) return;
+          if (tw._edge !== expandedEdge) return;
+          const fb = tw.getBounds();
+          const fwa = screen.getDisplayNearestPoint({
+            x: fb.x + fb.width / 2, y: fb.y + fb.height / 2,
+          }).workArea;
+          const frest = expandedEdge === 'right'
+            ? { x: fwa.x + fwa.width - DRAWER.restWidth, y: fb.y, width: DRAWER.restWidth, height: fb.height }
+            : { x: fwa.x, y: fb.y, width: DRAWER.restWidth, height: fb.height };
+          try { tw.setBounds(frest); } catch (_) { /* 窗口已销毁 */ }
         }, TOTAL_MS + 60);
       }
       tw.webContents.executeJavaScript(
