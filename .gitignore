@@ -8,3 +8,5 @@ Thumbs.db
 
 # ctx-lockstep agent state (v2)
 .ctx-lockstep/
+temp/
+.learnings/

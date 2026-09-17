@@ -140,6 +140,12 @@ const entryAnim = createEntryAnim({
   },
 });
 
+// ========== 列表条目 dock 放大（2026-09-17，参考 GSAP dock 效果） ==========
+// 光标邻近条目按余弦窗衰减放大（纵向列表适配）；容器委托——innerHTML 全量重建
+// 不丢监听；只写 transform；reduced-motion 全程 no-op。调参见 dock-anim.js 头部。
+const dockEffect = createDockEffect({ container: listEl });
+dockEffect.attach();
+
 // 初始化国际化
 initLang();
 applyStaticText();
@@ -480,6 +486,7 @@ async function refresh() {
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
   entryAnim.handleRendered(listEl); // 新条目入场判定（方案 B）
+  dockEffect.handleRendered(); // dock 放大状态对齐（新节点无内联 transform）
   renderTagFilter();
   updateStats();
 }
@@ -680,6 +687,16 @@ document.addEventListener('click', (e) => {
   collapseSearch();
 });
 
+// 实机 BUG（2026-09-17）：搜索结果条目无法点击展开/复制，点击后搜索框关闭。
+// 根因：点击条目 mousedown → 输入框 blur → collapseSearch 同步 refresh() 全量
+// 重建列表 → mouseup 时原按钮已销毁 → click 不再派发到条目处理器
+//（复制/展开/双击全部失效）。修复：列表内 mousedown 阻止默认聚焦转移
+// （与 searchBtn pointerdown preventDefault 同款模式，blur 根本不发生），
+// 收起由上方 click-outside 处理器在条目处理器之后执行（冒泡时序天然正确）。
+listEl.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+});
+
 // ========== 标签筛选条：容器委托点击（全量重建不丢监听） ==========
 // 同 chip 再点取消回全部；条目上的 tag-chip 是纯展示 span，不参与点击。
 tagFilterEl.addEventListener('click', (e) => {
@@ -689,6 +706,7 @@ tagFilterEl.addEventListener('click', (e) => {
   activeTagFilter = (id && activeTagFilter !== id) ? id : null;
   renderTagFilter();
   renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+  dockEffect.handleRendered(); // chip 重建后 dock 状态对齐
   updateStats();
 });
 
@@ -709,6 +727,7 @@ document.addEventListener('visibilitychange', () => {
   renderTagFilter();
   if (had) {
     renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+    dockEffect.handleRendered(); // 筛选重置重建后 dock 状态对齐
     updateStats();
   }
 });
@@ -771,6 +790,7 @@ window.clipboardAPI.onHistoryUpdated((history) => {
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
   entryAnim.handleRendered(listEl); // 轮询 tick 新条目入场判定（600ms 轮询链路）
+  dockEffect.handleRendered(); // dock 放大状态对齐（innerHTML 重建后）
   renderTagFilter();
   updateStats();
 });

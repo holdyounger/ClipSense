@@ -18,7 +18,7 @@ const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector');
 const HistoryStorage = require('./storage');
 const { PasteBridge } = require('./paste-bridge');
-const { buildTriggerScript, DRAWER, TOTAL_MS } = require('./trigger-anim');
+const { buildTriggerScript, DRAWER } = require('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker');
 
 class ClipboardSpikeApp {
@@ -66,6 +66,10 @@ class ClipboardSpikeApp {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        // 弹出时序依赖隐藏态 rAF：EdgeDetector._showWindow 先让渲染层
+        // prepare（双 rAF 绘制确认）再 showInactive。默认节流会冻结隐藏
+        // 窗口的 rAF，确认链只能走兜底定时器，首帧就绪无法保证。
+        backgroundThrottling: false,
         preload: path.join(__dirname, '../renderer/preload.js'),
       },
     });
@@ -78,7 +82,11 @@ class ClipboardSpikeApp {
 
     // 独立的边缘触发条窗口。窗口本身只有 6px 宽、与 header 同高，命中区域与可见条完全一致。
     this.triggerWindow = new BrowserWindow({
-      width: 6,
+      // V1.0.4 抽屉舞台（2026-09-17 动画卡顿+闪烁优化）：物理窗口固定 24px
+      // = DRAWER.restWidth(6) + DRAWER.travel(18)，动画全程零 resize——
+      // transparent 窗口 setBounds 触发 DWM 表面重分配，是实机「弹出动画
+      // 卡顿 + 闪烁一次」的根因。多余 18px 点击穿透（见下方 setIgnoreMouseEvents）。
+      width: DRAWER.restWidth + DRAWER.travel,
       height: 56,
       frame: false,
       transparent: true,
@@ -124,7 +132,9 @@ class ClipboardSpikeApp {
         ${buildTriggerScript()}
       </script></body></html>
     `)}`);
-    this.triggerWindow.setIgnoreMouseEvents(false);
+    // 舞台多余 18px 不拦截点击：唤出判定走主进程轮询（OS 光标 vs 屏缘 6px 热区），
+    // 与窗口命中无关；纯点击穿透，下层窗口在贴边条区域正常可交互。
+    this.triggerWindow.setIgnoreMouseEvents(true);
     this.triggerWindow.webContents.on('did-finish-load', () => {
       // 边样式（className/cavity 渐变方向/光珠锚点）统一由注入脚本的
       // __clipSenseBarApplyEdge 设置（trigger-anim.js 单一来源，左右贴边同构）
@@ -550,70 +560,21 @@ class ClipboardSpikeApp {
       if (this.edgeDetector) this.edgeDetector.onMouseLeaveDebounced();
     });
 
-    // ========== 新条目动画：贴边态触发条脉冲（2026-09-11，方案 B） ==========
-    // 渲染层在面板隐藏（贴边收起/托盘隐藏）期间收到新内容时发送一次；复用
-    // EdgeDetector 的触发条窗口（triggerWindow）执行 180ms CSS 脉冲，不新增窗口/轮询。
-    // 主窗口可见时渲染层不会发送此事件；触发条未显示时静默执行，无视觉副作用。
-    // ========== 新条目动画：贴边态「真抽屉」收纳（2026-09-12 V0.5，小M 核定） ==========
-    // 渲染层在面板隐藏（贴边收起）期间收到新内容 → 本处理器编排三件事：
-    //   ① 临时扩窗：静止 6px（命中区=可见条，5b92598 决策），动画期间向屏内扩
-    //      DRAWER.travel px 给抽屉拉出空间（right 边向左扩 / left 边向右扩），播完缩回
-    //   ② 触发条内回放预积分关键帧（trigger-anim.buildTriggerScript 注入）
-    //   ③ 回缩兑底：TOTAL_MS + 60ms 后恢复原 bounds；连续到达时重置计时
-    //      （上一轮回放由 __clipSenseBarStop 复位重开，抽屉重新开合）
-    // 主窗口可见时渲染层不会发送此事件；触发条隐藏时仅回放（不可见无视觉副作用）。
-    // 已知代价（小M 豁免约束）：动画 ~490ms 内热区临时 24px；transparent 窗口
-    // resize 在部分机器可能有单帧重绘闪动，实机验收确认。
+    // ========== 新条目动画：贴边态触发条脉冲（V1.0.4 零几何变更版，2026-09-17） ==========
+    // 触发条物理窗口固定 24px「抽屉舞台」（创建处 width = DRAWER.restWidth + DRAWER.travel）：
+    // 抽屉拉出 / 光珠坠入 / 推回全程在窗口表面内以 CSS transform 回放，动画期零 setBounds——
+    // transparent 窗口 resize 的 DWM 表面重分配是实机「弹出卡顿 + 闪烁一次」的根因。
+    // 命中区与舞台宽度解耦：唤出热区仍按屏缘 6px 锚定判定（edge-detector 轮询），
+    // 舞台多余 18px 点击穿透。连续到达时上一轮回放由 __clipSenseBarStop 复位重开。
+    // 面板可见时渲染层不会发送此事件；触发条隐藏时仅回放（不可见无视觉副作用）。
     ipcMain.on('window-entry-pulse', () => {
       const tw = this.triggerWindow;
       if (!tw || tw.isDestroyed()) return;
-      if (tw.isVisible()) {
-        // BUG 终版修复（2026-09-16 实机三轮：位置漂移 → 弹出效果消失 → 贴边逐周期缩小）：
-        // 根因：快照回缩链 + 严格像素门在 Windows DPI 取整下不可靠——
-        //   ① 每次 pulse 现抓 bounds 作回缩基准，中间态被锁定 → 位置累积漂移
-        //   ② 严格等值门（width===6/24）在 DPI 取整下永远不命中 → 扩窗被门死/回缩跳过
-        //   ③ 每轮 setBounds 都经过 DIP→物理→DIP 舍入，快照链把舍入误差逐轮前馈累积
-        // 终版：**屏缘锚定，几何现算，零快照**——静止位永远由 workArea 边缘
-        // 推导（x 锚定屏缘、宽恒 restWidth、y/h 保留 header 实测值），
-        // 扩展位 = 静止位 ± travel。无论历史状态如何污染，每轮都收敛到
-        // 同一正确几何，漂移/缩小/走屏在结构上不可能再发生。
-        const cb = tw.getBounds();
-        const edge = tw._edge === 'left' ? 'left' : 'right';
-        const wa = screen.getDisplayNearestPoint({
-          x: cb.x + cb.width / 2, y: cb.y + cb.height / 2,
-        }).workArea;
-        const rest = edge === 'right'
-          ? { x: wa.x + wa.width - DRAWER.restWidth, y: cb.y, width: DRAWER.restWidth, height: cb.height }
-          : { x: wa.x, y: cb.y, width: DRAWER.restWidth, height: cb.height };
-        const wide = {
-          x: edge === 'right' ? rest.x - DRAWER.travel : rest.x,
-          y: rest.y,
-          width: DRAWER.restWidth + DRAWER.travel,
-          height: rest.height,
-        };
-        try { tw.setBounds(wide); } catch (_) { /* 失败则回放照播（超宽被裁剪兑底） */ }
-        if (this._drawerRestoreTimer) clearTimeout(this._drawerRestoreTimer);
-        const expandedEdge = edge;
-        this._drawerRestoreTimer = setTimeout(() => {
-          this._drawerRestoreTimer = null;
-          // 火线重算：以「当前 bounds 所在屏幕」重新锚定静止位（防周期内换屏/重定位）。
-          // 面板被唤出（触发条隐藏/销毁）或已换边 → edge-detector 全权接管，跳过回缩。
-          if (tw.isDestroyed() || !tw.isVisible()) return;
-          if (tw._edge !== expandedEdge) return;
-          const fb = tw.getBounds();
-          const fwa = screen.getDisplayNearestPoint({
-            x: fb.x + fb.width / 2, y: fb.y + fb.height / 2,
-          }).workArea;
-          const frest = expandedEdge === 'right'
-            ? { x: fwa.x + fwa.width - DRAWER.restWidth, y: fb.y, width: DRAWER.restWidth, height: fb.height }
-            : { x: fwa.x, y: fb.y, width: DRAWER.restWidth, height: fb.height };
-          try { tw.setBounds(frest); } catch (_) { /* 窗口已销毁 */ }
-        }, TOTAL_MS + 60);
-      }
       tw.webContents.executeJavaScript(
         'window.__clipSenseBarPulse && window.__clipSenseBarPulse()'
       ).catch(() => {});
     });
+
 
     // ========== 命中偏移诊断（2026-09-08，定位后可移除） ==========
     // 对比三层坐标系：OS 物理光标 → screen API (DIP) → Chromium 输入事件

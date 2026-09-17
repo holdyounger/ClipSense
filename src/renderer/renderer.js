@@ -498,6 +498,15 @@ function renderHistory(container, history, handlers, ctx) {
     meta.appendChild(metaTextEl);
     const chipsEl = buildTagChips(item, ctx);
     if (chipsEl) meta.appendChild(chipsEl);
+    // 重复内容计数（2026-09-17）：同一内容第 N 次进入剪贴板，≥2 次才显示
+    const copyCount = item.count || 1;
+    if (copyCount > 1) {
+      const countEl = document.createElement('span');
+      countEl.className = 'copy-count';
+      countEl.textContent = `×${copyCount}`;
+      countEl.title = (ctx.t('timesCopied') || '已复制 {n} 次').replace('{n}', copyCount);
+      meta.appendChild(countEl);
+    }
     // 悬停查看完整入库时间（列表内只显日期+时分秒，跨天条目日期已可见）
     meta.title = new Date(item.timestamp).toLocaleString(undefined, { hour12: false });
 

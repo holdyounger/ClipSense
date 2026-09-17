@@ -12,6 +12,7 @@
  */
 
 const { screen } = require('electron');
+const { DRAWER } = require('./trigger-anim');
 
 class EdgeDetector {
   constructor(mainWindow, triggerWindow = null) {
@@ -55,6 +56,11 @@ class EdgeDetector {
     /** 当前推出/弹入动画定时器，避免窗口动画重复触发 */
     this._hideAnimationId = null;
     this._showAnimationId = null;
+    /**
+     * 弹出代际令牌：每次 _showWindow 递增。prepare 确认/rAF 链的异步回调
+     * 靠比对 gen 判断自己是否仍属当前轮弹出，防止旧回调操纵新一轮动画。
+     */
+    this._showGeneration = 0;
     this._isHiding = false;
   }
 
@@ -171,10 +177,19 @@ class EdgeDetector {
 
       // 只有隐藏后的独立 triggerWindow 才是唤出热区。
       // 面板显示时不再把主窗口贴边区域当作触发条，避免 hover 整个窗口边框触发逻辑。
-      const triggerBounds = !this.isWindowVisible && this.triggerWindow
-        && !this.triggerWindow.isDestroyed()
-        ? this.triggerWindow.getBounds()
-        : null;
+      // V1.0.4：舞台窗口固定 24px 后，唤出热区不再等于物理窗口——仍按屏缘
+      // triggerWidth(6px) 锚定（条体静止可见区），避免 18px 预留区误触发热区。
+      let triggerBounds = null;
+      if (!this.isWindowVisible && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+        const tb = this.triggerWindow.getBounds();
+        const anchoredLeft = this.triggerWindow._edge === 'left';
+        triggerBounds = {
+          x: anchoredLeft ? tb.x : tb.x + tb.width - this.triggerWidth,
+          y: tb.y,
+          width: this.triggerWidth,
+          height: tb.height,
+        };
+      }
       const isOverTrigger = triggerBounds && (
         point.x >= triggerBounds.x && point.x < triggerBounds.x + triggerBounds.width &&
         point.y >= triggerBounds.y && point.y < triggerBounds.y + triggerBounds.height
@@ -259,8 +274,13 @@ class EdgeDetector {
 
     if (this._showAnimationId) {
       clearTimeout(this._showAnimationId);
-      this._showAnimationId = null;
     }
+    // 过渡锁同步置位：prepare 确认（executeJavaScript 往返 + 双 rAF）与
+    // show 后 rAF 链期间，toggle/_checkMousePosition 必须视为动画中。
+    // 旧时序锁在 showInactive 后才立起，存在可重入空窗；新时序锁提前到
+    // prepare 之前（占位字符串，clearTimeout 对其无害）。
+    const gen = ++this._showGeneration;
+    this._showAnimationId = 'pending';
     if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.hide();
     }
@@ -280,41 +300,90 @@ class EdgeDetector {
 
     // 方案 B：窗口一次定位到目标位置，滑入/淡入全部由渲染进程 CSS transform 完成。
     // 不再逐帧 setPosition/setOpacity（原生窗口动画在 Windows 上每帧重绘会闪烁）。
-    // 1. 先在隐藏状态下准备好起始姿态（内容平移出屏+透明，无过渡），
-    //    必须等 prepare 执行完再显示窗口，否则会闪现正常内容。
+    // 1. 先在隐藏状态下准备好起始姿态（内容平移+透明，无过渡），并等渲染层
+    //    真正把该姿态绘制并提交一帧后才显示窗口。
+    //    关键：executeJavaScript 的 Promise resolve ≠ 渲染层已 paint。
+    //    旧版 resolve 即 showInactive()，窗口首帧可能是空白/未变换表面 →
+    //    实机「弹出瞬间闪烁一次」+ 首帧合成后才开始 transition → 不流畅。
+    //    渲染层 prepare 现在返回双 rAF 绘制确认；showInactive() 以它为准，
+    //    50ms 兕底防止确认链异常时窗口永远弹不出来（降级为旧行为）。
+    //    前提：index.js 已对该窗口设 backgroundThrottling:false，隐藏态
+    //    rAF 正常走帧；否则渲染层会被系统冻结，只能走兕底定时器。
     this.mainWindow.webContents.executeJavaScript(
-      `window.__clipSenseSlide && window.__clipSenseSlide('prepare','${edge}')`
-    ).then(() => {
+      `(window.__clipSenseSlide
+          ? window.__clipSenseSlide('prepare','${edge}')
+          : Promise.resolve())
+        .then(() => 'paint-ready')
+        .catch(() => 'paint-fallback')`
+    ).then((ack) => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-      this.mainWindow.showInactive();
-      this._lastIsOverPanel = false;
-      // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
-      // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
-      // （移出再移回才恢复）。1px 抖动强制系统重算光标下窗口。
-      this._forceCursorHoverRefresh();
-
-      // 2. 显示后下一帧滑入，CSS transition 接管动画。
-      // _showAnimationId 兼作过渡锁（toggle 用它判断动画中）。
-      this._showAnimationId = setTimeout(() => {
-        this.mainWindow.webContents.executeJavaScript(
-          `window.__clipSenseSlide && window.__clipSenseSlide('in','${edge}')`
-        ).catch(() => {});
-        this._showAnimationId = setTimeout(() => {
-          this._showAnimationId = null;
-          // 这次隐藏位置已被消费，后续手动唤出使用拖拽后的位置。
-          this._hiddenAtPos = null;
-        }, 320);
-      }, 16);
+      this._showAfterPrepare(gen, ack === 'paint-ready', edge);
     }).catch(() => {
       // executeJavaScript 失败（页面未就绪等）：直接无动画显示，保证功能可用。
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-      this._showAnimationId = null;
-      this._hiddenAtPos = null;
-      this.mainWindow.showInactive();
-      this._forceCursorHoverRefresh();
+      this._showAfterPrepare(gen, false, edge);
     });
 
     console.log(`[EdgeDetector] 弹出窗口 (x=${targetX}, y=${targetY}, edge=${edge})`);
+  }
+
+  /**
+   * prepare 绘制确认后的显示后半段：showInactive → hover 刷新 → rAF 对齐滑入。
+   * @param {number} gen 调用方 _showWindow 的代际令牌（局部 const，跨异步边界传参）
+   * @param {boolean} paintConfirmed 渲染层 prepare 姿态是否已确认绘制
+   * @param {string} edge 滑入方向边缘
+   */
+  _showAfterPrepare(gen, paintConfirmed, edge) {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    if (paintConfirmed) {
+      this._beginShowTransition(gen, edge);
+      return;
+    }
+    // 兕底路径：渲染层未确认（未就绪/rAF 冻结）。多等一帧窗口期后直接显示，
+    // 大概率 prepare 已落盘；最坏情况回退旧行为（可能闪一次），但功能可用。
+    setTimeout(() => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+      if (gen !== this._showGeneration) return; // 已被取代
+      this._beginShowTransition(gen, edge);
+    }, 50);
+  }
+
+  /**
+   * 显示后半段公共路径：showInactive + hover 刷新 + 双 rAF 对齐滑入。
+   * 旧版用 16ms setTimeout 触发 'in'：与渲染层实际帧不对齐——若落在两帧
+   * 之间，'in' 样式变更要等下一帧才开始 transition，首帧推进量随机，
+   * 动画观感不流畅。改为双 rAF：第一次回调进入下一帧绘制前，第二次回调
+   * 确认当前姿态已提交，此刻应用 'in' 样式，transition 从已知首帧起步。
+   */
+  _beginShowTransition(gen, edge) {
+    if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    this.mainWindow.showInactive();
+    this._lastIsOverPanel = false;
+    // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
+    // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
+    // （移出再移回才恢复）。合成 mousemove 已足够（1px 抖动已移除，勿恢复）。
+    this._forceCursorHoverRefresh();
+
+    // 'in' 滑入：_showAnimationId 兼作过渡锁（toggle 用它判断动画中）。
+    // 隐藏态 rAF 未被节流（backgroundThrottling:false），双 rAF 等效 ~2 帧。
+    const startIn = () => {
+      if (gen !== this._showGeneration) return; // 锁已被 stop() 清除
+      this.mainWindow.webContents.executeJavaScript(
+        `window.__clipSenseSlide && window.__clipSenseSlide('in','${edge}')`
+      ).catch(() => {});
+      this._showAnimationId = setTimeout(() => {
+        this._showAnimationId = null;
+        // 这次隐藏位置已被消费，后续手动唤出使用拖拽后的位置。
+        this._hiddenAtPos = null;
+      }, 320);
+    };
+    this.mainWindow.webContents.executeJavaScript(
+      `new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`
+    ).then(startIn).catch(() => {
+      // rAF 注入失败（页面异常）：退化为直接滑入，保证面板可见。
+      startIn();
+    });
   }
 
   /**
@@ -323,9 +392,10 @@ class EdgeDetector {
    * 导致渲染层收不到 mouseenter、OS hover 命中也不刷新，固定按钮/菜单栏
    * 点击无响应（鼠标移出再移回才能恢复）。
    *
-   * 修复：窗口 1px 水平抖动再复位，强制系统重新计算光标下的窗口并补发
-   * mouse-move → 渲染层 mouseenter 正常触发，交互状态全部对齐。
-   * （纯 Electron 实现，窗口 bounds 变化与 CSS 滑入动画互不干扰）
+   * 修复（V1.0.4 修订）：仅注入合成 mousemove（sendInputEvent，零几何变更）。
+ * 旧版附带的「窗口 1px 水平抖动再复位」已移除——transparent 窗口可见态
+ * setBounds 触发 DWM 表面重分配，是实机「显示闪烁一次 + 动画不流畅」的根因；
+ * 且它在滑入动画首帧注入 1px 位移，本身即一次可见抖动。
    */
   _forceCursorHoverRefresh() {
     if (process.platform !== 'win32') return;
@@ -344,13 +414,10 @@ class EdgeDetector {
           y: Math.round(point.y - b.y),
         });
       } catch (e) { /* 注入失败不阻断 */ }
-      // ② 窗口 1px 抖动强制 OS 重算光标下窗口并补发原生 WM_MOUSEMOVE
-      this.mainWindow.setBounds({ ...b, x: b.x + 1 });
-      setTimeout(() => {
-        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-          this.mainWindow.setBounds({ ...b });
-        }
-      }, 32);
+      // ② （V1.0.4 已移除）旧版此处 1px 水平抖动再复位：两次可见态 setBounds
+      // 各触发一次 DWM 表面重分配（显示闪烁），32ms 间隔又在滑入首帧引入
+      // 一次可见 1px 跳变。合成 mousemove 已足够对齐渲染层交互状态；
+      // 若实机回归「按钮点不动」，回滚本提交恢复抖动并另行排查。
     } catch (err) {
       // 刷新失败不影响显示，静默降级
     }
@@ -424,8 +491,11 @@ class EdgeDetector {
     // 主面板完全隐藏，独立触发窗口负责边缘唤出。
     const triggerDisplay = screen.getDisplayNearestPoint({ x: snapX, y });
     // triggerWindow 只占据可见触发条本身，透明区域不会成为命中热区。
+    // V1.0.4 抽屉舞台：物理窗口固定 restWidth + travel（24px），条体锚定屏缘；
+    // 静止态可见条 6px，多余 18px 为抽屉拉出预留空间且点击穿透。
+    const stageWidth = DRAWER.restWidth + DRAWER.travel;
     const triggerX = targetEdge === 'right'
-      ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - this.triggerWidth
+      ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - stageWidth
       : triggerDisplay.workArea.x;
     // 高度与主面板 header 一致：贴边热区只有 header 部分。
     const triggerHeight = this._headerHeight || this.triggerHeight;
@@ -434,7 +504,7 @@ class EdgeDetector {
       this.triggerWindow.setBounds({
         x: Math.round(triggerX),
         y: Math.round(y),
-        width: this.triggerWidth,
+        width: stageWidth,
         height: triggerHeight,
       });
       this.triggerWindow._edge = targetEdge;
@@ -445,7 +515,7 @@ class EdgeDetector {
            ? window.__clipSenseBarApplyEdge('${targetEdge === 'right' ? 'right' : 'left'}')
            : (document.getElementById('bar').className = '${targetEdge === 'right' ? 'right' : 'left'}')`
       ).catch(() => {});
-      this.triggerWindow.setIgnoreMouseEvents(false);
+      this.triggerWindow.setIgnoreMouseEvents(true); // 舞台 24px 点击穿透；唤出走主进程轮询
       this.triggerWindow.showInactive();
     }
     this.isWindowVisible = false;
@@ -458,6 +528,9 @@ class EdgeDetector {
   }
 
   _cancelShowAnimation() {
+    // 递增代际：作废所有还在飞行的 prepare 确认/rAF 链回调，
+    // 防止 stop() 之后旧回调重新立锁或触发 'in'。
+    this._showGeneration++;
     if (this._showAnimationId) {
       clearTimeout(this._showAnimationId);
       this._showAnimationId = null;

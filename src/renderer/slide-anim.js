@@ -41,6 +41,25 @@
     app.style.opacity = transparent ? '0' : '1';
   }
 
+  /**
+   * 双 rAF + 同步 reflow：等待渲染层把当前样式真正绘制并提交一帧。
+   *
+   * executeJavaScript 的 Promise resolve 只代表注入脚本执行完，
+   * 不代表 compositor 已出帧。主进程若在脚本执行完就 showInactive()，
+   * 窗口呈现的第一帧可能是空白/未变换表面 → 实机「弹出瞬间闪烁一次」。
+   * 双 rAF：第一次回调在下一帧绘制前，第二次回调确认该帧已提交。
+   * 返回值经 executeJavaScript 回传主进程，showInactive 以此为准。
+   */
+  function waitPaintReady() {
+    // 同步强制 style/layout 计算，确保 prepare 姿态参与下一帧绘制。
+    void app.offsetWidth;
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    });
+  }
+
   window.__clipSenseSlide = function (action, edgeName) {
     if (edgeName === 'left' || edgeName === 'right') edge = edgeName;
 
@@ -49,19 +68,25 @@
         // 无过渡直接摆到起始姿态，避免显示时闪现正常内容。
         applyTransition(false);
         setOffset(true, true);
-        // 强制 reflow，确保起始姿态立即生效，后续 transition 才能触发。
-        void app.offsetWidth;
-        break;
+        // 合成层提升提前到隐藏态完成：显示首帧不再发生「创建 GPU 层 +
+        // 纹理首次上传」——transparent 窗口首帧 DWM 合成延迟是弹出闪烁
+        // 的另一来源。不在动画结束后回收（层降级本身可能引入一次可见
+        // 重合成；常驻成本仅一个 360×560 层，且隐藏期保留可让下次弹出
+        // 直接复用现成表面）。
+        app.style.willChange = 'transform, opacity';
+        // 返回绘制确认 Promise，主进程必须等它 resolve 才 showInactive()。
+        return waitPaintReady();
 
       case 'in':
         applyTransition(true);
         setOffset(false, false);
-        break;
+        return Promise.resolve();
 
       case 'out':
         applyTransition(true);
         setOffset(true, true);
-        break;
+        return Promise.resolve();
     }
+    return Promise.resolve();
   };
 })();

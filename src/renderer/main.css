@@ -570,6 +570,56 @@ html, body {
   position: relative; /* 落位光晕 .item-landing::after 定位基准（2026-09-12 方案 C） */
 }
 
+
+/* ========== 磁吸辉光（2026-09-17 方案 A，dock-anim.js 驱动；两侧版） ==========
+   JS 每帧只写 .item 的 --dock-i（0..1 强度，余弦窗衰减）；左右两缘 accent bar 的
+   露出高度（scaleY）与辉光（opacity）由 CSS 消费该变量——JS 零 transform 写入，
+   文本零变形。::before 左缘 / ::after 右缘镜像（.item 已 position:relative，零 DOM 改动）。
+   注意：.item-landing::after（入场落位光晕）也用 ::after——两者场景互斥（入场动画
+   只播新条目，播放期间 dock 强度为 0），同帧若叠加实机确认后可拆专用元素。 */
+.item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 60%;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, var(--accent), #6c5ce7);
+  box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
+  opacity: var(--dock-i, 0);
+  transform: translateY(-50%) scaleY(var(--dock-i, 0));
+  transform-origin: center;
+  pointer-events: none;
+}
+
+/* 右缘镜像（2026-09-17 11:20 小M 要求两侧） */
+.item::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 3px;
+  height: 60%;
+  border-radius: 3px 0 0 3px;
+  background: linear-gradient(180deg, var(--accent), #6c5ce7);
+  box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
+  opacity: var(--dock-i, 0);
+  transform: translateY(-50%) scaleY(var(--dock-i, 0));
+  transform-origin: center;
+  pointer-events: none;
+  /* 强度由 JS 逐帧驱动，CSS 不加 transition（避免双轨插值打架） */
+}
+
+/* 重复内容计数徽标（2026-09-17）：meta 行尾部 ×N，≥2 次才渲染 */
+.copy-count {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
 .item.flash {
   border-color: var(--accent);
   background: #3d3a55;
