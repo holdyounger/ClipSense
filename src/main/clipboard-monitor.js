@@ -320,6 +320,8 @@ class ClipboardMonitor {
     if (idx === -1) return { changed: false, item: null };
     const item = this.history[idx];
     item.timestamp = Date.now();
+    // 重复内容计数（2026-09-17）：同一内容再次被复制 → 次数 +1（旧数据无字段从 1 起算）
+    item.count = (item.count || 1) + 1;
     if (idx > 0) {
       this.history.splice(idx, 1);
       this.history.unshift(item);
@@ -351,6 +353,7 @@ class ClipboardMonitor {
     const base = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       timestamp: Date.now(),
+      count: 1, // 重复复制计数（_bumpExisting 递增；渲染层 ≥2 才显示）
     };
 
     switch (result.kind) {
