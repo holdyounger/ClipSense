@@ -167,6 +167,15 @@ function applyStaticText() {
   // 下拉菜单文案
   menuLangBtn.textContent = t('menuLang');
   menuClearBtn.textContent = t('menuClear');
+  // 升级菜单项（检查更新；三态文案由 updateMenuStateMachine 驱动）。
+  // 注意：applyStaticText 在脚本顶部即被调用，此处必须用 getElementById 局部取用，
+  // 不能引用下方 const menuUpdateBtn（TDZ，与上方 searchBtn 同理）
+  const menuUpdateBtnEl = document.getElementById('menuUpdateBtn');
+  if (menuUpdateBtnEl) {
+    menuUpdateBtnEl.textContent = t('menuCheckUpdate');
+    menuUpdateBtnEl.disabled = false;
+    menuUpdateBtnEl.title = '';
+  }
   searchInput.placeholder = t('searchPlaceholder');
   // 搜索入口 tooltip（经 getElementById 取用：applyStaticText 在脚本顶部即被调用，
   // 此时下方搜索区的 const searchBtn 尚在 TDZ，不能直接引用）
@@ -520,6 +529,145 @@ menuClearBtn.addEventListener('click', async () => {
   await refresh();
 });
 
+// ========== 轻量升级链路（2026-09-20，自研） ==========
+// 三态：idle → checking → (up-to-date 恢复 idle | has-update → downloading → 安装)
+// 进度更新用轮询模块级变量（简单优先，不另开渲染层状态机）。
+
+const menuUpdateBtn = document.getElementById('menuUpdateBtn');
+let updateState = 'idle';          // idle | checking | hasUpdate | downloading | installing
+let updateLatestVersion = '';
+let updateDownloadUrl = '';
+let updatePercent = 0;
+let updateProgressTimer = null;
+
+// 主进程推送下载进度 → 写入模块级变量，由下方 setInterval 轮询读取渲染
+if (window.clipboardAPI.onUpdateDownloadProgress) {
+  window.clipboardAPI.onUpdateDownloadProgress((p) => {
+    if (p && typeof p.percent === 'number') updatePercent = p.percent;
+  });
+}
+
+function setUpdateMenuText(text, disabled, title) {
+  menuUpdateBtn.textContent = text;
+  menuUpdateBtn.disabled = !!disabled;
+  menuUpdateBtn.title = title || '';
+}
+
+function resetUpdateMenu() {
+  updateState = 'idle';
+  updateLatestVersion = '';
+  updateDownloadUrl = '';
+  updatePercent = 0;
+  menuUpdateBtn.textContent = t('menuCheckUpdate');
+  menuUpdateBtn.disabled = false;
+  menuUpdateBtn.title = '';
+}
+
+menuUpdateBtn.addEventListener('click', async () => {
+  if (updateState !== 'idle') return;
+
+  if (updateState === 'checking' || updateState === 'downloading') return;
+
+  // idle → checking
+  updateState = 'checking';
+  dropdownMenu.classList.add('open');
+  menuUpdateBtn.textContent = t('updateChecking');
+  menuUpdateBtn.disabled = true;
+  menuUpdateBtn.title = '';
+
+  let r;
+  try {
+    r = await window.clipboardAPI.updateCheck();
+  } catch (err) {
+    r = { ok: false, error: err.message };
+  }
+
+  if (updateState !== 'checking') return; // 状态已被其他路径改变
+  updateState = 'idle';
+
+  if (!r.ok) {
+    menuUpdateBtn.textContent = t('menuCheckUpdate');
+    menuUpdateBtn.disabled = false;
+    menuUpdateBtn.title = `检查失败：${r.error || '未知错误'}`;
+    return;
+  }
+
+  if (!r.hasUpdate) {
+    // 无更新（2026-09-20 小M 反馈）：菜单项直接显示「当前已是最新版本」，
+    // 3 秒后恢复「检查更新」；tooltip 保留完整版本信息。
+    menuUpdateBtn.textContent = t('menuUpToDate');
+    menuUpdateBtn.disabled = true;
+    menuUpdateBtn.title = t('updateUpToDateTip', r.currentVersion || r.latestVersion || '');
+    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 3000);
+    return;
+  }
+
+  // hasUpdate → 菜单项变「下载升级 vX.Y.Z」，保持菜单展开供用户点击
+  updateState = 'hasUpdate';
+  updateLatestVersion = r.latestVersion;
+  updateDownloadUrl = r.downloadUrl;
+  menuUpdateBtn.textContent = t('updateDownloadBtn', r.latestVersion);
+  menuUpdateBtn.disabled = false;
+  menuUpdateBtn.title = '';
+});
+
+// 第二段：hasUpdate 态点击 → 下载（进度轮询）→ 完成 → install
+menuUpdateBtn.addEventListener('click', async () => {
+  if (updateState !== 'hasUpdate') return;
+  updateState = 'downloading';
+  menuUpdateBtn.disabled = true;
+  updatePercent = 0;
+
+  const renderProgress = () => {
+    if (updateState !== 'downloading') return;
+    menuUpdateBtn.textContent = t('updateDownloading', Math.floor(updatePercent));
+  };
+  updateProgressTimer = setInterval(renderProgress, 200);
+
+  let dl;
+  try {
+    dl = await window.clipboardAPI.updateDownload(updateDownloadUrl);
+  } catch (err) {
+    dl = { ok: false, error: err.message };
+  } finally {
+    if (updateProgressTimer) { clearInterval(updateProgressTimer); updateProgressTimer = null; }
+  }
+
+  if (updateState !== 'downloading') return;
+
+  if (!dl.ok) {
+    updateState = 'idle';
+    menuUpdateBtn.textContent = t('updateDownloadFailed');
+    menuUpdateBtn.disabled = false;
+    menuUpdateBtn.title = dl.error || '';
+    // 5 秒后恢复为「检查更新」，允许重试
+    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 5000);
+    return;
+  }
+
+  updateState = 'installing';
+  menuUpdateBtn.textContent = t('updateChecking'); // 复用「检查中…」语义：安装中禁用
+  menuUpdateBtn.disabled = true;
+
+  let inst;
+  try {
+    inst = await window.clipboardAPI.updateInstall(dl.filePath);
+  } catch (err) {
+    inst = { ok: false, error: err.message };
+  }
+
+  if (!inst.ok) {
+    updateState = 'idle';
+    menuUpdateBtn.textContent = t('updateDownloadFailed');
+    menuUpdateBtn.disabled = false;
+    menuUpdateBtn.title = inst.error || '';
+    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 5000);
+    return;
+  }
+
+  // 安装器已拉起，主进程将 quit —— 菜单项保持禁用即可
+});
+
 // ========== 搜索（2026-09-10 体验优化：入口上移 header，图标点击展开） ==========
 // 主窗口默认 focusable:false（src/main/index.js 零改动）；键盘输入只在 focus-search
 // IPC 之后到达渲染层，自动隐藏联动复用 focusSearch / blurSearch / setSearchActive 链路。
@@ -558,14 +706,7 @@ async function openSearch({ focus = true } = {}) {
   try {
     await window.clipboardAPI.focusSearch();
   } catch (_) { /* IPC 异常不阻塞聚焦尝试 */ }
-  // [focus-debug] 临时埋点（2026-09-10 实机 Ctrl+F/输入不响应排查：定位焦点链断点，验收后移除）
-  const _aeBefore = document.activeElement;
-  console.log('[focus-debug] renderer: before input.focus(), activeElement =',
-    _aeBefore ? (_aeBefore.id || _aeBefore.tagName) : 'null');
   searchInput.focus();
-  const _aeAfter = document.activeElement;
-  console.log('[focus-debug] renderer: after input.focus(), activeElement =',
-    _aeAfter ? (_aeAfter.id || _aeAfter.tagName) : 'null');
   setCursorToEnd();
 }
 

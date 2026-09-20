@@ -20,6 +20,7 @@ const HistoryStorage = require('./storage');
 const { PasteBridge } = require('./paste-bridge');
 const { buildTriggerScript, DRAWER } = require('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker');
+const updater = require('./updater');
 
 class ClipboardSpikeApp {
   constructor() {
@@ -172,6 +173,7 @@ class ClipboardSpikeApp {
     this.tray.setToolTip('ClipSense');
     this.tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示/隐藏', click: () => this.toggleWindow() },
+      { label: '检查更新', click: () => this._checkUpdateFromTray() },
       {
         label: '固定窗口',
         type: 'checkbox',
@@ -196,9 +198,54 @@ class ClipboardSpikeApp {
         submenu: this._buildTagSettingsSubmenu(),
       },
       { type: 'separator' },
+      { type: 'separator' },
       { label: '退出', click: () => app.exit(0) },
     ]));
     this.tray.on('click', () => this.toggleWindow());
+  }
+
+  /**
+   * 托盘「检查更新」入口：走同一链路，结果用系统通知反馈（简单优先）。
+   * 检查 → （有更新）直接后台下载 → 下载完成后再次通知用户手动触发安装
+   * 失败路径全部结构化捕获，不允许未处理 rejection。
+   */
+  async _checkUpdateFromTray() {
+    const notify = (msg) => {
+      try {
+        if (this.tray && !this.tray.isDestroyed()) {
+          // BUG1（2026-09-20 实机）+ 二次反馈修复：① 不传 icon → Windows 取托盘
+          // 16×16 小图放大 → 模糊；② iconType:'info' → 系统信息图标覆盖自定义
+          // icon（custom 才消费 icon 参数）。两项都对齐：高清 logo + iconType:'custom'。
+          this.tray.displayBalloon({
+            title: 'ClipSense',
+            content: msg,
+            icon: path.join(__dirname, '../renderer/app-icon.png'),
+            iconType: 'custom',
+          });
+        }
+      } catch (err) { /* 通知失败不影响主流程 */ }
+      console.log(`[Spike][Updater] ${msg}`);
+    };
+
+    notify('正在检查更新…');
+    try {
+      const r = await updater.checkForUpdate();
+      if (!r.ok) { notify(`检查失败：${r.error}`); return; }
+      if (!r.hasUpdate) {
+        notify(r.reason === 'no-installer-asset'
+          ? `发现新版本 v${r.latestVersion}，但安装包尚未发布`
+          : `已是最新版本 v${r.currentVersion}`);
+        return;
+      }
+      notify(`发现新版本 v${r.latestVersion}，开始下载…`);
+      const dl = await updater.downloadUpdate(r.downloadUrl);
+      if (!dl.ok) { notify(`下载失败：${dl.error}`); return; }
+      notify(`下载完成，即将安装 v${r.latestVersion}`);
+      const inst = updater.installUpdate(dl.filePath);
+      if (!inst.ok) notify(`安装失败：${inst.error}`);
+    } catch (err) {
+      notify(`检查更新失败：${err.message}`);
+    }
   }
 
   /**
@@ -506,20 +553,16 @@ class ClipboardSpikeApp {
 
     // 搜索框需要键盘焦点。2026-09-10 焦点模型回切：窗口恒为可聚焦，show() 保证
     // 从后台唤起场景的前台激活，focus() 聚焦渲染层视图。
-    // [focus-debug] 临时埋点：实机定位焦点链断点用（验收后随渲染层埋点一并移除）。
     ipcMain.handle('focus-search', () => {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
-      console.log('[focus-debug] main: IPC focus-search begin');
       // 双击粘贴回归修复（2026-09-11）：show/focus 抢焦前同步刷新粘贴目标。
       // 抢焦后前台变自身窗口，captureForeground 会被过滤，双击时只能回退 tracked；
       // 不在此刷新则搜索/点击交互后 tracked 陈旧或被清空 → 粘贴焦点留在面板。
       if (this.focusTracker) this.focusTracker.refresh();
       this.mainWindow.show();
-      console.log('[focus-debug] main: show() done');
       this.mainWindow.moveTop();
       this.mainWindow.focus();
       this.mainWindow.webContents.focus();
-      console.log('[focus-debug] main: focus chain done');
       // BUG1（2026-09-11 实机）修复：此处不再兜底 setSearchActive(true)——
       // 自「面板任意 pointerdown 都走 focusSearch」（2026-09-10 焦点模型）后，
       // 无条件挂起会把「点击过面板」误标成「搜索输入中」，固定→解锁后
@@ -635,6 +678,42 @@ class ClipboardSpikeApp {
     ipcMain.handle('drag-end', () => {
       if (this.edgeDetector) this.edgeDetector.setDragging(false);
       return true;
+    });
+
+    // ========== 轻量升级链路（2026-09-20，自研：不引 electron-updater） ==========
+
+    // 检测新版本（GitHub Releases latest）
+    ipcMain.handle('update-check', async () => {
+      try {
+        return await updater.checkForUpdate();
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    });
+
+    // 下载升级包（渲染层传 checkForUpdate 返回的 downloadUrl；进度经
+    // update-download-progress 推给渲染层）
+    ipcMain.handle('update-download', async (event, downloadUrl) => {
+      const sender = event.sender;
+      const sendProgress = (p) => {
+        if (sender && !sender.isDestroyed()) {
+          try { sender.send('update-download-progress', p); } catch (err) { /* 渲染层已关 */ }
+        }
+      };
+      try {
+        return await updater.downloadUpdate(downloadUrl, (p) => sendProgress(p));
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    });
+
+    // 拉起安装包并退出应用
+    ipcMain.handle('update-install', async (event, filePath) => {
+      try {
+        return updater.installUpdate(filePath);
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
     });
   }
 

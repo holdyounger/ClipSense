@@ -35,6 +35,14 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
     ipcRenderer.on('countdown-update', (event, data) => callback(data));
   },
 
+  // ========== 轻量升级链路（2026-09-20，自研） ==========
+  updateCheck: () => ipcRenderer.invoke('update-check'),
+  updateDownload: (url) => ipcRenderer.invoke('update-download', url),
+  updateInstall: (filePath) => ipcRenderer.invoke('update-install', filePath),
+  onUpdateDownloadProgress: (callback) => {
+    ipcRenderer.on('update-download-progress', (event, progress) => callback(progress));
+  },
+
   // ========== 窗口固定 ==========
   setPinned: (pinned) => ipcRenderer.invoke('set-pinned', pinned),
   verifyPinned: () => ipcRenderer.invoke('verify-pinned'),
