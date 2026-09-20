@@ -41,11 +41,16 @@ jobs:
           node --check src/main/index.js
           node --check src/main/paste-bridge.js
           node --check src/main/storage.js
+          node --check src/main/updater.js
+          node --check src/main/trigger-anim.js
           node --check src/renderer/i18n.js
           node --check src/renderer/main.js
           node --check src/renderer/preload.js
           node --check src/renderer/renderer.js
           node --check src/renderer/slide-anim.js
+          node --check src/renderer/spring-anim.js
+          node --check src/renderer/entry-anim.js
+          node --check src/renderer/dock-anim.js
 
   build-windows:
     name: Build (Windows)
@@ -65,6 +70,20 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # 版本同步（2026-09-20）：electron-builder 只认 package.json version，不看 git tag。
+      # tag 触发时把 tag 名剥 v 写回 package.json，保证安装包版本与 Release 版本一致，
+      # 不再依赖打 tag 前手动改 version（v1.0.2 Release 挂 0.1.0 包的根因）。
+      - name: Sync package.json version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          if ($tag -notmatch '^\d+\.\d+\.\d+$') { Write-Error "tag 名不是 v*.*.* 格式: ${{ github.ref_name }}" }
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.version = $tag
+          $pkg | ConvertTo-Json -Depth 100 | Set-Content package.json -Encoding UTF8
+          Write-Host "package.json version → $tag"
 
       - name: Build Electron app (Windows)
         shell: pwsh
