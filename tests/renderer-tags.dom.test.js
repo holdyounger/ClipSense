@@ -28,7 +28,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
-const SOURCES = ['i18n.js', 'renderer.js', 'main.js']
+// spring-anim.js / entry-anim.js 必须先于 main.js（main 顶层 createEntryAnim + 播放链路引用）
+const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
   .map(f => fs.readFileSync(path.join(RENDERER_DIR, f), 'utf8'))
   .join('\n;\n');
 
@@ -246,6 +247,39 @@ const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.now();
 
 // ==================== 用例 ====================
+
+describe('重复内容计数徽标 ×N（2026-09-17）', () => {
+  test('count≥2 → meta 行尾部显示 ×N；chips 之后', async () => {
+    const { document } = loadHarness({
+      history: [{
+        id: 'c1', type: 'text', timestamp: NOW, text: 'again', length: 5,
+        tags: ['link'], count: 3,
+      }],
+    });
+    await flushAsync();
+    const meta = findMeta(findItems(document.getElementById('list'))[0]);
+    const badge = meta.children.find(c => c.className === 'copy-count');
+    assert.ok(badge, '×N 徽标存在');
+    assert.equal(badge.textContent, '×3');
+    // 位置：在 chips 之后（meta 行尾部）
+    const chips = findChipsWrap(meta);
+    assert.equal(meta.children.indexOf(badge) > meta.children.indexOf(chips), true);
+  });
+
+  test('count=1 或缺字段 → 不显示徽标', async () => {
+    const { document } = loadHarness({
+      history: [
+        { id: 'c2', type: 'text', timestamp: NOW, text: 'once only', length: 9, count: 1 },
+        { id: 'c2', type: 'text', timestamp: NOW - 1000, text: 'legacy no field', length: 15 },
+      ],
+    });
+    await flushAsync();
+    for (const item of findItems(document.getElementById('list'))) {
+      const meta = findMeta(item);
+      assert.ok(!meta.children.find(c => c.className === 'copy-count'), '首次/旧数据无徽标');
+    }
+  });
+});
 
 describe('meta 行 chip 渲染（renderer.js）', () => {
   test('meta-text + tag-chips（按优先级前 2 个）+ "+N" 溢出', async () => {

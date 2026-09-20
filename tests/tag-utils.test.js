@@ -710,7 +710,7 @@ describe('v2 重迁移 _migrateTagsV2（clipboard-monitor + 桩 storage）', () 
     const items = [
       { type: 'text', text: 'https://example.com', links: ['https://example.com'] },
       { type: 'text', text: '普通文本，什么都不是' },
-      { type: 'text', text: '10.18.132.214 内网机', links: null, tags: ['link'] }, // v1 旧值被重算
+      { type: 'text', text: '192.168.10.20 内网机', links: null, tags: ['link'] }, // v1 旧值被重算
       { type: 'image', dataUrl: 'data:image/png;base64,xxx' }, // 非 text 跳过
     ];
     const { m, calls } = makeMonitor(items);
@@ -724,7 +724,7 @@ describe('v2 重迁移 _migrateTagsV2（clipboard-monitor + 桩 storage）', () 
   });
 
   test('幂等：tagSchemaVersion=2 二次启动不重算不回写（验收 5）', () => {
-    const items = [{ type: 'text', text: '10.18.132.214', links: null, tags: null }];
+    const items = [{ type: 'text', text: '192.168.10.20', links: null, tags: null }];
     const { m, calls } = makeMonitor(items);
     calls.version = 2;
     assert.equal(m._migrateTagsV2(), 0);
