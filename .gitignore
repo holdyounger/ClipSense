@@ -10,3 +10,9 @@ Thumbs.db
 .ctx-lockstep/
 temp/
 .learnings/
+
+# Docs 策略（2026-09-20 小M）：默认本地（调研/测试报告/设计稿），白名单文件同步。
+# 语法注意：必须用 Docs/*（内容级）而非 Docs/（目录级）——后者使内部否定规则全部失效。
+Docs/*
+# ── 白名单：需要同步到远程的文档，按需增删 ──
+!Docs/Release-*.md

@@ -34,8 +34,7 @@
       "src/**/*",
       "scripts/**/*",
       "package.json",
-      "README.md",
-      "Docs/**/*"
+      "README.md"
     ],
     "asarUnpack": [
       "node_modules/koffi/**",
