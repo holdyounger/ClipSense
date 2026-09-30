@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   updateInstall: (filePath) => ipcRenderer.invoke('update-install', filePath),
   // 两段式窗口透明度（2026-09-30）：主进程推送目标值，渲染层写 --win-alpha 变量
   onWindowOpacity: (callback) => { ipcRenderer.on('window:opacity', (e, v) => callback(v)); },
+  // 窗口可见性权威信号（2026-09-30）：backgroundThrottling:false 下 visibilityState 失灵
+  onWindowVisibility: (callback) => { ipcRenderer.on('window:visibility', (e, v) => callback(v)); },
   onUpdateDownloadProgress: (callback) => {
     ipcRenderer.on('update-download-progress', (event, progress) => callback(progress));
   },

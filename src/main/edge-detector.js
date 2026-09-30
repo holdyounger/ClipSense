@@ -51,6 +51,8 @@ class EdgeDetector {
     this._headerHover = createHeaderHoverState();
     /** 上一次推送给渲染层的 hover 态（去重：changed 才 send） */
     this._headerHoverLast = false;
+    /** 窗口可见性变化回调（2026-09-30）：渲染层贴边 gate 的权威来源 */
+    this._onWindowVisibilityChanged = null;
     /** 两段式窗口透明度（2026-09-30）：上次应用值（null=未知，强制重设） */
     this._appliedOpacity = null;
     /** 拖拽期间冻结边缘检测（防止窗口变大/漂移） */
@@ -103,6 +105,11 @@ class EdgeDetector {
 
   setOnShown(callback) {
     this._onShown = callback;
+  }
+
+  /** 窗口可见性变化回调注册（渲染层贴边 gate 的权威来源，2026-09-30） */
+  setOnVisibilityChanged(callback) {
+    this._onWindowVisibilityChanged = typeof callback === 'function' ? callback : null;
   }
 
   start() {
@@ -275,6 +282,7 @@ class EdgeDetector {
     // 轮询的 100ms 空窗期内鼠标若静止在触发条热区上，会用 getBounds()（隐藏窗口也能取到）
     // 误判 isOverTrigger → 重复重入 _showWindow，prepare/'in' 动画链互踩。
     this.isWindowVisible = true;
+    if (this._onWindowVisibilityChanged) { try { this._onWindowVisibilityChanged(true); } catch (_) { /* 回调异常不阻断 */ } }
     // 触发条状态与实际对齐（原 resetMouseStateAfterShortcutShow 下沉至此，
     // 覆盖所有弹出路径：启动/边缘触发/快捷键/托盘）。若弹出前鼠标恰在热区上，
     // _wasOverTrigger/_suppressTriggerUntilLeave 卡住会让轮询持续干扰交互
@@ -581,6 +589,7 @@ class EdgeDetector {
     this.isWindowVisible = false;
     this._isHiding = false;
     this._lastIsOverPanel = false;
+    if (this._onWindowVisibilityChanged) { try { this._onWindowVisibilityChanged(false); } catch (_) { /* 回调异常不阻断 */ } }
     // 记录隐藏完成时间，短窗口期内忽略触发条 hover，防止刚隐藏就弹回。
     this._hiddenCompletedAt = Date.now();
     console.log(`[EdgeDetector] 推出完成，隐藏窗口（贴边: ${targetEdge || 'unknown'}, 触发条: ${this.triggerWidth}x${triggerHeight}）`);

@@ -126,13 +126,21 @@ function playEntryAnimIfAllowed(el, _item) {
 // 触发判定/贴边补播逻辑见 entry-anim.js（设计稿 Docs/UI方案-新条目动画-2026-09-11.md）。
 // 仅 refresh() 与 onHistoryUpdated 两处数据重建后调 handleRendered；搜索/筛选重渲染
 // 不接（顶部条目 id 不变或 timestamp 陈旧，天然不播）。reduced-motion 在 animate 桥内判定。
+let winVisibleFromMain = true; // 主进程权威窗口可见性（backgroundThrottling:false 下 visibilityState 恒 'visible'，不可用）
 const entryAnim = createEntryAnim({
   play: ({ el, item }) => playEntryAnimIfAllowed(el, item),
-  visibility: () => document.visibilityState,
+  // 字符串语义（'visible'/'hidden'）与 visibilityState 同构——entry-anim 消费端
+  // 是 visibility()==='hidden' 字符串比较（零改动区），布尔直传会类型失配永假
+  visibility: () => (winVisibleFromMain ? 'visible' : 'hidden'),
   onPulse: (id) => {
-    // 贴边收起态新内容到达：主进程对 triggerWindow #bar 下发 180ms 一次性脉冲。
+    // 贴边收起态新内容到达：主进程对 triggerWindow #bar 下发一次性脉冲。
     // IPC 不可达（旧主进程）时静默降级，不影响状态标记与补播链路。
     try {
+      // [pulse-diag] 临时诊断：渲染层 gate 通过（visibility=hidden、同条目未重复），
+      // 借用 diagHit 通道回传主进程 console（隐藏期渲染层 console 不可见）
+      if (window.clipboardAPI && window.clipboardAPI.diagHit) {
+        window.clipboardAPI.diagHit({ tag: 'pulse-diag-renderer', id, vis: document.visibilityState, winVis: winVisibleFromMain ? 'visible' : 'hidden' });
+      }
       if (window.clipboardAPI && window.clipboardAPI.requestEntryPulse) {
         window.clipboardAPI.requestEntryPulse(id);
       }
@@ -1099,6 +1107,25 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onHeaderHover === 'functio
 if (window.clipboardAPI && typeof window.clipboardAPI.onWindowOpacity === 'function') {
   window.clipboardAPI.onWindowOpacity((v) => {
     document.documentElement.style.setProperty('--win-alpha', String(v));
+  });
+}
+
+// 窗口可见性权威信号（2026-09-30）：驱动贴边 gate + 承接原 visibilitychange 的重显动作
+//（筛选重置/搜索态恢复/贴边补播——visibilitychange 在 backgroundThrottling:false 下失灵）
+if (window.clipboardAPI && typeof window.clipboardAPI.onWindowVisibility === 'function') {
+  window.clipboardAPI.onWindowVisibility((v) => {
+    winVisibleFromMain = !!v;
+    if (!v) return;
+    // 重显动作（原 document visibilitychange 语义迁移）：
+    if (searchQuery.trim() !== '') openSearch({ focus: false }); // 搜索态重显自洽
+    const had = activeTagFilter !== null;
+    activeTagFilter = null;
+    renderTagFilter();
+    if (had) {
+      renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+      dockEffect.handleRendered();
+    }
+    entryAnim.playPending(listEl); // 贴边补播（双保险之一，与渲染 tick 兑底并存）
   });
 }
 
