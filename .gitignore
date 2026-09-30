@@ -1,5 +1,6 @@
 node_modules/
-build/
+build/*
+!build/installer.nsh
 dist/
 out/
 *.log
@@ -16,3 +17,4 @@ temp/
 Docs/*
 # ── 白名单：需要同步到远程的文档，按需增删 ──
 !Docs/Release-*.md
+!Docs/PRD-*.md
