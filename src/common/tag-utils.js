@@ -23,8 +23,11 @@
    *  v2 扩展为 12 类价值序：安全 > 漏洞 > 验证码 → 开发结构类 → 通用类 → 粗桶/路径。
    *  link 自 v1 第 1 降至第 9（拍板 #4：多标签条目下 ip/vuln/hash 信息量更高）。 */
   const TAG_PRIORITY = [
-    'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
-    'ip', 'hash', 'link', 'email', 'snippet', 'path',
+    'sensitive', 'vuln', 'otp', 'urlcred',
+    'bankcard', 'idcard', 'tracking', 'phone',
+    'cmd', 'stack', 'config', 'meeting', 'todo',
+    'ip', 'hash', 'uuid', 'color', 'address',
+    'link', 'email', 'snippet', 'path',
   ];
 
   // ==================== email ====================
@@ -274,6 +277,119 @@
   }
 
   /** 惰性取 extractLinks（CommonJS 直接 require；浏览器走 window 挂载） */
+  // ==================== v1.0.7 通用化 10 类（2026-09-30 PRD §2） ====================
+  // 纪律：强特征正则/结构化校验，误报率目标 <1%，宁可漏打不打错；单遍 O(n)。
+
+  /** 去分隔符：数字类识别前统一剥掉空格/横线（卡号/单号/证件号的常见书写变体） */
+  function stripDigitsSep(s) {
+    return String(s).replace(/[ -]/g, '');
+  }
+
+  /** tracking 快递单号：前缀白名单 + 长度（PRD §2.1 tracking 行） */
+  const RE_TRACKING = /\b(SF\d{12,16}|YT\d{13,16}|JD\d{13,16}|JDVE\d{11,13}|EMS\d{13}|9[0-9]{12,16})\b/;
+
+  /** phone：中国大陆手机号，容忍 +86/86 前缀；前后非数字（避免从长串里截取） */
+  const RE_PHONE = /(?:\+?86[- ]?)?\b1[3-9]\d{9}\b/;
+
+  /** idcard：仅 18 位（含 X 校验位），15 位旧号不启用（PRD §2.1 误报决策） */
+  const RE_IDCARD_RAW = /\b\d{17}[\dXx]\b/;
+
+  /** uuid：8-4-4-4-12 标准十六进制（大小写不敏感） */
+  const RE_UUID = /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/;
+
+  /** color：#hex（3/4/6/8 位）或 rgb/rgba/hsl 完整语法 */
+  const RE_COLOR = /(?:#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\brgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+)\s*)?\)|\bhsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\))/;
+
+  /** urlcred：账号/密码凭据键值对（对齐 otp 邻近窗口思路：键与值同段共现） */
+  const RE_URLCRED_PAIR = /(?:账号|帐号|用户名|password|passwd|pwd|密码)\s*[:：=]\s*\S{3,}/i;
+
+  /** meeting：时间词 + 会议动词同段共现（120 字符窗口内） */
+  // 时刻收紧（neg-prose-zh 误报教训）：裸日期词（明天/周X/X月X日）在叙事文本里是
+  // 高频词，单独出现不算时间点——必须与「X点/X:XX」显式时刻结构之一共现
+  const RE_MEETING_DAY = /(周[一二三四五六日天]|明天|后天|今天|\d{1,2}月\d{1,2}[日号]?)/;
+  const RE_MEETING_CLOCK = /(\b\d{1,2}:\d{2}\b)|[上午下午]?\s*[零一二三四五六七八九十两点]+\s*点(?:\s*[零一二三四五六七八九十]+分)?/;
+  const RE_MEETING_VERB = /开会|会议(?!室)|评审|例会|复盘|站会|面试|meeting|review|standup|call|interview/i; /* 会议(?!室)：排除「会议室」场所词 */
+
+  /** todo：行首勾选/待办符号或清单结构 */
+  const RE_TODO_MARK = /(?:^|\n)\s*(?:-\s*\[ \]|\[ \]|TODO[:：]|待办[:：]|TODO\b)/;
+  const RE_TODO_LIST = /(?:^|\n)\s*\d+[.、)]\s*\S+(?:\n\s*\d+[.、)]\s*\S+){1,}/;
+
+  /** address：省/市开头 + ≥2 个地址关键词 + 长度 ≥10 */
+  const RE_ADDRESS_HEAD = /[\u4e00-\u9fa5]{2,8}?(?:省|自治区|市)/;
+  const RE_ADDRESS_PARTS = /(?:[\u4e00-\u9fa5]{2,8}?(?:省|市|自治区))[　\s]*(?:[\u4e00-\u9fa5]{2,8}?(?:市|区|县|州|盟))?[　\s]*(?:[\u4e00-\u9fa5]{2,10}?(?:路|街|巷|道|镇|乡))?[\u4e00-\u9fa50-9]*(?:号|栋|幢|号楼|单元|室|层|座)/;
+
+  /** GB 11643 身份证校验位（18 位） */
+  const ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  const ID_CHECK = { 0: '1', 1: '0', 2: 'X', 3: '9', 4: '8', 5: '7', 6: '6', 7: '5', 8: '4', 9: '3', 10: '2' };
+
+  function isValidIdCard18(raw) {
+    const id = stripDigitsSep(raw).toUpperCase();
+    if (!/^\d{17}[\dX]$/.test(id)) return false;
+    // 省份码粗校验（1-6 开头为合法省级行政区划首位的超集）
+    if (!/^[1-6]/.test(id)) return false;
+    // 出生日期合理性
+    const y = +id.slice(6, 10), mo = +id.slice(10, 12), d = +id.slice(12, 14);
+    if (y < 1900 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    // GB 11643 加权校验
+    let sum = 0;
+    for (let i = 0; i < 17; i++) sum += Number(id[i]) * ID_WEIGHTS[i];
+    return ID_CHECK[sum % 11] === id[17];
+  }
+
+  /** 银行卡候选提取：13-19 位数字段（容忍空格/横线分隔变体） */
+  const RE_BANKCARD_RAW = /\b(?:\d[ -]?){12,18}\d\b/g;
+
+  /** 银行卡：先提取候选片段，去分隔符后 13-19 位 + Luhn（两步模式，同 idcard） */
+  function isBankCard(text) {
+    RE_BANKCARD_RAW.lastIndex = 0;
+    let m;
+    while ((m = RE_BANKCARD_RAW.exec(text)) !== null) {
+      const digits = stripDigitsSep(m[0]);
+      if (/^\d{13,19}$/.test(digits) && luhnCheck(digits)) return true;
+    }
+    return false;
+  }
+
+  function detectTracking(text) {
+    return RE_TRACKING.test(text);
+  }
+
+  function detectPhone(text) {
+    return RE_PHONE.test(text);
+  }
+
+  function detectIdCard(text) {
+    const m = text.match(RE_IDCARD_RAW);
+    if (!m) return false;
+    return isValidIdCard18(m[0]);
+  }
+
+  function detectUuid(text) {
+    return RE_UUID.test(text);
+  }
+
+  function detectColor(text) {
+    return RE_COLOR.test(text);
+  }
+
+  function detectUrlCred(text) {
+    return RE_URLCRED_PAIR.test(text);
+  }
+
+  function detectMeeting(text) {
+    // 双条件：日期词 + 显式时刻（HH:MM 或「X点」）——只有日期或只有时刻不判
+    return RE_MEETING_DAY.test(text) && RE_MEETING_CLOCK.test(text) && RE_MEETING_VERB.test(text);
+  }
+
+  function detectTodo(text) {
+    return RE_TODO_MARK.test(text) || RE_TODO_LIST.test(text);
+  }
+
+  function detectAddress(text) {
+    if (text.length < 10) return false;
+    return RE_ADDRESS_HEAD.test(text) && RE_ADDRESS_PARTS.test(text);
+  }
+
   function getExtractLinks() {
     try {
       if (typeof require === 'function' && typeof module !== 'undefined' && module.exports) {
@@ -307,6 +423,17 @@
       email: on('email'),
       snippet: on('snippet'),
       path: on('path'),
+      // v1.0.7 通用化 10 类（2026-09-30 PRD §2，默认全开可关）
+      urlcred: on('urlcred'),
+      bankcard: on('bankcard'),
+      idcard: on('idcard'),
+      tracking: on('tracking'),
+      phone: on('phone'),
+      meeting: on('meeting'),
+      todo: on('todo'),
+      uuid: on('uuid'),
+      color: on('color'),
+      address: on('address'),
     };
   }
 
@@ -563,6 +690,40 @@
       try { if (detectConfig(input)) add('config'); } catch (err) { /* 单识别器隔离 */ }
     }
 
+    // ⑧ v1.0.7 通用化 10 类（2026-09-30 PRD §2）：与既有类并列，逐个 try/catch 隔离。
+    // 顺序按成本排列：单正则的 urlcred/bankcard/idcard/tracking/phone/uuid/color 先跑，
+    // 组合正则的 meeting/todo/address 后跑。
+    if (enabled.urlcred) {
+      try { if (detectUrlCred(t0)) add('urlcred'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.bankcard) {
+      try { if (isBankCard(input)) add('bankcard'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.idcard) {
+      try { if (detectIdCard(input)) add('idcard'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.tracking) {
+      try { if (detectTracking(input)) add('tracking'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.phone) {
+      try { if (detectPhone(input)) add('phone'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.uuid) {
+      try { if (detectUuid(input)) add('uuid'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.color) {
+      try { if (detectColor(input)) add('color'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.meeting) {
+      try { if (detectMeeting(input)) add('meeting'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.todo) {
+      try { if (detectTodo(input)) add('todo'); } catch (err) { /* 单识别器隔离 */ }
+    }
+    if (enabled.address) {
+      try { if (detectAddress(input)) add('address'); } catch (err) { /* 单识别器隔离 */ }
+    }
+
     // 聚合：按展示优先级排序、去重、截断至 MAX_TAGS；空集返回 null
     const ordered = TAG_PRIORITY.filter(id => hits.includes(id)).slice(0, MAX_TAGS);
     return ordered.length > 0 ? ordered : null;
@@ -572,6 +733,9 @@
     computeTags, luhnCheck, MAX_INPUT_LENGTH, MAX_TAGS, TAG_PRIORITY,
     // v2 新增识别器单独导出（测试/诊断用；computeTags 内部已带隔离与 enabled 门控）
     detectVuln, detectCmd, detectStack, detectConfig, detectIp, detectHash, detectPath,
+    // v1.0.7 通用化识别器单独导出（测试/诊断用）
+    detectUrlCred, isBankCard, detectIdCard, detectTracking, detectPhone,
+    detectMeeting, detectTodo, detectUuid, detectColor, detectAddress,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

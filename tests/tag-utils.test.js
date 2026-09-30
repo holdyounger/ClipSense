@@ -65,13 +65,16 @@ function excludesTag(text, id, msg) {
 // ==================== 公共约定 ====================
 
 describe('公共约定', () => {
-  test('导出与常量（§4.0；v2 扩展 12 类，方案 §3.3）', () => {
+  test('导出与常量（§4.0；v2 12 类 + v1.0.7 通用化 10 类，PRD §3）', () => {
     assert.equal(typeof computeTags, 'function');
     assert.equal(typeof luhnCheck, 'function');
     assert.equal(MAX_TAGS, 8);
     assert.deepStrictEqual(TAG_PRIORITY, [
-      'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
-      'ip', 'hash', 'link', 'email', 'snippet', 'path',
+      'sensitive', 'vuln', 'otp', 'urlcred',
+      'bankcard', 'idcard', 'tracking', 'phone',
+      'cmd', 'stack', 'config', 'meeting', 'todo',
+      'ip', 'hash', 'uuid', 'color', 'address',
+      'link', 'email', 'snippet', 'path',
     ]);
   });
 
@@ -390,7 +393,7 @@ describe('性能冒烟', () => {
     assert.ok(ms < 1000, `500 条迁移耗时 ${ms.toFixed(1)}ms ≥ 1000ms`);
   });
 
-  test('单条 64KB 混合文本打标 < 5ms（§9 预算上界）', () => {
+  test('单条 64KB 混合文本打标 < 8ms（§9 预算；v1.0.7 通用化 22 类后 5→8，PRD §六）', () => {
     const big = build64KBText();
     assert.equal(big.length, 64 * 1024);
     computeTags(big, {});
@@ -403,7 +406,7 @@ describe('性能冒烟', () => {
     }
     const best = Math.min(...times);
     console.log(`    [perf] 单条 64KB 打标 min-of-3 ${best.toFixed(2)}ms`);
-    assert.ok(best < 5, `单条 64KB 打标 ${best.toFixed(2)}ms ≥ 5ms`);
+    assert.ok(best < 8, `单条 64KB 打标 ${best.toFixed(2)}ms ≥ 8ms`);
   });
 
   test('64KB 无 @ 十六进制长跑（哈希/证书类）不退化（守护 email 快速跳过；v2 起该形态按设计命中 hash）', () => {
