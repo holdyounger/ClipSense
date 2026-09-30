@@ -685,7 +685,16 @@ class ClipboardSpikeApp {
     // 检测新版本（GitHub Releases latest）
     ipcMain.handle('update-check', async () => {
       try {
-        return await updater.checkForUpdate();
+        // 总超时守卫（2026-09-30）：403 降级链为串行请求（API + Atom + 探测），
+        // 极端网络下最坏可累积数分钟——60s 封顶返回结构化错误，避免菜单项「检查中…」久挂。
+        const TIMEOUT_MS = 60000;
+        return await Promise.race([
+          updater.checkForUpdate(),
+          new Promise((resolve) => setTimeout(
+            () => resolve({ ok: false, error: '检查超时（60s），请检查网络后重试' }),
+            TIMEOUT_MS
+          )),
+        ]);
       } catch (err) {
         return { ok: false, error: err.message };
       }
