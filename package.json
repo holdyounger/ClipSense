@@ -1,6 +1,6 @@
 {
   "name": "clipboard-spike",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "剪贴板程序可行性 spike demo —— 验证：剪贴板轮询监听 → 面板展示 → 点击回写",
   "main": "src/main/index.js",
   "scripts": {
