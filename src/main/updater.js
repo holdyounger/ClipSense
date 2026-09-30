@@ -392,11 +392,9 @@ async function downloadUpdate(downloadUrl, onProgress) {
 
 /**
  * 拉起安装包（NSIS 静默参数 /S），detached + unref 后退出应用，
- * 并安排安装完成后自动重启新版本（消除「装完了却没反应」的体验断点）。
- *
- * 重启机制（VS Code/Slack 同款）：应用退出前 spawn 一个 detached 的
- * Windows 脚本（data 外置为参数）——轮询等待安装器进程退出 + 新主程序
- * mtime 更新，然后 start 新版本。脚本独立于本进程存活，应用退出不影响。
+ * 拉起 NSIS 静默安装器（/S）后退出应用。安装收尾的「自动启动新版本」由
+ * NSIS customInstall 负责（build/installer.nsh），本模块不再安排应用侧重启脚本
+ *（2026-09-30 实机缺陷：cmd 轮询脚本卡死在 find 循环，已废弃，见 buildRestartScript）。
  *
  * 执行前用 fs.accessSync 确认安装包存在，避免「升级点击 → 拉起失败 → 应用未退出」。
  * @param {string} filePath - downloadUpdate 返回的安装包路径
@@ -413,7 +411,7 @@ function installUpdate(filePath) {
   }
 
   // NSIS 静默安装会先检测运行中的应用；本进程退出与安装器启动存在竞态，
-  // 由安装器自身的关闭提示 + 脚本重试兜底（见下方 restart 脚本的轮询）。
+  // 由安装器自身的关闭检测兜底（customInstall 负责装后自动启动）。
   try {
     const child = spawn(filePath, ['/S'], {
       detached: true,
@@ -425,18 +423,11 @@ function installUpdate(filePath) {
     return { ok: false, error: `启动安装包失败: ${err.message}` };
   }
 
-  // 安装完成后自动重启新版本：退出前安排 detached 重启脚本
+  // 拉起安装器后退出应用。安装收尾的自动启动由 NSIS customInstall 负责
+  //（build/installer.nsh：静默升级完成后 Exec 启动新版本——比应用侧脚本更可靠，
+  //  v1.0.5.1 曾用应用侧 cmd 轮询脚本替代，实机卡死在 find 轮询已废弃）。
   try {
     const app = electronApi() && electronApi().app;
-    const exePath = app && typeof app.getPath === 'function' && app.isPackaged
-      ? path.join(path.dirname(process.execPath), 'ClipSense.exe')
-      : null; // 开发模式（未打包）无固定安装路径，跳过重启安排
-    if (app && exePath && fs.existsSync(exePath)) {
-      const restartScript = buildRestartScript(filePath, exePath);
-      const scriptPath = path.join(path.dirname(filePath), 'clipsense-restart.cmd');
-      fs.writeFileSync(scriptPath, restartScript, 'utf8');
-      spawn('cmd.exe', ['/c', scriptPath], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    }
     if (app) app.quit();
   } catch (err) { /* 退出失败不影响安装器继续执行 */ }
 

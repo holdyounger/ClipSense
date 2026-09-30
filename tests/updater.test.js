@@ -263,3 +263,29 @@ describe('buildRestartScript 安装后自动重启', () => {
     assert.ok(script.includes(':giveup'), 'giveup 分支存在');
   });
 });
+
+// ==================== N. NSIS customInstall 自动启动（取代应用侧重启脚本） ====================
+
+describe('installer.nsh 静默升级自动启动（取代 buildRestartScript）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('N1 installer.nsh：customInstall 宏存在，静默升级（isUpdated）拉起新版本', () => {
+    const nsh = readRoot('build/installer.nsh');
+    assert.match(nsh, /!macro\s+customInstall/, 'customInstall 宏定义');
+    assert.match(nsh, /\$\{ifNot\}\s*\$\{isUpdated\}/, '交互式安装守卫（不双开）');
+    assert.match(nsh, /Exec ['"]{2}\$INSTDIR\\ClipSense\.exe['"]{2}/, '静默升级后启动新版本（单引号+双引号包裹）');
+  });
+
+  test('N2 package.json：build.nsis.include 挂载 installer.nsh（CI 构建必须读到）', () => {
+    const pkg = JSON.parse(readRoot('package.json'));
+    assert.strictEqual(pkg.build.nsis.include, 'build/installer.nsh');
+  });
+
+  test('N3 installUpdate：不再生成应用侧重启脚本（clipsense-restart.cmd 零引用）', () => {
+    const src = readRoot('src/main/updater.js');
+    assert.ok(!src.includes('clipsense-restart.cmd'), '不写 restart 脚本文件');
+    assert.ok(!src.includes("spawn('cmd.exe'"), '不再 spawn cmd 轮询');
+    assert.ok(typeof updater.buildRestartScript === 'function', '兼容导出仍在');
+  });
+});
