@@ -640,6 +640,10 @@ describe('F. 窗口透明度渲染层迁移（CSS alpha 替代原生 setOpacity�
     assert.ok(itemBlock && /opacity:\s*var\(--win-alpha/.test(itemBlock[0]), '.item 随窗口衰减');
     const hoverBlock = css.match(/\.item:hover\s*\{[^}]*\}/);
     assert.ok(hoverBlock && /opacity:\s*1/.test(hoverBlock[0]), '悬停 item 恢复 100%');
+    const headerBlock2 = css.match(/\.header\s*\{[^}]*\}/);
+    assert.ok(headerBlock2 && /rgba\(108,\s*92,\s*231,\s*var\(--win-alpha/.test(headerBlock2[0]), 'header 渐变消费 --win-alpha');
+    assert.ok(/rgba\(42,\s*42,\s*50,\s*0\.25\)/.test(css), 'hint 固定低 alpha（#app 已承载 win-alpha，不得二次乘算）');
+    assert.ok(!/calc\(0\.96\s*\*\s*var\(--win-alpha/.test(css), '禁止双层叠加（回归防护）');
   });
 });
 
@@ -674,5 +678,82 @@ describe('G. 贴边动画 gate 可见性源迁移（backgroundThrottling:false �
     const preload = readRoot('src/renderer/preload.js');
     assert.match(preload, /onWindowVisibility/, '桥接存在');
     assert.match(preload, /'window:visibility'/, '频道一致');
+  });
+});
+
+
+// ==================== H. footer 压缩（2026-09-30：statCount/tagFilter 两行太高） ====================
+
+describe('H. footer 压缩（statCount/tagFilter 行高）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('H1 footer：gap 2 / padding 4 / tag-filter min-height 22（压缩档锚定）', () => {
+    const css = readRoot('src/renderer/main.css');
+    const footerBlock = css.match(/\.footer\s*\{[^}]*\}/);
+    assert.ok(footerBlock && /gap:\s*2px/.test(footerBlock[0]), 'footer gap 2px');
+    assert.ok(footerBlock && /padding:\s*4px\s+12px/.test(footerBlock[0]), 'footer padding 4px 12px');
+    const tf = css.match(/\.tag-filter\s*\{[^}]*\}/);
+    assert.ok(tf && /min-height:\s*22px/.test(tf[0]), 'tag-filter min-height 22px');
+  });
+});
+
+// ==================== I. 透明度覆盖收敛（2026-09-30：footer/backtop 消费 --win-alpha + 计数唯一化） ====================
+
+describe('I. 透明度覆盖收敛（footer/backtop/计数唯一位）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('I1 footer 背景消费 --win-alpha（bg2 RGB + 变量 alpha，无实色残留）', () => {
+    const css = readRoot('src/renderer/main.css');
+    const footerBlock = css.match(/\.footer\s*\{[^}]*\}/);
+    assert.ok(footerBlock, '.footer 规则存在');
+    assert.ok(
+      /background:\s*rgba\(\s*42,\s*42,\s*50,\s*var\(--win-alpha,\s*1\)\)/.test(footerBlock[0]),
+      'footer background = rgba(42,42,50,var(--win-alpha,1))'
+    );
+    assert.ok(!/background:\s*var\(--bg2\)/.test(footerBlock[0]), '无实色 --bg2 背景残留');
+  });
+
+  test('I2 index.html 无 footer-main/statCount/stats 容器残留，tag-filter 保留原地', () => {
+    const html = readRoot('src/renderer/index.html');
+    assert.ok(!html.includes('footer-main'), '无 footer-main 残留');
+    assert.ok(!html.includes('statCount'), '无 statCount 残留');
+    assert.ok(!/class="stats"/.test(html), '无 .stats 容器残留');
+    assert.ok(html.includes('id="tagFilter"'), 'tag-filter 保留原地');
+  });
+
+  test('I3 main.js 无 statCount 引用（声明+两处赋值同步删除，防 null TypeError）；headerMeta 更新保留', () => {
+    const js = readRoot('src/renderer/main.js');
+    assert.ok(!js.includes('statCount'), 'main.js 无 statCount 残留');
+    const updateStats = js.match(/function updateStats\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(updateStats, 'updateStats 函数体可提取');
+    assert.ok(updateStats[0].includes("getElementById('headerMeta')"), 'headerMeta 更新保留');
+  });
+
+  test('I4 backtop 背景/border 消费 --win-alpha（calc 乘算，0.85/0.4 基调不变）', () => {
+    const css = readRoot('src/renderer/main.css');
+    const btn = css.match(/\.back-top-btn\s*\{[^}]*\}/);
+    assert.ok(btn, '.back-top-btn 规则存在');
+    assert.ok(
+      /background:\s*rgba\(\s*108,\s*92,\s*231,\s*calc\(0\.85\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(btn[0]),
+      'background = rgba(108,92,231,calc(0.85 * --win-alpha))'
+    );
+    assert.ok(
+      /border:\s*1px solid rgba\(\s*162,\s*155,\s*254,\s*calc\(0\.4\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(btn[0]),
+      'border = rgba(162,155,254,calc(0.4 * --win-alpha))'
+    );
+    assert.ok(!/rgba\(108,\s*92,\s*231,\s*0\.85\)/.test(btn[0]), '无固定 alpha 旧值残留');
+  });
+
+  test('I5 backtop hover 态消费 --win-alpha（accent-hover 实色改变量 alpha）', () => {
+    const css = readRoot('src/renderer/main.css');
+    const hover = css.match(/\.back-top-btn:hover\s*\{[^}]*\}/);
+    assert.ok(hover, ':hover 规则存在');
+    assert.ok(
+      /background:\s*rgba\(\s*162,\s*155,\s*254,\s*var\(--win-alpha,\s*1\)\)/.test(hover[0]),
+      'hover background = rgba(162,155,254,var(--win-alpha,1))'
+    );
+    assert.ok(!/var\(--accent-hover\)/.test(hover[0]), '无实色 --accent-hover 残留');
   });
 });

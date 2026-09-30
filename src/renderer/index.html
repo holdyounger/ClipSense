@@ -85,14 +85,9 @@
       </svg>
     </button>
 
-    <!-- 底部状态栏：统计（.footer-main，搜索框已上移 header 2026-09-10）
-         + 标签筛选条（#tagFilter，无标签时 hidden，位置不变） -->
+    <!-- 底部状态栏：标签筛选条（#tagFilter，无标签时 hidden，位置不变）。
+         底部统计行已移除（2026-09-30）：计数唯一展示位收敛为 header #headerMeta（防重复） -->
     <footer class="footer" id="footer">
-      <div class="footer-main">
-        <div class="stats" id="stats">
-          <span id="statCount">0 项</span>
-        </div>
-      </div>
       <div class="tag-filter" id="tagFilter" hidden></div>
     </footer>
   </div>

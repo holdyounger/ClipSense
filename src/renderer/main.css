@@ -59,7 +59,11 @@ html, body {
   flex-direction: column; /* 方案 A（2026-09-28）：纵向布局承载内容行 + 辅助行 */
   justify-content: center;
   padding: 4px 12px; /* 公共基线 2026-09-29 缩减档：静止态 32px（内容行 24 + 上下 4） */
-  background: linear-gradient(135deg, var(--accent), #4834d4);
+  /* 两段式透明度（2026-09-30）：渐变两色标 alpha 消费 --win-alpha（固定 60%/倒计时透视），
+     header 与列表区域统一衰减；文字/按钮保持全不透明可读。 */
+  background: linear-gradient(135deg,
+    rgba(108, 92, 231, var(--win-alpha, 1)),
+    rgba(72, 52, 212, var(--win-alpha, 1)));
   -webkit-app-region: drag;
   cursor: move;
   user-select: none;
@@ -468,13 +472,18 @@ html, body {
 
 .hint {
   position: relative;
-  min-height: 42px;
-  padding: 9px 14px 10px 17px;
+  min-height: 26px; /* 2026-09-30 压缩：42→26（padding 9/10→6/7，行高 1.55→1.4） */
+  padding: 6px 14px 7px 17px;
   font-size: 11px;
   color: #c2c0d0;
-  background: linear-gradient(135deg, rgba(108, 92, 231, 0.12), rgba(42, 42, 50, 0.96));
+  /* 透明机理（2026-09-30 修正）：#app 已消费 --win-alpha，此处用固定低 alpha——
+     不得再乘 --win-alpha（双层深色叠加 ≈0.83，是「footer 还是不透明」的根因）。
+     深端 0.25 叠 #app 后：固定态 ≈0.7 / 倒计时透视态 ≈0.55，与列表区域观感一致。 */
+  background: linear-gradient(135deg,
+    rgba(108, 92, 231, 0.10),
+    rgba(42, 42, 50, 0.25));
   border-bottom: 1px solid rgba(162, 155, 254, 0.18);
-  line-height: 1.55;
+  line-height: 1.4;
   overflow: hidden;
   cursor: default;
   transition: min-height 0.22s ease, padding 0.22s ease, background 0.22s ease,
@@ -486,8 +495,8 @@ html, body {
   content: '';
   position: absolute;
   left: 8px;
-  top: 10px;
-  bottom: 10px;
+  top: 7px;
+  bottom: 7px;
   width: 3px;
   border-radius: 99px;
   background: linear-gradient(180deg, var(--accent-hover), var(--accent));
@@ -499,7 +508,7 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 4px;
+  margin-top: 2px;
   color: #9996b2;
   font-size: 10px;
 }
@@ -577,9 +586,10 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(162, 155, 254, 0.4);
+  border: 1px solid rgba(162, 155, 254, calc(0.4 * var(--win-alpha, 1)));
   border-radius: 50%;
-  background: rgba(108, 92, 231, 0.85);
+  /* 透明度覆盖（2026-09-30）：calc 乘算消费 --win-alpha，保持 0.85 基调；文字/svg 仍全不透明 */
+  background: rgba(108, 92, 231, calc(0.85 * var(--win-alpha, 1)));
   color: #fff;
   cursor: pointer;
   z-index: 40;
@@ -598,7 +608,8 @@ html, body {
 }
 
 .back-top-btn:hover {
-  background: var(--accent-hover);
+  /* 透明度覆盖（2026-09-30）：accent-hover 的 RGB + --win-alpha（原为实色 accent-hover） */
+  background: rgba(162, 155, 254, var(--win-alpha, 1));
 }
 
 .back-top-btn:active {
@@ -919,6 +930,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 22px; /* 2026-09-30 压缩：固定紧凑行高（原随 chip 撑高） */
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1046,23 +1058,10 @@ html, body {
 .footer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
-  background: var(--bg2);
+  gap: 2px; /* 2026-09-30 压缩：6→2（统计行与筛选条间距） */
+  padding: 4px 12px; /* 8→4：上下各压 4px */
+  /* 透明度覆盖（2026-09-30）：bg2 的 RGB + --win-alpha——固定模式下随窗口同步透视（原实色不衰减的根因修复） */
+  background: rgba(42, 42, 50, var(--win-alpha, 1));
   border-top: 1px solid var(--border);
   flex-shrink: 0;
-}
-
-/* 搜索框已上移 header（2026-09-10）：本行仅剩统计，保持右对齐（原搜索框右侧位） */
-.footer-main {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.stats {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--muted);
 }

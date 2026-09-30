@@ -237,10 +237,10 @@ class ClipboardSpikeApp {
           : `已是最新版本 v${r.currentVersion}`);
         return;
       }
-      notify(`发现新版本 v${r.latestVersion}，开始下载…`);
+      notify(`发现新版本 v${r.latestVersion}，开始下载…（完成后将自动安装并重启）`);
       const dl = await updater.downloadUpdate(r.downloadUrl);
       if (!dl.ok) { notify(`下载失败：${dl.error}`); return; }
-      notify(`下载完成，即将安装 v${r.latestVersion}`);
+      notify(`下载完成，正在静默安装 v${r.latestVersion}…完成后将自动重启`);
       const inst = updater.installUpdate(dl.filePath);
       if (!inst.ok) notify(`安装失败：${inst.error}`);
     } catch (err) {

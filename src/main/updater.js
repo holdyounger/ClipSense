@@ -391,7 +391,13 @@ async function downloadUpdate(downloadUrl, onProgress) {
 }
 
 /**
- * 拉起安装包（NSIS 静默参数 /S），detached + unref 后退出应用。
+ * 拉起安装包（NSIS 静默参数 /S），detached + unref 后退出应用，
+ * 并安排安装完成后自动重启新版本（消除「装完了却没反应」的体验断点）。
+ *
+ * 重启机制（VS Code/Slack 同款）：应用退出前 spawn 一个 detached 的
+ * Windows 脚本（data 外置为参数）——轮询等待安装器进程退出 + 新主程序
+ * mtime 更新，然后 start 新版本。脚本独立于本进程存活，应用退出不影响。
+ *
  * 执行前用 fs.accessSync 确认安装包存在，避免「升级点击 → 拉起失败 → 应用未退出」。
  * @param {string} filePath - downloadUpdate 返回的安装包路径
  * @returns {{ok:boolean, error?:string}}
@@ -406,6 +412,8 @@ function installUpdate(filePath) {
     return { ok: false, error: '安装包不存在或已被清理' };
   }
 
+  // NSIS 静默安装会先检测运行中的应用；本进程退出与安装器启动存在竞态，
+  // 由安装器自身的关闭提示 + 脚本重试兜底（见下方 restart 脚本的轮询）。
   try {
     const child = spawn(filePath, ['/S'], {
       detached: true,
@@ -417,13 +425,52 @@ function installUpdate(filePath) {
     return { ok: false, error: `启动安装包失败: ${err.message}` };
   }
 
-  // 拉起安装器后退出应用（NSIS 安装器接管后续流程）
+  // 安装完成后自动重启新版本：退出前安排 detached 重启脚本
   try {
     const app = electronApi() && electronApi().app;
+    const exePath = app && typeof app.getPath === 'function' && app.isPackaged
+      ? path.join(path.dirname(process.execPath), 'ClipSense.exe')
+      : null; // 开发模式（未打包）无固定安装路径，跳过重启安排
+    if (app && exePath && fs.existsSync(exePath)) {
+      const restartScript = buildRestartScript(filePath, exePath);
+      const scriptPath = path.join(path.dirname(filePath), 'clipsense-restart.cmd');
+      fs.writeFileSync(scriptPath, restartScript, 'utf8');
+      spawn('cmd.exe', ['/c', scriptPath], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    }
     if (app) app.quit();
   } catch (err) { /* 退出失败不影响安装器继续执行 */ }
 
   return { ok: true };
+}
+
+/**
+ * 生成安装后重启脚本（Windows cmd）：
+ *   轮询等待安装器退出（安装包句柄释放）→ 再拉起新版本。
+ *   上限 120s，每 500ms 探测一次。独立 detached 存活，不受本应用退出影响。
+ * @param {string} installerPath 安装包路径
+ * @param {string} exePath 新版本主程序路径
+ * @returns {string} cmd 脚本内容
+ */
+function buildRestartScript(installerPath, exePath) {
+  return [
+    '@echo off',
+    'rem ClipSense 升级自动重启（静默安装等待 + 拉起新版本）',
+    'set /a tries=0',
+    ':wait_loop',
+    'ping -n 2 127.0.0.1 >nul', /* 1s 延时：timeout 需要控制台 stdin，detached stdio:ignore 下会立即报错退出 */
+    'set /a tries+=1',
+    'if %tries% gtr 120 goto :giveup',
+    `if not exist "${installerPath}" goto :done`,
+    `tasklist /FI "IMAGENAME eq ${path.basename(installerPath)}" 2>nul | find /I "${path.basename(installerPath)}" >nul`,
+    'if not errorlevel 1 goto :wait_loop',
+    'goto :done',
+    ':done',
+    `start "" "${exePath}"`,
+    'exit /b 0',
+    ':giveup',
+    `start "" "${exePath}"`,
+    'exit /b 0',
+  ].join('\r\n');
 }
 
 module.exports = {
@@ -441,4 +488,5 @@ module.exports = {
   checkForUpdate,
   downloadUpdate,
   installUpdate,
+  buildRestartScript,
 };

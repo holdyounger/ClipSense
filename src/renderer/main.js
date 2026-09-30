@@ -11,7 +11,6 @@ const dropdownMenu = document.getElementById('dropdownMenu');
 const menuLangBtn = document.getElementById('menuLangBtn');
 const menuClearBtn = document.getElementById('menuClearBtn');
 const searchInput = document.getElementById('searchInput');
-const statCount = document.getElementById('statCount');
 const hintEl = document.getElementById('hint');
 const backTopBtn = document.getElementById('backTopBtn');
 
@@ -399,18 +398,13 @@ function filterHistory(history) {
 }
 
 /**
- * 更新底部统计（总数 + 过滤后数量）
+ * 更新 header 辅助行统计（2026-09-30：底部 .stats 统计行已移除，
+ * 计数唯一展示位收敛为 header #headerMeta）
  */
 function updateStats() {
   const total = fullHistory.length;
-  const shown = filterHistory(fullHistory).length;
-  if (searchQuery.trim()) {
-    statCount.textContent = t('statFiltered', shown, total);
-  } else {
-    statCount.textContent = t('statCount', total);
-  }
   // Header 辅助行（方案 A，2026-09-28）：「共 N 条 · 上次复制时间」。
-  // 数据源：total = fullHistory.length（与底部统计同源）；rel = history[0].timestamp
+  // 数据源：total = fullHistory.length；rel = history[0].timestamp
   // 相对时间（3 分钟前/2 小时前/昨天）。防御式取用：旧 DOM 桩 harness（new Function
   // 不含 header-hover-ui.js）下 formatRelativeTime 未定义 → 辅助行置空降级。
   const metaEl = document.getElementById('headerMeta');

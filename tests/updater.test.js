@@ -234,3 +234,32 @@ describe('升级链路错误结构', () => {
     assert.ok(missing.error);
   });
 });
+
+// ==================== 升级自动重启脚本（2026-09-30 体验断点修复） ====================
+
+describe('buildRestartScript 安装后自动重启', () => {
+  const { buildRestartScript } = updater;
+
+  test('脚本结构：CRLF 换行 + 轮询等待安装器退出 + start 拉起新版本', () => {
+    const script = buildRestartScript('C:\\Temp\\ClipSense-update-1.0.5.exe', 'C:\\Programs\\clipboard-spike\\ClipSense.exe');
+    assert.ok(script.includes('\r\n'), 'Windows CRLF 换行');
+    assert.ok(script.startsWith('@echo off'));
+    assert.ok(script.includes('tasklist'), '轮询安装器进程');
+    assert.ok(script.includes(':wait_loop'), '等待循环');
+    const starts = script.split('\r\n').filter((l) => l.startsWith('start '));
+    assert.strictEqual(starts.length, 2, 'done 与 giveup 两路都拉起新版本');
+    assert.ok(script.includes('ClipSense.exe'), '拉起目标为新版本主程序');
+  });
+
+  test('脚本不含裸 LF（纯 CRLF，cmd 解析要求）', () => {
+    const script = buildRestartScript('a.exe', 'b.exe');
+    const lfOnly = script.replace(/\r\n/g, '');
+    assert.ok(!lfOnly.includes('\n'), '不允许裸 LF');
+  });
+
+  test('上限保护：120s 超时后仍拉起新版本（giveup 路径）', () => {
+    const script = buildRestartScript('a.exe', 'b.exe');
+    assert.ok(script.includes('gtr 120'), '120s 上限');
+    assert.ok(script.includes(':giveup'), 'giveup 分支存在');
+  });
+});
