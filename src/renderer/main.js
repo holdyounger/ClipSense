@@ -968,32 +968,59 @@ if (window.clipboardAPI && window.clipboardAPI.onTagSettingsUpdated) {
   window.clipboardAPI.onTagSettingsUpdated((s) => applyTagSettings(s));
 }
 
-// ========== 升级欢迎页（2026-09-30）：版本变化时展示，关闭后回写已展示版本 ==========
-// 数据流：主进程 get-welcome-state（app.getVersion vs config.lastShownVersion）→
-// shouldShow=true → 渲染层移除 overlay hidden 属性 + 填充版本号；
-// 用户点击「开始使用」/遮罩 → set-welcome-shown 回写 → overlay 淡出。
+// ========== 欢迎页 / 关于页 overlay（2026-09-30） ==========
+// 同一 overlay 两种模式：upgrade（版本变化展示，关闭回写 lastShownVersion）/
+// about（托盘「关于」触发，只读展示不回写）。
+// 关闭失效教训：.welcome-overlay 显式 display:flex 的作者样式覆盖 hidden 属性的
+// UA display:none——必须 [hidden] 锚定规则（main.css），JS 开合只切换 hidden 属性。
+function openWelcomeOverlay({ title, version, btnText, persistent }) {
+  const overlay = document.getElementById('welcomeOverlay');
+  if (!overlay) return;
+  document.getElementById('welcomeTitle').textContent = title;
+  document.getElementById('welcomeVersion').textContent = version;
+  document.getElementById('welcomeCloseBtn').textContent = btnText;
+  overlay.hidden = false; // CSS [hidden] 规则已锚定，属性切换即开合
+
+  const onOverlayClick = (e) => { if (e.target === overlay) closeWelcomeOverlay(persistent); };
+  const onCloseBtn = () => closeWelcomeOverlay(persistent);
+  overlay.addEventListener('click', onOverlayClick);
+  document.getElementById('welcomeCloseBtn').addEventListener('click', onCloseBtn);
+}
+
+function closeWelcomeOverlay(persistent) {
+  const overlay = document.getElementById('welcomeOverlay');
+  if (overlay) overlay.hidden = true;
+  if (persistent && window.clipboardAPI.setWelcomeShown) {
+    window.clipboardAPI.setWelcomeShown().catch(() => { /* 回写失败不阻塞 */ });
+  }
+}
+
+// 升级流：主进程判定版本变化 → 欢迎模式展示（关闭回写已展示版本）
 (async () => {
   try {
     const st = await window.clipboardAPI.getWelcomeState();
     if (!st || !st.shouldShow) return;
-    const overlay = document.getElementById('welcomeOverlay');
-    if (!overlay) return;
-    document.getElementById('welcomeVersion').textContent = `v${st.version}`;
-    overlay.hidden = false;
-    requestAnimationFrame(() => overlay.classList.add('visible')); // 淡入
-
-    const close = async () => {
-      overlay.classList.remove('visible'); // 淡出
-      setTimeout(() => { overlay.hidden = true; }, 180);  // 过渡完成后隐藏
-      overlay.removeEventListener('click', onOverlayClick);
-      await window.clipboardAPI.setWelcomeShown(); // 回写已展示版本
-    };
-    const onOverlayClick = (e) => { if (e.target === overlay) close(); };
-    overlay.addEventListener('click', onOverlayClick);
-    document.getElementById('welcomeCloseBtn').addEventListener('click', close);
+    openWelcomeOverlay({
+      title: '欢迎使用 ClipSense',
+      version: `v${st.version}`,
+      btnText: '开始使用',
+      persistent: true,
+    });
   } catch (err) {
     console.warn('[Welcome] 初始化失败（不阻塞主流程）:', err.message);
   }
 })();
+
+// 关于流：托盘「关于 ClipSense」→ 同一 overlay 只读展示（不回写升级标记）
+if (window.clipboardAPI && typeof window.clipboardAPI.onAboutShow === 'function') {
+  window.clipboardAPI.onAboutShow((version) => {
+    openWelcomeOverlay({
+      title: '关于 ClipSense',
+      version: `v${version}`,
+      btnText: '关闭',
+      persistent: false,
+    });
+  });
+}
 
 refresh();

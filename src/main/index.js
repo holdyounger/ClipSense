@@ -235,10 +235,14 @@ class ClipboardSpikeApp {
     }
   }
 
-  /** 关于对话框（原生 dialog，零新窗口） */
+  /** 关于页（2026-09-30）：复用欢迎 overlay（渲染层 about 模式）；窗口不可用回退原生对话框 */
   _showAboutDialog() {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('about:show', app.getVersion());
+      return;
+    }
     const { dialog } = require('electron');
-    dialog.showMessageBox(this.mainWindow, {
+    dialog.showMessageBox({
       type: 'info',
       title: '关于 ClipSense',
       message: `ClipSense v${app.getVersion()}`,

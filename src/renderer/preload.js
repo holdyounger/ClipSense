@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   // 升级欢迎页（2026-09-30）：版本变化检测 + 已展示回写
   getWelcomeState: () => ipcRenderer.invoke('get-welcome-state'),
   setWelcomeShown: () => ipcRenderer.invoke('set-welcome-shown'),
+  // 关于页（2026-09-30）：复用欢迎 overlay，托盘「关于」触发
+  onAboutShow: (callback) => { ipcRenderer.on('about:show', (e, v) => callback(v)); },
   onUpdateDownloadProgress: (callback) => {
     ipcRenderer.on('update-download-progress', (event, progress) => callback(progress));
   },

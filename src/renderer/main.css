@@ -405,6 +405,13 @@ html, body {
   transform: scale(0.97);
 }
 
+/* 关闭失效根因修复（2026-09-30 小M）：.welcome-overlay 显式 display:flex 的作者样式
+   会覆盖 hidden 属性的 UA display:none——overlay 从页面加载起就常驻，hidden=true 无效。
+   此规则强制 hidden 态隐藏，配合 JS 移除/恢复 hidden 属性实现开合。 */
+.welcome-overlay[hidden] {
+  display: none;
+}
+
 /* ========== header 搜索展开态（2026-09-10 搜索体验优化） ========== */
 /* 收起态：零占位（flex-basis 0% + grow 0 + opacity 0 + 不可点击）；
    展开态（.header.search-open）：title/倒计时徽标让位，输入框 flex-grow 占满 header 中部。
