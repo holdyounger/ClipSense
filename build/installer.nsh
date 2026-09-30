@@ -6,11 +6,13 @@
 ; 守卫：仅静默模式（/S）自动启动——交互式安装用户有「运行 ClipSense」勾选项，避免双开。
 
 !macro customInstall
-  ${ifNot} ${isUpdated}
+  ; 2026-09-30 实机修正（v1.0.8→v1.0.9 静默升级未自动启动）：isUpdated 的语义是
+  ; 「覆盖安装」（同版本重装/降级），版本号递增的正式升级 isUpdated=false——
+  ; 旧守卫 ${ifNot} ${isUpdated} 恰好排除了唯一的自动启动场景。
+  ; 新守卫：仅交互模式跳过（向导自带运行勾选）；静默模式（/S）一律启动新版本。
+  ${ifNot} ${Silent}
     ; 交互式安装：安装向导最后自带「运行应用」复选框，不做额外启动
   ${else}
-    ; 静默升级：安装完成后直接启动新版本
-    ;（ExecWait 不可用——会阻塞安装收尾；用 Exec 异步拉起即可）
     Exec '"$INSTDIR\ClipSense.exe"'
   ${endIf}
 !macroend
