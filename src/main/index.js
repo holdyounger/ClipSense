@@ -610,29 +610,12 @@ class ClipboardSpikeApp {
     // 命中区与舞台宽度解耦：唤出热区仍按屏缘 6px 锚定判定（edge-detector 轮询），
     // 舞台多余 18px 点击穿透。连续到达时上一轮回放由 __clipSenseBarStop 复位重开。
     // 面板可见时渲染层不会发送此事件；触发条隐藏时仅回放（不可见无视觉副作用）。
-    // [pulse-diag] 临时诊断落盘（贴边动画消失排查，定位后移除）：打包版无终端，
-    // 写 userData/pulse-diag.log 供直接读取
-    const pulseDiagLog = (msg) => {
-      try {
-        const line = `[${new Date().toISOString()}] ${msg}\n`;
-        fs.appendFileSync(path.join(app.getPath('userData'), 'pulse-diag.log'), line);
-      } catch (_) { /* 落盘失败不影响主流程 */ }
-      console.log('[pulse-diag]', msg);
-    };
     ipcMain.on('window-entry-pulse', () => {
       const tw = this.triggerWindow;
-      if (!tw || tw.isDestroyed()) { pulseDiagLog('① triggerWindow 已销毁/不存在'); return; }
-      pulseDiagLog(`① IPC 收到 pulse；triggerWindow 可见 = ${tw.isVisible()}`);
+      if (!tw || tw.isDestroyed()) return;
       tw.webContents.executeJavaScript(
-        `(function(){ return JSON.stringify({ hasPulse: typeof window.__clipSenseBarPulse, frames: (window.__clipSenseBarFrames || []).length, barClass: (document.getElementById('bar') || {}).className || '' }); })()`
-      ).then((info) => {
-        pulseDiagLog(`② 触发窗状态: ${info}`);
-        return tw.webContents.executeJavaScript(
-          'window.__clipSenseBarPulse && window.__clipSenseBarPulse()'
-        );
-      }).then(() => {
-        pulseDiagLog('③ __clipSenseBarPulse() 已执行');
-      }).catch((err) => pulseDiagLog(`executeJavaScript 失败: ${err.message}`));
+        'window.__clipSenseBarPulse && window.__clipSenseBarPulse()'
+      ).catch(() => {});
     });
 
 
@@ -641,8 +624,6 @@ class ClipboardSpikeApp {
     // delta 非零 = 某层换算错位；正常时完全静默
     ipcMain.on('diag-hit', (event, d) => {
       try {
-        // [pulse-diag] 临时诊断：渲染层 gate 回传标记（无坐标的 tag 消息直接打印）
-        if (d && d.tag) { pulseDiagLog(`⓪.5 渲染层 onPulse 触发 id = ${d.id}`); return; }
         const cursor = screen.getCursorScreenPoint();
         const b = this.mainWindow.getBounds();
         const expClientX = cursor.x - b.x;
@@ -738,14 +719,6 @@ class ClipboardSpikeApp {
 
   // 把当前历史推送给渲染进程
   pushHistory() {
-    // [pulse-diag] 临时诊断：面板隐藏期间历史更新（贴边动画数据源事件）
-    if (this.mainWindow && !this.mainWindow.isVisible()) {
-      // ⓪ 与 ①不同作用域：pushHistory 在类方法内，pulseDiagLog 不可达 → 独立落盘
-      try {
-        fs.appendFileSync(path.join(app.getPath('userData'), 'pulse-diag.log'),
-          `[${new Date().toISOString()}] ⓪ 面板隐藏期间 pushHistory，条数 = ${this.monitor.getHistory().length}\n`);
-      } catch (_) { /* ignore */ }
-    }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send('history-updated', this.monitor.getHistory());
     }
