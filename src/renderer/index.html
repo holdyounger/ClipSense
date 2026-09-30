@@ -10,6 +10,9 @@
 <body>
   <div id="app">
     <header class="header" id="header">
+      <!-- 方案 A（2026-09-28）：内容行包进 .header-row（原 flex 布局整体下移一层），
+           header 本体改纵向布局承载辅助行 .header-meta（静止态零占位，展开态 16px） -->
+      <div class="header-row">
       <h1 id="title">ClipSense</h1>
       <!-- header 搜索（2026-09-10 搜索体验优化）：收起态零占位，展开态 flex 占满中部
            （title/倒计时徽标让位，main.css .header.search-open 控制） -->
@@ -58,6 +61,9 @@
           </div>
         </div>
       </div>
+      </div>
+      <!-- 辅助信息行（方案 A 拍板）：「共 N 条 · 上次复制时间」，仅展开态可见 -->
+      <div class="header-meta" id="headerMeta"></div>
     </header>
 
     <div class="hint" id="hint">
@@ -95,6 +101,8 @@
   <script src="spring-anim.js"></script>
   <script src="entry-anim.js"></script>
   <script src="dock-anim.js"></script>
+  <!-- Header 可变高度（方案 A 2026-09-28）：FLIP 补偿纯逻辑，先于 main.js -->
+  <script src="header-hover-ui.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

@@ -406,6 +406,20 @@ function updateStats() {
   } else {
     statCount.textContent = t('statCount', total);
   }
+  // Header 辅助行（方案 A，2026-09-28）：「共 N 条 · 上次复制时间」。
+  // 数据源：total = fullHistory.length（与底部统计同源）；rel = history[0].timestamp
+  // 相对时间（3 分钟前/2 小时前/昨天）。防御式取用：旧 DOM 桩 harness（new Function
+  // 不含 header-hover-ui.js）下 formatRelativeTime 未定义 → 辅助行置空降级。
+  const metaEl = document.getElementById('headerMeta');
+  if (metaEl) {
+    const latest = fullHistory[0];
+    if (latest && typeof formatRelativeTime === 'function') {
+      const rel = formatRelativeTime(latest.timestamp, Date.now(), getLang());
+      metaEl.textContent = rel ? t('headerMeta', total, rel) : `${total}`;
+    } else {
+      metaEl.textContent = '';
+    }
+  }
 }
 
 // ========== 自动打标签：筛选条与设置（2026-09-09） ==========
@@ -494,22 +508,26 @@ async function refresh() {
   fullHistory = await window.clipboardAPI.getHistory();
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  if (headerHoverUi) headerHoverUi.markListRebuilt(); // 列表重建后的帧内不做 FLIP（只瞬切）
   entryAnim.handleRendered(listEl); // 新条目入场判定（方案 B）
   dockEffect.handleRendered(); // dock 放大状态对齐（新节点无内联 transform）
   renderTagFilter();
   updateStats();
+  syncHeaderExpanded(); // 数据刷新后同步辅助行可见态（约束 4 状态联动）
 }
 
 // ========== 下拉菜单 ==========
 menuBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   dropdownMenu.classList.toggle('open');
+  syncHeaderExpanded(); // 菜单打开锁展开/关闭回归 hover 判定（约束 4）
 });
 
 // 点击菜单外部关闭
 document.addEventListener('click', (e) => {
   if (!dropdownMenu.contains(e.target) && !menuBtn.contains(e.target)) {
     dropdownMenu.classList.remove('open');
+    syncHeaderExpanded(); // 菜单关闭后回归 hover 判定（约束 4）
   }
 });
 
@@ -700,6 +718,7 @@ async function openSearch({ focus = true } = {}) {
   if (!searchOpen) {
     searchOpen = true;
     headerEl.classList.add('search-open');
+    syncHeaderExpanded(); // 搜索展开锁定展开高度（约束 4：hover 状态机让位）
   }
   if (!focus) return;
   // 先等主进程 setFocusable(true)+focus() 完成，再做 DOM 聚焦（不夺焦架构的时序要求）
@@ -725,6 +744,7 @@ function collapseSearch() {
   searchInput.blur();
   window.clipboardAPI.blurSearch();
   window.clipboardAPI.setSearchActive(false);
+  syncHeaderExpanded(); // 搜索关闭后回归 hover 判定（约束 4）
 }
 
 /**
@@ -847,6 +867,7 @@ tagFilterEl.addEventListener('click', (e) => {
   activeTagFilter = (id && activeTagFilter !== id) ? id : null;
   renderTagFilter();
   renderHistory(listEl, filterHistory(fullHistory), renderHandlers, renderCtx);
+  if (headerHoverUi) headerHoverUi.markListRebuilt(); // 列表重建后的帧内不做 FLIP（只瞬切）
   dockEffect.handleRendered(); // chip 重建后 dock 状态对齐
   updateStats();
 });
@@ -930,6 +951,7 @@ window.clipboardAPI.onHistoryUpdated((history) => {
   fullHistory = history;
   const shown = filterHistory(fullHistory);
   renderHistory(listEl, shown, renderHandlers, renderCtx);
+  if (headerHoverUi) headerHoverUi.markListRebuilt(); // 列表重建后的帧内不做 FLIP（只瞬切）
   entryAnim.handleRendered(listEl); // 轮询 tick 新条目入场判定（600ms 轮询链路）
   dockEffect.handleRendered(); // dock 放大状态对齐（innerHTML 重建后）
   renderTagFilter();
@@ -1036,6 +1058,48 @@ document.addEventListener('mousemove', (e) => {
 // 使用 CSS -webkit-app-region: drag 原生拖拽（同步 KeySense），
 // 由 Electron 系统原生管理窗口位置/尺寸，不会出现 JS 手动 setPosition 的漂移变大问题。
 // 无需 JS 手动 mousedown/mousemove 拖拽。
+
+// ========== Header 可变高度接线（方案 A：主进程轮询 + 高度瞬变 FLIP，2026-09-28）==========
+// 时序：主进程 100ms 轮询判定（header-hover.js 状态机：进入即时/离开防抖 180ms/
+// 弹出后 400ms 抑制）→ 'header:hover' IPC → syncHeaderExpanded() →
+// .header--hover class 切换（40↔68 瞬切）→ FLIP 补偿（header-hover-ui.js，
+// 同帧测 #list 位移 Δ → translateY(-Δ) → rAF 后 spring 240/22 归零，只动 transform）。
+// 强制展开（约束 4）：search-open / 菜单打开期间锁定展开态，hover 状态机让位。
+// 基线保护：既有 4 个 DOM 测试用 new Function 加载 main.js 且不含
+// header-hover-ui.js → createHeaderHoverUi/springFrames 均需 typeof 防御式引用；
+// clipboardAPI.onHeaderHover 可选调用（旧桩无此方法 → 静默降级）。
+let headerHoverFromMain = false; // 主进程 hover 判定最新态（IPC 驱动）
+const headerHoverUi = (typeof createHeaderHoverUi === 'function' &&
+                       typeof springFrames === 'function')
+  ? createHeaderHoverUi({
+      headerEl: document.getElementById('header'),
+      listEl,
+      springFrames,
+    })
+  : null;
+
+/** 汇总三路展开诉求（hover/搜索/菜单）应用到 class + FLIP */
+function syncHeaderExpanded() {
+  if (!headerHoverUi) return;
+  const force = searchOpen ||
+    (typeof dropdownMenu.classList.contains === 'function' && dropdownMenu.classList.contains('open'));
+  headerHoverUi.applyHover(force || headerHoverFromMain);
+}
+
+// 主进程 hover 判定推送（进入即时/离开防抖已在主进程状态机处理）
+if (window.clipboardAPI && typeof window.clipboardAPI.onHeaderHover === 'function') {
+  window.clipboardAPI.onHeaderHover((expanded) => {
+    headerHoverFromMain = !!expanded;
+    syncHeaderExpanded();
+  });
+}
+
+// 滑出 snap（约束 4「面板即将收起」规则）：主进程 _finishHideAnimation 前调用，
+// 跳过收起补间直接回静止态（窗口在滑走，不做无谓动画），并复位 hover 态。
+window.__clipSenseHeaderSnap = function () {
+  headerHoverFromMain = false;
+  if (headerHoverUi) headerHoverUi.snap();
+};
 
 // 自动打标签：启动拉取设置 + 订阅变更（托盘开关下发），随后首刷列表
 initTagSettings();

@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
     ipcRenderer.on('history-updated', (event, history) => callback(history));
   },
 
+  // ========== Header 可变高度（方案 A，2026-09-28）==========
+  // 主进程 100ms 轮询判定光标在/离 header 区（进入即时/离开防抖 180ms/
+  // 弹出后 400ms 抑制），状态翻转推送 bool；渲染层据此切 .header--hover。
+  onHeaderHover: (callback) => {
+    ipcRenderer.on('header:hover', (event, expanded) => callback(!!expanded));
+  },
+
   // ========== 窗口定位 / 鼠标事件 ==========
   mouseEnter: () => ipcRenderer.send('mouse-enter'),
   mouseLeave: () => ipcRenderer.send('mouse-leave'),

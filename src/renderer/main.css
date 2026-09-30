@@ -55,25 +55,95 @@ html, body {
 
 .header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
+  flex-direction: column; /* 方案 A（2026-09-28）：纵向布局承载内容行 + 辅助行 */
+  justify-content: center;
+  padding: 4px 12px; /* 公共基线 2026-09-29 缩减档：静止态 32px（内容行 24 + 上下 4） */
   background: linear-gradient(135deg, var(--accent), #4834d4);
   -webkit-app-region: drag;
   cursor: move;
   user-select: none;
   flex-shrink: 0;
-  min-height: 56px;
+  height: 32px; /* 静止态常量高度（方案 A 硬前提）：32/60 缩减档（2026-09-29 小M），
+                   数值固定可预测，贴边触发条与 _headerHeight 常量对齐（约束 2） */
   box-sizing: border-box;
 }
 
+/* 内容行（原 .header flex 布局原样下移一层，尺寸规格零改动） */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  flex-shrink: 0;
+}
+
 .header h1 {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   margin-right: 8px;
+}
+
+/* ========== Header 可变高度（方案 A：主进程轮询 + 高度瞬变 FLIP 补偿，2026-09-28） ========== */
+/* 静止 40px / 展开 68px（class .header--hover，主进程 'header:hover' IPC 驱动）。
+   height 瞬切是唯一允许的 layout 变更；#list 位移由 header-hover-ui.js 的
+   FLIP transform 补偿（spring 240/22，只动 transform，性能红线零豁免）。
+   搜索展开（.search-open）/菜单打开时渲染层强制挂 header--hover（锚点锁定）。 */
+.header--hover {
+  height: 60px;
+}
+
+/* 辅助信息行（拍板：「共 N 条 · 上次复制时间」）：静止态零占位，
+   展开态 opacity 0→1 120ms ease-out；收起反向 80ms。与紫色主题同族。 */
+.header-meta {
+  height: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: rgba(255, 255, 255, 0.75); /* 公共基线 opacity 0.75 */
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: opacity 80ms ease-out;
+}
+
+.header--hover .header-meta {
+  height: 16px;
+  opacity: 1;
+  transition: opacity 120ms ease-out;
+}
+
+/* 展开态按钮恢复常规档（2026-09-29 两态联动：静止 20×20 随 header 缩，hover 恢复 24×24）。
+   随 header 高度同帧瞬切（无 width/height 过渡——header 瞬切美学一致，且 layout 动画踩红线）。
+   倒计时环 viewBox 0 0 28 28 自适应缩放，dashoffset 由 main.js 按比例同步，不受尺寸影响。 */
+.header--hover .search-btn,
+.header--hover .pin-btn,
+.header--hover .menu-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.header--hover .pin-ring {
+  width: 24px;
+  height: 24px;
+}
+
+.header--hover .search-btn-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.header--hover .menu-btn-icon,
+.header--hover .pin-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.header--hover .pin-cd-num {
+  font-size: 10px;
 }
 
 .header-actions {
@@ -88,13 +158,13 @@ html, body {
 }
 
 .header button {
-  padding: 0; /* 图标钮固定尺寸自撑，内边距归零避免 28px 内容区被挤压（下拉项自带 padding 覆盖） */
+  padding: 0; /* 图标钮固定尺寸自撑，内边距归零避免 24px 内容区被挤压（下拉项自带 padding 覆盖） */
   border: 1px solid rgba(255,255,255,0.3);
   background: rgba(255,255,255,0.15);
   color: #fff;
-  border-radius: 7px; /* 公共修正基线：容器短边 25%，与 #app 8px 同族 */
+  border-radius: 5px; /* 公共修正基线：短边 25%（静止 20×20）；hover 展开态恢复 6px（见 .header--hover 按钮恢复块） */
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
@@ -128,16 +198,16 @@ html, body {
 }
 
 .menu-btn {
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .menu-btn-icon {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .dropdown-menu {
@@ -181,8 +251,8 @@ html, body {
 
 /* 固定按钮（公共基线 28×28） */
 .pin-btn {
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -192,8 +262,8 @@ html, body {
 
 .pin-icon {
   position: absolute;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s;
 }
 }
@@ -225,10 +295,10 @@ html, body {
    环参数：cx=cy=14 r=12，周长 75.4，dashoffset = 75.4 × (1−剩余比例)，由 main.js 同步。 */
 .pin-ring {
   position: absolute;
-  left: -1px; /* 抵消 1px 边框：svg 28×28 精确覆盖按钮 border-box（abspos 包含块 = padding box） */
+  left: -1px; /* 抵消 1px 边框：svg 随按钮两态（静止 20/hover 24）精确覆盖按钮 border-box（abspos 包含块 = padding box） */
   top: -1px;
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
@@ -249,7 +319,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1;
   color: #fff;
@@ -306,6 +376,15 @@ html, body {
   50% { opacity: 0.6; }
 }
 
+/* ========== Header 可变高度（方案 A，2026-09-28）：系统减弱动效 ========== */
+/* 所有补间去掉，高度瞬切（功能保留、只删动效）；FLIP 由 JS 侧同规则禁用 */
+@media (prefers-reduced-motion: reduce) {
+  .header,
+  .header-meta {
+    transition: none !important;
+  }
+}
+
 /* ========== header 搜索展开态（2026-09-10 搜索体验优化） ========== */
 /* 收起态：零占位（flex-basis 0% + grow 0 + opacity 0 + 不可点击）；
    展开态（.header.search-open）：title/倒计时徽标让位，输入框 flex-grow 占满 header 中部。
@@ -360,10 +439,10 @@ html, body {
   display: none;
 }
 
-/* 搜索入口按钮（header-actions 最左，公共基线 28×28；icon 色值统一 #fff，取消 0.75 透明度） */
+/* 搜索入口按钮（header-actions 最左，静止 20×20 / hover 24×24 两态；icon 色值统一 #fff，取消 0.75 透明度） */
 .search-btn {
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -371,8 +450,8 @@ html, body {
 }
 
 .search-btn-icon {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
 }
 
 .header.search-open .search-btn {

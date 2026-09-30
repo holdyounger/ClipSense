@@ -53,6 +53,8 @@ const I18N = {
     tagVuln: '漏洞编号',
     tagPath: '文件路径',
     filterAll: '全部',
+    // Header 可变高度辅助行（方案 A 2026-09-28 拍板：共 N 条 · 上次复制时间）
+    headerMeta: (total, rel) => `共 ${total} 条 · 上次复制 ${rel}`,
   },
   en: {
     title: 'ClipSense',
@@ -101,6 +103,8 @@ const I18N = {
     tagVuln: 'Vuln ID',
     tagPath: 'Path',
     filterAll: 'All',
+    // Header hover meta line (Plan A, 2026-09-28)
+    headerMeta: (total, rel) => `${total} items · last copy ${rel}`,
   },
 };
 

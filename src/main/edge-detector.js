@@ -13,6 +13,13 @@
 
 const { screen } = require('electron');
 const { DRAWER } = require('./trigger-anim');
+// Header 可变高度（方案 A，2026-09-28）：hover 判定纯逻辑 + 高度常量（header-hover.js）
+const {
+  isCursorInHeaderRegion, clampHeaderHeight, createHeaderHoverState,
+  HEADER_REST_HEIGHT,
+  HEADER_DRAG_RESUME_MS,
+} = require('./header-hover');
+const { computeOpacity } = require('./window-opacity');
 
 class EdgeDetector {
   constructor(mainWindow, triggerWindow = null) {
@@ -26,8 +33,8 @@ class EdgeDetector {
     this.edgeWidth = 5;
     /** 触发条真实命中宽度；不能把透明外壳扩展成整段屏幕区域 */
     this.triggerWidth = 6;
-    /** 贴边触发条高度：与主面板 header 一致，热区只覆盖 header 部分（测量值见 _headerHeight） */
-    this.triggerHeight = 56;
+    /** 贴边触发条高度兜底：静止态 header 常量（方案 A 硬前提，32 替代旧实测兜底 56） */
+    this.triggerHeight = HEADER_REST_HEIGHT;
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
@@ -36,8 +43,16 @@ class EdgeDetector {
     this._hiddenAtPos = null;
     /** 最近一次隐藏时所在的屏幕边缘（只在该边缘触发恢复） */
     this._hiddenEdge = 'right';
-    /** 从渲染进程实测的 header 高度（px），贴边触发条按此对齐 header */
-    this._headerHeight = null;
+    /** header 高度（px），贴边触发条按此对齐 header。方案 A：常量 32 起步，
+     *  滑出时实测仅做 Math.min(h, 36) 钳制采信（DPI 兜底），杜绝展开态污染 */
+    this._headerHeight = HEADER_REST_HEIGHT;
+    /** header hover 状态机（方案 A）：进入即时/离开防抖 180ms/弹出抑制 400ms */
+    this._dragResumeAt = 0; // D-2：拖拽结束恢复缓冲时点（0=无待命缓冲）
+    this._headerHover = createHeaderHoverState();
+    /** 上一次推送给渲染层的 hover 态（去重：changed 才 send） */
+    this._headerHoverLast = false;
+    /** 两段式窗口透明度（2026-09-30）：上次应用值（null=未知，强制重设） */
+    this._appliedOpacity = null;
     /** 拖拽期间冻结边缘检测（防止窗口变大/漂移） */
     this._isDragging = false;
     /** 隐藏倒计时截止时间戳（ms） */
@@ -71,6 +86,9 @@ class EdgeDetector {
   setDragging(dragging) {
     this._isDragging = dragging;
     if (!dragging) {
+      // D-2（设计稿 §约束 4）：拖拽结束 200ms 后恢复 hover 判定——结束瞬间光标
+      // 通常仍压在 header 上，立即恢复会与「弹出即抖动」同构（测试报告 D-2）。
+      this._dragResumeAt = Date.now() + HEADER_DRAG_RESUME_MS;
       // 拖拽结束，记录最终位置
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         const b = this.mainWindow.getBounds();
@@ -111,6 +129,8 @@ class EdgeDetector {
     this._cancelHideTimer();
     this._cancelHideAnimation();
     this._cancelShowAnimation();
+    this._appliedOpacity = null;
+    this._syncWindowOpacity(); // 模块停用：复位不透明，不留残效
     console.log('[EdgeDetector] 停止边缘检测');
   }
 
@@ -220,6 +240,28 @@ class EdgeDetector {
           else this._cancelHideTimer();
         }
       }
+
+      // ===== Header 可变高度（方案 A，2026-09-28）=====
+      // 复用本轮询（100ms）判定光标是否落在 header 区（窗口顶部 60px 带，
+      // 外扩 2px 容差）。进入即时、离开防抖 180ms、弹出后 400ms 抑制
+      //（以上均在 header-hover.js 状态机内）；状态翻转才走 IPC。
+      // drag 区吞 DOM 鼠标事件（约束 1），渲染层 :hover 不可靠 → 判定必须在主进程。
+      if (this.isWindowVisible && !this._isHiding
+          && Date.now() >= (this._dragResumeAt || 0)) { // D-2：拖拽结束 200ms 缓冲内冻结判定
+        const inHeader = isCursorInHeaderRegion(point, wb);
+        const { changed, state } = this._headerHover.update(inHeader);
+        if (changed && state !== this._headerHoverLast) {
+          this._headerHoverLast = state;
+          if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+            this.mainWindow.webContents.send('header:hover', state);
+          }
+        }
+      }
+
+      // ===== 两段式窗口透明度（2026-09-30）：固定 80% / 倒计时线性降至可透视档 =====
+      if (this.isWindowVisible && !this._isHiding) {
+        this._syncWindowOpacity();
+      }
     } catch (err) {
       console.error(`[EdgeDetector] 检测错误: ${err.message}`);
     }
@@ -239,6 +281,11 @@ class EdgeDetector {
     // → 固定按钮/菜单点不动（18:21 实验证实的机制）。
     this._suppressTriggerUntilLeave = false;
     this._wasOverTrigger = false;
+
+    // 弹出即进入 header hover 抑制窗口（400ms）：唤出瞬间光标常停在 header 区，
+    // 立即展开会造成「弹出即抖动」（约束 4）。
+    this._headerHover.markShown();
+    this._headerHoverLast = false;
 
     // 在 show() 抢走焦点之前记录原目标窗口，供双击粘贴恢复。
     if (this._onShown) this._onShown();
@@ -359,6 +406,8 @@ class EdgeDetector {
   _beginShowTransition(gen, edge) {
     if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
     this.mainWindow.showInactive();
+    this._appliedOpacity = null; // 滑出期间透明度残值作废，按当前状态重设（首帧即正确）
+    this._syncWindowOpacity();
     this._lastIsOverPanel = false;
     // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
     // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
@@ -458,13 +507,16 @@ class EdgeDetector {
     const durationMs = 240;
     this._isHiding = true;
 
-    // 实测 header 高度：贴边触发条只保留 header 那一段，而不是整个面板高度。
-    // CSS min-height:56px 只是布局下限，DPI 缩放后可能更高，这里以实测为准。
+    // 触发条高度 = 静止态 header（方案 A 硬前提）：常量 32 起步，实测值仅做
+    // Math.min(h, 36) 钳制采信——滑出由「鼠标离开窗体」触发，那一刻 header 很可能
+    // 处于展开态（60px），旧版直接采信会污染触发条高度（约束 2 坑 1）。
     this.mainWindow.webContents.executeJavaScript(
       `(() => { const el = document.querySelector('.header'); return el ? el.getBoundingClientRect().height : 0; })()`
     ).then((h) => {
-      if (h > 0) this._headerHeight = Math.round(h);
-    }).catch(() => {});
+      this._headerHeight = clampHeaderHeight(h);
+    }).catch(() => {
+      this._headerHeight = HEADER_REST_HEIGHT; // 测量失败回退常量（结构化兜底，禁未处理 rejection）
+    });
 
     // 通知渲染进程开始滑出动画，结束后主进程完成收尾（贴边、隐藏、显示触发条）。
     this.mainWindow.webContents.executeJavaScript(
@@ -497,8 +549,16 @@ class EdgeDetector {
     const triggerX = targetEdge === 'right'
       ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - stageWidth
       : triggerDisplay.workArea.x;
-    // 高度与主面板 header 一致：贴边热区只有 header 部分。
+    // 高度与主面板静止态 header 一致：贴边热区只有 header 部分
+    //（方案 A：_headerHeight 常量化 40 + 钳制 ≤44，滑出时 hover 态强制复位）。
     const triggerHeight = this._headerHeight || this.triggerHeight;
+    // 滑出即收起 header（约束 4「面板即将收起」规则：跳过收起补间直接 snap），
+    // 并复位 hover 状态机，防止下次弹出前残留 true。
+    this._headerHover.reset();
+    this._headerHoverLast = false;
+    this.mainWindow.webContents.executeJavaScript(
+      `window.__clipSenseHeaderSnap && window.__clipSenseHeaderSnap()`
+    ).catch(() => {});
     this.mainWindow.hide();
     if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.setBounds({
@@ -580,6 +640,7 @@ class EdgeDetector {
     this._hideDeadline = deadline;
     this.isCountingDown = true;
     this._notifyRendererCountdown();
+    this._syncWindowOpacity(); // 倒计时启动即回不透明起点（随后每拍线性下降）
 
     this.hideTimerId = setTimeout(() => {
       this.hideTimerId = null;
@@ -600,6 +661,7 @@ class EdgeDetector {
     }
     // 与 KeySense 一致：鼠标重新进入时立即取消未完成的推出动画。
     this._cancelHideAnimation();
+    this._syncWindowOpacity(); // 透明度立即恢复（不透明/固定 80%），不等下一拍
   }
 
   /**
@@ -613,6 +675,29 @@ class EdgeDetector {
         ? Math.max(0, this._hideDeadline - Date.now())
         : null,
     });
+  }
+
+  /**
+   * 两段式窗口透明度（2026-09-30）：按当前状态计算并应用。
+   * 规则：固定 → 80%；非固定倒计时 → 随剩余时间线性降至可透视档；
+   * 其余 → 不透明。去重：与上次应用值差 <0.01 不重复调原生 setOpacity。
+   */
+  _syncWindowOpacity() {
+    const target = computeOpacity({
+      pinned: this.isPinned,
+      isCountingDown: this.isCountingDown && this._hideDeadline != null,
+      remainingMs: this._hideDeadline ? this._hideDeadline - Date.now() : 0,
+      totalMs: this.hideDelay,
+    });
+    this._applyWindowOpacity(target);
+  }
+
+  _applyWindowOpacity(target) {
+    if (this._appliedOpacity !== null && Math.abs(target - this._appliedOpacity) < 0.01) return;
+    this._appliedOpacity = target;
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      try { this.mainWindow.setOpacity(target); } catch (err) { /* 销毁竞态：静默 */ }
+    }
   }
 
   /**
@@ -640,6 +725,8 @@ class EdgeDetector {
    */
   setPinned(pinned) {
     this.isPinned = Boolean(pinned);
+    this._appliedOpacity = null;
+    this._syncWindowOpacity(); // 规则 1：固定 → 80%；取消固定 → 按当前状态回归
     if (this.isPinned) {
       // 固定时立即终止倒计时和推出动画，并确保面板恢复完整显示。
       this._cancelHideTimer();
