@@ -136,11 +136,6 @@ const entryAnim = createEntryAnim({
     // 贴边收起态新内容到达：主进程对 triggerWindow #bar 下发一次性脉冲。
     // IPC 不可达（旧主进程）时静默降级，不影响状态标记与补播链路。
     try {
-      // [pulse-diag] 临时诊断：渲染层 gate 通过（visibility=hidden、同条目未重复），
-      // 借用 diagHit 通道回传主进程 console（隐藏期渲染层 console 不可见）
-      if (window.clipboardAPI && window.clipboardAPI.diagHit) {
-        window.clipboardAPI.diagHit({ tag: 'pulse-diag-renderer', id, vis: document.visibilityState, winVis: winVisibleFromMain ? 'visible' : 'hidden' });
-      }
       if (window.clipboardAPI && window.clipboardAPI.requestEntryPulse) {
         window.clipboardAPI.requestEntryPulse(id);
       }
