@@ -10,10 +10,15 @@
 <body>
   <div id="app">
     <header class="header" id="header">
-      <!-- 方案 A（2026-09-28）：内容行包进 .header-row（原 flex 布局整体下移一层），
-           header 本体改纵向布局承载辅助行 .header-meta（静止态零占位，展开态 16px） -->
+      <!-- 方案 A（2026-09-28）：内容行包进 .header-row（原 flex 布局整体下移一层）。
+           2026-09-30 小M：辅助行 .header-meta 移入行中部常驻显示（搜索展开时隐藏），
+           header 纵向布局保留（justify-content center 承载单行内容） -->
       <div class="header-row">
       <h1 id="title">ClipSense</h1>
+      <!-- 辅助信息行（2026-09-30 小M）：「共 N 条 · 上次复制时间」绝对定位行中部常驻显示，
+           搜索展开时隐藏（.header.search-open .header-meta → opacity 0 让位输入框）。
+           绝对定位不参与 flex 布局，pointer-events none 不挡交互。 -->
+      <div class="header-meta" id="headerMeta"></div>
       <!-- header 搜索（2026-09-10 搜索体验优化）：收起态零占位，展开态 flex 占满中部
            （title/倒计时徽标让位，main.css .header.search-open 控制） -->
       <div class="header-search">
@@ -62,8 +67,6 @@
         </div>
       </div>
       </div>
-      <!-- 辅助信息行（方案 A 拍板）：「共 N 条 · 上次复制时间」，仅展开态可见 -->
-      <div class="header-meta" id="headerMeta"></div>
     </header>
 
     <div class="hint" id="hint">

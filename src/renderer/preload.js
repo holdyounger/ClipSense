@@ -46,6 +46,8 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   updateCheck: () => ipcRenderer.invoke('update-check'),
   updateDownload: (url) => ipcRenderer.invoke('update-download', url),
   updateInstall: (filePath) => ipcRenderer.invoke('update-install', filePath),
+  // 两段式窗口透明度（2026-09-30）：主进程推送目标值，渲染层写 --win-alpha 变量
+  onWindowOpacity: (callback) => { ipcRenderer.on('window:opacity', (e, v) => callback(v)); },
   onUpdateDownloadProgress: (callback) => {
     ipcRenderer.on('update-download-progress', (event, progress) => callback(progress));
   },

@@ -1094,6 +1094,14 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onHeaderHover === 'functio
   });
 }
 
+// 两段式窗口透明度（2026-09-30）：主进程推送目标值 → :root 写 --win-alpha。
+// #app 底色与 .item 元素透明度消费该变量；.item:hover 恢复 100%（可读性）。
+if (window.clipboardAPI && typeof window.clipboardAPI.onWindowOpacity === 'function') {
+  window.clipboardAPI.onWindowOpacity((v) => {
+    document.documentElement.style.setProperty('--win-alpha', String(v));
+  });
+}
+
 // 滑出 snap（约束 4「面板即将收起」规则）：主进程 _finishHideAnimation 前调用，
 // 跳过收起补间直接回静止态（窗口在滑走，不做无谓动画），并复位 hover 态。
 window.__clipSenseHeaderSnap = function () {

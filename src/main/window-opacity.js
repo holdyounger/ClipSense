@@ -9,8 +9,9 @@
  * 代码事实（实现依据）：
  *   - pinned 状态下不存在倒计时：setPinned(true) 会取消隐藏计时器，
  *     _startHideTimer 对 pinned 直接短路——两段规则互斥，不存在叠加
- *   - 主进程原生 setOpacity 驱动：渲染层 innerHTML 全量重建 / 滑入滑出
- *     CSS 动画均不受影响（零渲染层改动）
+ *   - 主进程推送目标值 + 渲染层 CSS alpha（--win-alpha 变量）实现（2026-09-30 改造：
+ *     原生 setOpacity 整窗缩放无法做「悬停 item 恢复 100%」，透视迁移到渲染层；
+ *     #app 背景与 .item 元素透明度消费该变量，渲染层动画/innerHTML 重建不受影响）
  *
  * 已知取舍（实机确认点）：
  *   - 倒计时中途鼠标重新进入 → _cancelHideTimer 恢复 100%（固定则 80%），
@@ -18,8 +19,8 @@
  */
 'use strict';
 
-/** 固定模式透明度：整体降到 80%（小M 拍板） */
-const OPACITY_PINNED = 0.8;
+/** 固定模式透明度：整体降到 60%（小M 拍板） */
+const OPACITY_PINNED = 0.6;
 /** 倒计时终点「可透视」档：40%，可调 */
 const OPACITY_GHOST = 0.4;
 /** 完全不透明 */

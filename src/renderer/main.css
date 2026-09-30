@@ -5,6 +5,7 @@
 }
 
 :root {
+  --win-alpha: 1; /* 两段式窗口透明度（2026-09-30）：主进程经 window:opacity IPC 推送；悬停 item 局部恢复 100% */
   --bg: #1e1e23;
   --bg2: #2a2a32;
   --card: #33333c;
@@ -35,7 +36,7 @@ html, body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: rgba(30, 30, 35, var(--win-alpha, 1)); /* --bg #1e1e23 的 RGB + 透明度：消费 --win-alpha（渲染层透视） */
   border-radius: 8px;
   overflow: hidden;
   position: relative; /* 返回顶部悬浮按钮的定位基准 */
@@ -75,6 +76,7 @@ html, body {
   justify-content: space-between;
   height: 24px;
   flex-shrink: 0;
+  position: relative; /* 辅助行 .header-meta 绝对定位包含块（2026-09-30 行中置） */
 }
 
 .header h1 {
@@ -95,24 +97,29 @@ html, body {
   height: 60px;
 }
 
-/* 辅助信息行（拍板：「共 N 条 · 上次复制时间」）：静止态零占位，
-   展开态 opacity 0→1 120ms ease-out；收起反向 80ms。与紫色主题同族。 */
+/* 辅助信息行（2026-09-30 小M 调整）：「共 N 条 · 上次复制时间」移入 header 行中部常驻显示
+   （不再仅 hover 可见）；搜索展开时隐藏（输入框 flex-grow 占满中部让位）。
+   绝对定位真居中，不参与 flex 布局；pointer-events none 不挡交互。 */
 .header-meta {
-  height: 0;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 50%;
+  overflow: hidden;
   font-size: 11px;
   line-height: 16px;
   color: rgba(255, 255, 255, 0.75); /* 公共基线 opacity 0.75 */
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
   white-space: nowrap;
   text-overflow: ellipsis;
   transition: opacity 80ms ease-out;
 }
 
-.header--hover .header-meta {
-  height: 16px;
-  opacity: 1;
-  transition: opacity 120ms ease-out;
+/* 搜索展开：输入框占满行中部，辅助行让位淡出 */
+.header.search-open .header-meta {
+  opacity: 0;
 }
 
 /* 展开态按钮恢复常规档（2026-09-29 两态联动：静止 20×20 随 header 缩，hover 恢复 24×24）。
@@ -645,8 +652,15 @@ html, body {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  transition: border-color 0.2s, background 0.2s;
+  transition: border-color 0.2s, background 0.2s, opacity 0.15s ease;
   position: relative; /* 落位光晕 .item-landing::after 定位基准（2026-09-12 方案 C） */
+  opacity: var(--win-alpha, 1); /* 随窗口状态衰减（固定 80%/倒计时透视） */
+}
+
+/* 悬停条目恢复完全不透明（2026-09-30 小M）：窗口半透明时悬停的条目以 100% 实心
+   绘制（卡片遮住身后透视底），保证可读性；其余条目维持窗口透明度。 */
+.item:hover {
+  opacity: 1;
 }
 
 

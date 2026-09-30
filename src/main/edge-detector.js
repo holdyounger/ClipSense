@@ -680,7 +680,7 @@ class EdgeDetector {
   /**
    * 两段式窗口透明度（2026-09-30）：按当前状态计算并应用。
    * 规则：固定 → 80%；非固定倒计时 → 随剩余时间线性降至可透视档；
-   * 其余 → 不透明。去重：与上次应用值差 <0.01 不重复调原生 setOpacity。
+   * 其余 → 不透明。去重：与上次推送值差 <0.01 不重复发 IPC（渲染层写 --win-alpha）。
    */
   _syncWindowOpacity() {
     const target = computeOpacity({
@@ -696,7 +696,10 @@ class EdgeDetector {
     if (this._appliedOpacity !== null && Math.abs(target - this._appliedOpacity) < 0.01) return;
     this._appliedOpacity = target;
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      try { this.mainWindow.setOpacity(target); } catch (err) { /* 销毁竞态：静默 */ }
+      // 渲染层 CSS alpha（2026-09-30 改造）：原生 setOpacity 是 OS 合成层整体缩放，
+      // 子元素无法超越窗口透明度——「悬停 item 恢复 100%」要求透视在渲染层实现。
+      // 主进程只推送目标值，渲染层写 --win-alpha 变量（#app 底色 + .item 元素透明度消费）。
+      try { this.mainWindow.webContents.send('window:opacity', target); } catch (err) { /* 销毁竞态：静默 */ }
     }
   }
 
