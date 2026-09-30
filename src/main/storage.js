@@ -369,6 +369,25 @@ class HistoryStorage {
     if (typeof v !== 'number' || v < 1) return;
     this._writeConfig({ tagSchemaVersion: v });
   }
+
+  /**
+   * 读取「已展示过欢迎页」的版本（2026-09-30 升级欢迎页）
+   * 语义：缺省视为空串（首次安装从未展示过）
+   * @returns {string}
+   */
+  getLastShownVersion() {
+    const v = this._readConfig().lastShownVersion;
+    return typeof v === 'string' ? v : '';
+  }
+
+  /**
+   * 写入「已展示过欢迎页」的版本（合并写入，不影响同文件其他配置）
+   * @param {string} v 当前版本号
+   */
+  setLastShownVersion(v) {
+    if (typeof v !== 'string' || !v) return;
+    this._writeConfig({ lastShownVersion: v });
+  }
 }
 
 module.exports = HistoryStorage;

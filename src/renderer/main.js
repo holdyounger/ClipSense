@@ -6,10 +6,6 @@
  */
 const listEl = document.getElementById('list');
 const pinBtn = document.getElementById('pinBtn');
-const menuBtn = document.getElementById('menuBtn');
-const dropdownMenu = document.getElementById('dropdownMenu');
-const menuLangBtn = document.getElementById('menuLangBtn');
-const menuClearBtn = document.getElementById('menuClearBtn');
 const searchInput = document.getElementById('searchInput');
 const hintEl = document.getElementById('hint');
 const backTopBtn = document.getElementById('backTopBtn');
@@ -166,18 +162,6 @@ function applyStaticText() {
   hintEl.style.userSelect = 'none';
   hintEl.style.MozUserSelect = 'none';
 
-  // 下拉菜单文案
-  menuLangBtn.textContent = t('menuLang');
-  menuClearBtn.textContent = t('menuClear');
-  // 升级菜单项（检查更新；三态文案由 updateMenuStateMachine 驱动）。
-  // 注意：applyStaticText 在脚本顶部即被调用，此处必须用 getElementById 局部取用，
-  // 不能引用下方 const menuUpdateBtn（TDZ，与上方 searchBtn 同理）
-  const menuUpdateBtnEl = document.getElementById('menuUpdateBtn');
-  if (menuUpdateBtnEl) {
-    menuUpdateBtnEl.textContent = t('menuCheckUpdate');
-    menuUpdateBtnEl.disabled = false;
-    menuUpdateBtnEl.title = '';
-  }
   searchInput.placeholder = t('searchPlaceholder');
   // 搜索入口 tooltip（经 getElementById 取用：applyStaticText 在脚本顶部即被调用，
   // 此时下方搜索区的 const searchBtn 尚在 TDZ，不能直接引用）
@@ -514,174 +498,8 @@ async function refresh() {
 }
 
 // ========== 下拉菜单 ==========
-menuBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  dropdownMenu.classList.toggle('open');
-  syncHeaderExpanded(); // 菜单打开锁展开/关闭回归 hover 判定（约束 4）
-});
 
-// 点击菜单外部关闭
-document.addEventListener('click', (e) => {
-  if (!dropdownMenu.contains(e.target) && !menuBtn.contains(e.target)) {
-    dropdownMenu.classList.remove('open');
-    syncHeaderExpanded(); // 菜单关闭后回归 hover 判定（约束 4）
-  }
-});
-
-// 菜单：切换语言
-menuLangBtn.addEventListener('click', () => {
-  dropdownMenu.classList.remove('open');
-  const next = getLang() === 'zh-CN' ? 'en' : 'zh-CN';
-  setLang(next);
-  applyStaticText();
-  refresh();
-});
-
-// 菜单：清空历史
-menuClearBtn.addEventListener('click', async () => {
-  dropdownMenu.classList.remove('open');
-  await window.clipboardAPI.clearHistory();
-  await refresh();
-});
-
-// ========== 轻量升级链路（2026-09-20，自研） ==========
-// 三态：idle → checking → (up-to-date 恢复 idle | has-update → downloading → 安装)
-// 进度更新用轮询模块级变量（简单优先，不另开渲染层状态机）。
-
-const menuUpdateBtn = document.getElementById('menuUpdateBtn');
-let updateState = 'idle';          // idle | checking | hasUpdate | downloading | installing
-let updateLatestVersion = '';
-let updateDownloadUrl = '';
-let updatePercent = 0;
-let updateProgressTimer = null;
-
-// 主进程推送下载进度 → 写入模块级变量，由下方 setInterval 轮询读取渲染
-if (window.clipboardAPI.onUpdateDownloadProgress) {
-  window.clipboardAPI.onUpdateDownloadProgress((p) => {
-    if (p && typeof p.percent === 'number') updatePercent = p.percent;
-  });
-}
-
-function setUpdateMenuText(text, disabled, title) {
-  menuUpdateBtn.textContent = text;
-  menuUpdateBtn.disabled = !!disabled;
-  menuUpdateBtn.title = title || '';
-}
-
-function resetUpdateMenu() {
-  updateState = 'idle';
-  updateLatestVersion = '';
-  updateDownloadUrl = '';
-  updatePercent = 0;
-  menuUpdateBtn.textContent = t('menuCheckUpdate');
-  menuUpdateBtn.disabled = false;
-  menuUpdateBtn.title = '';
-}
-
-menuUpdateBtn.addEventListener('click', async () => {
-  if (updateState !== 'idle') return;
-
-  if (updateState === 'checking' || updateState === 'downloading') return;
-
-  // idle → checking
-  updateState = 'checking';
-  dropdownMenu.classList.add('open');
-  menuUpdateBtn.textContent = t('updateChecking');
-  menuUpdateBtn.disabled = true;
-  menuUpdateBtn.title = '';
-
-  let r;
-  try {
-    r = await window.clipboardAPI.updateCheck();
-  } catch (err) {
-    r = { ok: false, error: err.message };
-  }
-
-  if (updateState !== 'checking') return; // 状态已被其他路径改变
-  updateState = 'idle';
-
-  if (!r.ok) {
-    menuUpdateBtn.textContent = t('menuCheckUpdate');
-    menuUpdateBtn.disabled = false;
-    menuUpdateBtn.title = `检查失败：${r.error || '未知错误'}`;
-    return;
-  }
-
-  if (!r.hasUpdate) {
-    // 无更新（2026-09-20 小M 反馈）：菜单项直接显示「当前已是最新版本」，
-    // 3 秒后恢复「检查更新」；tooltip 保留完整版本信息。
-    menuUpdateBtn.textContent = t('menuUpToDate');
-    menuUpdateBtn.disabled = true;
-    menuUpdateBtn.title = t('updateUpToDateTip', r.currentVersion || r.latestVersion || '');
-    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 3000);
-    return;
-  }
-
-  // hasUpdate → 菜单项变「下载升级 vX.Y.Z」，保持菜单展开供用户点击
-  updateState = 'hasUpdate';
-  updateLatestVersion = r.latestVersion;
-  updateDownloadUrl = r.downloadUrl;
-  menuUpdateBtn.textContent = t('updateDownloadBtn', r.latestVersion);
-  menuUpdateBtn.disabled = false;
-  menuUpdateBtn.title = '';
-});
-
-// 第二段：hasUpdate 态点击 → 下载（进度轮询）→ 完成 → install
-menuUpdateBtn.addEventListener('click', async () => {
-  if (updateState !== 'hasUpdate') return;
-  updateState = 'downloading';
-  menuUpdateBtn.disabled = true;
-  updatePercent = 0;
-
-  const renderProgress = () => {
-    if (updateState !== 'downloading') return;
-    menuUpdateBtn.textContent = t('updateDownloading', Math.floor(updatePercent));
-  };
-  updateProgressTimer = setInterval(renderProgress, 200);
-
-  let dl;
-  try {
-    dl = await window.clipboardAPI.updateDownload(updateDownloadUrl);
-  } catch (err) {
-    dl = { ok: false, error: err.message };
-  } finally {
-    if (updateProgressTimer) { clearInterval(updateProgressTimer); updateProgressTimer = null; }
-  }
-
-  if (updateState !== 'downloading') return;
-
-  if (!dl.ok) {
-    updateState = 'idle';
-    menuUpdateBtn.textContent = t('updateDownloadFailed');
-    menuUpdateBtn.disabled = false;
-    menuUpdateBtn.title = dl.error || '';
-    // 5 秒后恢复为「检查更新」，允许重试
-    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 5000);
-    return;
-  }
-
-  updateState = 'installing';
-  menuUpdateBtn.textContent = t('updateChecking'); // 复用「检查中…」语义：安装中禁用
-  menuUpdateBtn.disabled = true;
-
-  let inst;
-  try {
-    inst = await window.clipboardAPI.updateInstall(dl.filePath);
-  } catch (err) {
-    inst = { ok: false, error: err.message };
-  }
-
-  if (!inst.ok) {
-    updateState = 'idle';
-    menuUpdateBtn.textContent = t('updateDownloadFailed');
-    menuUpdateBtn.disabled = false;
-    menuUpdateBtn.title = inst.error || '';
-    setTimeout(() => { if (updateState === 'idle') resetUpdateMenu(); }, 5000);
-    return;
-  }
-
-  // 安装器已拉起，主进程将 quit —— 菜单项保持禁用即可
-});
+// ========== 搜索（2026-09-10 体验优化：入口上移 header，图标点击展开） ==========
 
 // ========== 搜索（2026-09-10 体验优化：入口上移 header，图标点击展开） ==========
 // 主窗口默认 focusable:false（src/main/index.js 零改动）；键盘输入只在 focus-search
@@ -1078,8 +896,8 @@ const headerHoverUi = (typeof createHeaderHoverUi === 'function' &&
 /** 汇总三路展开诉求（hover/搜索/菜单）应用到 class + FLIP */
 function syncHeaderExpanded() {
   if (!headerHoverUi) return;
-  const force = searchOpen ||
-    (typeof dropdownMenu.classList.contains === 'function' && dropdownMenu.classList.contains('open'));
+  // 2026-09-30：二级菜单已取消（功能迁托盘），菜单强制展开分支随之移除
+  const force = searchOpen;
   headerHoverUi.applyHover(force || headerHoverFromMain);
 }
 
@@ -1097,6 +915,25 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onWindowOpacity === 'funct
   window.clipboardAPI.onWindowOpacity((v) => {
     document.documentElement.style.setProperty('--win-alpha', String(v));
   });
+}
+
+// 语言切换（2026-09-30 二级菜单取消后迁托盘）：承接原菜单 handler 的三连调语义
+//（setLang + applyStaticText + refresh）；订阅须在 onWindowVisibility 语义块外独立注册
+if (window.clipboardAPI && typeof window.clipboardAPI.onLangChanged === 'function') {
+  window.clipboardAPI.onLangChanged((lang) => {
+    setLang(lang);
+    applyStaticText();
+    refresh();
+  });
+} else if (window.clipboardAPI && typeof window.clipboardAPI.getLang === 'function') {
+  // 旧主进程无推送时的启动拉取兜底（一次性对齐托盘选择）
+  window.clipboardAPI.getLang().then((lang) => {
+    if (lang && lang !== getLang()) {
+      setLang(lang);
+      applyStaticText();
+      refresh();
+    }
+  }).catch(() => {});
 }
 
 // 窗口可见性权威信号（2026-09-30）：驱动贴边 gate + 承接原 visibilitychange 的重显动作
@@ -1130,5 +967,33 @@ initTagSettings();
 if (window.clipboardAPI && window.clipboardAPI.onTagSettingsUpdated) {
   window.clipboardAPI.onTagSettingsUpdated((s) => applyTagSettings(s));
 }
+
+// ========== 升级欢迎页（2026-09-30）：版本变化时展示，关闭后回写已展示版本 ==========
+// 数据流：主进程 get-welcome-state（app.getVersion vs config.lastShownVersion）→
+// shouldShow=true → 渲染层移除 overlay hidden 属性 + 填充版本号；
+// 用户点击「开始使用」/遮罩 → set-welcome-shown 回写 → overlay 淡出。
+(async () => {
+  try {
+    const st = await window.clipboardAPI.getWelcomeState();
+    if (!st || !st.shouldShow) return;
+    const overlay = document.getElementById('welcomeOverlay');
+    if (!overlay) return;
+    document.getElementById('welcomeVersion').textContent = `v${st.version}`;
+    overlay.hidden = false;
+    requestAnimationFrame(() => overlay.classList.add('visible')); // 淡入
+
+    const close = async () => {
+      overlay.classList.remove('visible'); // 淡出
+      setTimeout(() => { overlay.hidden = true; }, 180);  // 过渡完成后隐藏
+      overlay.removeEventListener('click', onOverlayClick);
+      await window.clipboardAPI.setWelcomeShown(); // 回写已展示版本
+    };
+    const onOverlayClick = (e) => { if (e.target === overlay) close(); };
+    overlay.addEventListener('click', onOverlayClick);
+    document.getElementById('welcomeCloseBtn').addEventListener('click', close);
+  } catch (err) {
+    console.warn('[Welcome] 初始化失败（不阻塞主流程）:', err.message);
+  }
+})();
 
 refresh();

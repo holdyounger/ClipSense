@@ -130,8 +130,7 @@ html, body {
    随 header 高度同帧瞬切（无 width/height 过渡——header 瞬切美学一致，且 layout 动画踩红线）。
    倒计时环 viewBox 0 0 28 28 自适应缩放，dashoffset 由 main.js 按比例同步，不受尺寸影响。 */
 .header--hover .search-btn,
-.header--hover .pin-btn,
-.header--hover .menu-btn {
+.header--hover .pin-btn {
   width: 24px;
   height: 24px;
   border-radius: 6px;
@@ -147,7 +146,6 @@ html, body {
   height: 14px;
 }
 
-.header--hover .menu-btn-icon,
 .header--hover .pin-icon {
   width: 16px;
   height: 16px;
@@ -191,8 +189,7 @@ html, body {
 }
 
 .search-btn:active,
-.pin-btn:active,
-.menu-btn:active {
+.pin-btn:active {
   transform: scale(0.96);
 }
 
@@ -203,63 +200,6 @@ html, body {
 }
 
 /* 更多菜单（下拉） */
-.menu-wrap {
-  position: relative;
-  -webkit-app-region: no-drag;
-}
-
-.menu-btn {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.menu-btn-icon {
-  width: 14px;
-  height: 14px;
-}
-
-.dropdown-menu {
-  position: absolute;
-  top: 38px;
-  right: 0;
-  min-width: 120px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  overflow: hidden;
-  display: none;
-  z-index: 50;
-}
-
-.dropdown-menu.open {
-  display: block;
-}
-
-.dropdown-item {
-  display: block;
-  width: 100%;
-  padding: 9px 14px;
-  text-align: left;
-  font-size: 12px;
-  color: var(--text);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-}
-
-.dropdown-item:hover {
-  background: var(--card);
-}
-
-.dropdown-item--danger {
-  color: #ff6b6b;
-}
-
 /* 固定按钮（公共基线 28×28） */
 .pin-btn {
   width: 20px;
@@ -276,7 +216,6 @@ html, body {
   width: 14px;
   height: 14px;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s;
-}
 }
 
 .pin-icon--unpinned { opacity: 1; }
@@ -394,6 +333,76 @@ html, body {
   .header-meta {
     transition: none !important;
   }
+}
+
+/* ========== 升级欢迎页 overlay（2026-09-30） ==========
+   版本变化时主进程 get-welcome-state 返回 shouldShow → 渲染层移除 hidden 属性。
+   全屏半透明遮罩 + 居中卡片；点击遮罩或按钮关闭（回写 lastShownVersion）。 */
+.welcome-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200; /* 高于 header/hint，低于下拉菜单（菜单已迁托盘） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 20, 26, 0.72);
+  -webkit-app-region: no-drag;
+}
+
+.welcome-card {
+  width: 300px;
+  max-width: calc(100% - 40px);
+  padding: 24px 22px;
+  text-align: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.welcome-logo {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.welcome-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.welcome-version {
+  font-size: 12px;
+  color: var(--accent-hover);
+  margin: 0 0 14px;
+}
+
+.welcome-text {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+
+.welcome-close {
+  padding: 8px 28px;
+  font-size: 13px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.welcome-close:hover {
+  background: var(--accent-hover);
+}
+
+.welcome-close:active {
+  transform: scale(0.97);
 }
 
 /* ========== header 搜索展开态（2026-09-10 搜索体验优化） ========== */

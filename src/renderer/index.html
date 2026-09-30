@@ -50,24 +50,22 @@
           </svg>
           <span class="pin-cd-num" id="pinCdNum" aria-hidden="true"></span>
         </button>
-        <!-- 更多菜单按钮（公共基线：⋮ 字符改 3 点 SVG，16×16 渲染后 r=1.6px / 垂直间距 5px） -->
-        <div class="menu-wrap">
-          <button id="menuBtn" class="menu-btn" title="菜单">
-            <svg class="menu-btn-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <circle cx="12" cy="4.5" r="2.4" fill="currentColor"/>
-              <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
-              <circle cx="12" cy="19.5" r="2.4" fill="currentColor"/>
-            </svg>
-          </button>
-          <div class="dropdown-menu" id="dropdownMenu">
-            <button class="dropdown-item" id="menuLangBtn">切换语言</button>
-            <button class="dropdown-item" id="menuUpdateBtn">检查更新</button>
-            <button class="dropdown-item dropdown-item--danger" id="menuClearBtn">清空历史</button>
-          </div>
-        </div>
+        <!-- 更多菜单已取消（2026-09-30 小M）：语言/检查更新/清空历史/关于 迁托盘菜单 -->
       </div>
       </div>
     </header>
+
+    <!-- 升级欢迎页 overlay（2026-09-30）：版本变化时展示，点击/关闭后回写已展示版本 -->
+    <div class="welcome-overlay" id="welcomeOverlay" hidden>
+      <div class="welcome-card">
+        <div class="welcome-logo">🐾</div>
+        <h2 class="welcome-title" id="welcomeTitle">欢迎使用 ClipSense</h2>
+        <p class="welcome-version" id="welcomeVersion"></p>
+        <p class="welcome-text">复制任意内容（Ctrl+C），它会自动出现在下方列表。<br>
+           双击列表条目可粘贴回原窗口；悬停顶部可展开搜索。</p>
+        <button class="welcome-close" id="welcomeCloseBtn">开始使用</button>
+      </div>
+    </div>
 
     <div class="hint" id="hint">
       现在复制任意文本（Ctrl+C），会自动出现在下方列表<br>

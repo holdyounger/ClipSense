@@ -316,16 +316,16 @@ describe('A. IPC 驱动接线：header:hover → .header--hover（补测：既�
     assert.strictEqual(h.listEl.style.transform, '', '无 FLIP 残留');
   });
 
-  test('A4 强制展开·菜单（约束 4）：菜单打开锁高，点外关闭后回归', async () => {
+  test('A4 强制展开·搜索（约束 4 剩余面；菜单已取消迁托盘 2026-09-30）', async () => {
+    // 原 A4 验证「菜单打开锁高」——菜单迁托盘后强制展开仅剩 search-open 一路。
+    // 搜索展开锁高已在 openSearch/collapseSearch 内经 syncHeaderExpanded 覆盖，
+    // 此处验证 hover 信号与 search-open 的交互：搜索未开时 hover=false → header 回落。
     const h = loadWiring();
     await h.settle();
-    const menuBtn = h.document.getElementById('menuBtn');
-    menuBtn.dispatch('click', { target: menuBtn });
-    assert.ok(h.headerEl.classList.contains('header--hover'), '菜单打开锁展开');
+    h.handlers.headerHover(true);
+    assert.ok(h.headerEl.classList.contains('header--hover'), 'hover 信号驱动展开');
     h.handlers.headerHover(false);
-    assert.ok(h.headerEl.classList.contains('header--hover'), '菜单期间不让位');
-    h.document.dispatch('click', { target: h.document.body }); // 点击 header 外
-    assert.ok(!h.headerEl.classList.contains('header--hover'), '菜单关闭后回归 hover 判定');
+    assert.ok(!h.headerEl.classList.contains('header--hover'), 'hover 信号消失后回落');
   });
 
   test('A5 snap 复位桥（约束 4 面板即将收起）：清 class/transform/IPC 态，可重新进入', async () => {
@@ -583,8 +583,9 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
     assert.ok(/isWindowVisible && !this\._isHiding/.test(ed), '仅可见且非滑出中判定（收起瞬间悬挂防护）');
     const mj = readRoot('src/renderer/main.js');
     assert.ok(mj.includes('window.__clipSenseHeaderSnap'), '渲染层 snap 桥落盘');
-    assert.ok(mj.includes('const force = searchOpen ||'), '强制展开汇总：搜索');
-    assert.ok(mj.includes("dropdownMenu.classList.contains('open')"), '强制展开汇总：菜单');
+    assert.ok(mj.includes('const force = searchOpen;'), '强制展开汇总：搜索（菜单已取消，单一来源）');
+    // 2026-09-30 菜单取消：强制展开汇总仅剩搜索一路（菜单迁托盘）
+    assert.ok(!mj.includes('dropdownMenu'), 'dropdownMenu 引用已清（迁托盘）');
     const marks = (mj.match(/markListRebuilt\(\)/g) || []).length;
     assert.ok(marks >= 3, `markListRebuilt 调用点 ${marks} ≥ 3（refresh/搜索收起/两处重建点）`);
     const syncs = (mj.match(/syncHeaderExpanded\(\)/g) || []).length;

@@ -214,6 +214,10 @@ function makeWindow() {
       onCountdownUpdate: (cb) => { handlers.countdownUpdated = cb; },
       getTagSettings: async () => (win._tagSettings === undefined ? null : win._tagSettings),
       onTagSettingsUpdated: (cb) => { handlers.tagSettingsUpdated = cb; },
+      // 语言切换（2026-09-30 二级菜单取消后迁托盘）：录制订阅回调，测试经 __emitLangChanged 派发
+      onLangChanged: (cb) => { handlers.langChanged = cb; },
+      getLang: async () => 'zh-CN',
+      setLang: async (lang) => ({ ok: true, lang }),
     },
     _calls: null,
   };
@@ -239,7 +243,7 @@ function loadHarness({ history = [] } = {}) {
     document, window, navigator, localStorage, undefined,
     setTimeout, clearTimeout, setInterval, clearInterval,
   );
-  return { api, document, window };
+  return { api, document, window, handlers: window._handlers };
 }
 
 const flushAsync = () => new Promise(resolve => setImmediate(resolve));
@@ -651,17 +655,21 @@ describe('i18n（验收 9）', () => {
     api.setLang('zh-CN');
   });
 
-  test('applyStaticText 设置搜索按钮 tooltip（语言切换跟随）', async () => {
-    const { api, document } = loadHarness();
+  test('applyStaticText 设置搜索按钮 tooltip（语言切换跟随，经 lang-changed 权威信号）', async () => {
+    // 2026-09-30：二级菜单已取消，语言切换迁托盘——托盘 _switchLang 推 lang-changed，
+    // 渲染层订阅器内 setLang + applyStaticText + refresh 三连调。本用例派发同一信号验证跟随。
+    const { api, document, handlers } = loadHarness();
     await flushAsync();
     const btn = document.getElementById('searchBtn');
     assert.equal(btn.title, '搜索', '初始 zh tooltip');
-    const menuLangBtn = document.getElementById('menuLangBtn');
-    menuLangBtn.dispatch('click'); // zh → en（菜单 handler 内部 setLang + applyStaticText）
+    assert.equal(typeof handlers.langChanged, 'function', 'onLangChanged 订阅已注册');
+
+    handlers.langChanged('en'); // 托盘切 en：订阅器内三连调
     await flushAsync();
     assert.equal(api.getLang(), 'en');
     assert.equal(btn.title, 'Search', '切换 en 后 tooltip 跟随');
-    menuLangBtn.dispatch('click'); // en → zh
+
+    handlers.langChanged('zh-CN');
     await flushAsync();
     assert.equal(btn.title, '搜索');
   });
@@ -741,14 +749,15 @@ describe('Header 改造落盘断言（公共修正基线 + 方案 B 静态结构
     assert.ok(html.includes('rotate(-90 14 14)'), '12 点起点顺时针消退');
     assert.ok(html.includes('id="pinCdNum"'), '环心秒数元素');
     assert.ok(!html.includes('countdownBadge'), '倒计时徽标已从 header-actions 移除');
-    const menuBlock = html.slice(html.indexOf('id="menuBtn"'), html.indexOf('id="dropdownMenu"'));
-    assert.equal((menuBlock.match(/<circle /g) || []).length, 3, 'menu 3 点 SVG');
+    // 2026-09-30：二级菜单已取消（迁托盘）——断言 menuBtn/dropdownMenu 不再存在于 HTML
+    assert.ok(!html.includes('id="menuBtn"'), 'menuBtn 已移除');
+    assert.ok(!html.includes('id="dropdownMenu"'), 'dropdownMenu 已移除');
   });
 
   test('main.css：按钮两态（静止 20×20 / hover 恢复 24×24，2026-09-29）/ gap 8 / focus-visible / 环形三态 / 徽标样式清理', () => {
     const css = readRoot('src/renderer/main.css');
     assert.ok(/\.header-actions\s*\{[^}]*gap:\s*8px/.test(css), 'header-actions gap 8px');
-    for (const cls of ['search-btn', 'pin-btn', 'menu-btn']) {
+    for (const cls of ['search-btn', 'pin-btn']) {
       const re = new RegExp('\\.' + cls + '\\s*\\{[^}]*width:\\s*20px;[^}]*height:\\s*20px');
       assert.ok(re.test(css), cls + ' 静止态 20×20');
       const reHover = new RegExp('\\.header--hover\\s+\\.' + cls + '[^{]*\\{[^}]*width:\\s*24px'); // 选择器组（逗号续行）容忍

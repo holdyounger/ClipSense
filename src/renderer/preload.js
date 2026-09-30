@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   onWindowOpacity: (callback) => { ipcRenderer.on('window:opacity', (e, v) => callback(v)); },
   // 窗口可见性权威信号（2026-09-30）：backgroundThrottling:false 下 visibilityState 失灵
   onWindowVisibility: (callback) => { ipcRenderer.on('window:visibility', (e, v) => callback(v)); },
+  // 语言切换（2026-09-30 二级菜单取消后迁托盘）：托盘 _switchLang 推送新语言
+  onLangChanged: (callback) => { ipcRenderer.on('lang-changed', (e, lang) => callback(lang)); },
+  getLang: () => ipcRenderer.invoke('get-lang'),
+  setLang: (lang) => ipcRenderer.invoke('set-lang', lang),
+  // 升级欢迎页（2026-09-30）：版本变化检测 + 已展示回写
+  getWelcomeState: () => ipcRenderer.invoke('get-welcome-state'),
+  setWelcomeShown: () => ipcRenderer.invoke('set-welcome-shown'),
   onUpdateDownloadProgress: (callback) => {
     ipcRenderer.on('update-download-progress', (event, progress) => callback(progress));
   },

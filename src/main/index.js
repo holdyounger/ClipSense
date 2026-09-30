@@ -175,6 +175,24 @@ class ClipboardSpikeApp {
       { label: '显示/隐藏', click: () => this.toggleWindow() },
       { label: '检查更新', click: () => this._checkUpdateFromTray() },
       {
+        label: '语言 / Language',
+        submenu: [
+          { label: '中文', type: 'radio', checked: this._getTrayLang() === 'zh-CN', click: () => this._switchLang('zh-CN') },
+          { label: 'English', type: 'radio', checked: this._getTrayLang() === 'en', click: () => this._switchLang('en') },
+        ],
+      },
+      {
+        label: '关于 ClipSense',
+        click: () => this._showAboutDialog(),
+      },
+      {
+        label: '清空历史',
+        click: () => {
+          this.monitor.clear();
+          this.pushHistory();
+        },
+      },
+      {
         label: '固定窗口',
         type: 'checkbox',
         checked: this.edgeDetector ? this.edgeDetector.isPinned : false,
@@ -202,6 +220,31 @@ class ClipboardSpikeApp {
       { label: '退出', click: () => app.exit(0) },
     ]));
     this.tray.on('click', () => this.toggleWindow());
+  }
+
+  /** 读托盘语言单选态（storage config.lang，缺省 zh-CN） */
+  _getTrayLang() {
+    try { return this.storage._readConfig().lang || 'zh-CN'; } catch (_) { return 'zh-CN'; }
+  }
+
+  /** 托盘切换语言：持久化 + 推送渲染层应用 */
+  _switchLang(lang) {
+    try { this.storage._writeConfig({ lang }); } catch (_) { /* 持久化失败不阻断 */ }
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('lang-changed', lang);
+    }
+  }
+
+  /** 关于对话框（原生 dialog，零新窗口） */
+  _showAboutDialog() {
+    const { dialog } = require('electron');
+    dialog.showMessageBox(this.mainWindow, {
+      type: 'info',
+      title: '关于 ClipSense',
+      message: `ClipSense v${app.getVersion()}`,
+      detail: '剪贴板历史助手\n复制内容自动归档，搜索历史剪贴板，并将选中的内容快速粘贴到原目标窗口。\n\n© 小M & 爪爪 🐾',
+      buttons: ['确定'],
+    });
   }
 
   /**
@@ -578,6 +621,32 @@ class ClipboardSpikeApp {
       // 搜索结束：恢复自动隐藏（与渲染层 blur 事件双保险，18:42）
       if (this.edgeDetector) this.edgeDetector.setSearchActive(false);
       return true;
+    });
+
+    // ========== 升级欢迎页（2026-09-30）：版本变化 → 渲染层展示欢迎 overlay ==========
+    // 判定：app.getVersion() !== config.lastShownVersion（首次安装/升级均触发）
+    // 状态：欢迎展示关闭时渲染层回写 set-welcome-shown，config.lastShownVersion = 当前版本
+    const currentVersion = app.getVersion();
+    const lastShown = this.storage.getLastShownVersion();
+    if (currentVersion !== lastShown) {
+      console.log(`[Spike] 检测到版本变化（${lastShown || '首次安装'} → ${currentVersion}），将展示欢迎页`);
+    }
+    ipcMain.handle('get-welcome-state', () => ({
+      shouldShow: app.getVersion() !== this.storage.getLastShownVersion(),
+      version: app.getVersion(),
+    }));
+    ipcMain.handle('set-welcome-shown', () => {
+      this.storage.setLastShownVersion(app.getVersion());
+      return { ok: true };
+    });
+
+    // ========== 语言切换（托盘驱动，2026-09-30 二级菜单取消后迁入托盘） ==========
+    // 渲染层 localStorage 不可达（托盘无页面），持久化走 storage 配置（lang 字段）
+    ipcMain.handle('get-lang', () => this.storage._readConfig().lang || 'zh-CN');
+    ipcMain.handle('set-lang', (event, lang) => {
+      if (lang !== 'zh-CN' && lang !== 'en') return { ok: false, error: 'unsupported lang' };
+      this.storage._writeConfig({ lang });
+      return { ok: true, lang };
     });
 
     // ========== 窗口固定 ==========
