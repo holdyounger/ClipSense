@@ -34,7 +34,7 @@ const path = require('node:path');
 
 const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
 // spring-anim.js / entry-anim.js 必须先于 main.js（main 顶层 createEntryAnim + 播放链路引用）
-const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
+const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'header-hover-ui.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
   .map(f => fs.readFileSync(path.join(RENDERER_DIR, f), 'utf8'))
   .join('\n;\n');
 
@@ -745,12 +745,14 @@ describe('Header 改造落盘断言（公共修正基线 + 方案 B 静态结构
     assert.equal((menuBlock.match(/<circle /g) || []).length, 3, 'menu 3 点 SVG');
   });
 
-  test('main.css：28×28 / 圆角 7 / gap 8 / focus-visible / 环形三态 / 徽标样式清理', () => {
+  test('main.css：按钮两态（静止 20×20 / hover 恢复 24×24，2026-09-29）/ gap 8 / focus-visible / 环形三态 / 徽标样式清理', () => {
     const css = readRoot('src/renderer/main.css');
     assert.ok(/\.header-actions\s*\{[^}]*gap:\s*8px/.test(css), 'header-actions gap 8px');
     for (const cls of ['search-btn', 'pin-btn', 'menu-btn']) {
-      const re = new RegExp('\\.' + cls + '\\s*\\{[^}]*width:\\s*28px;[^}]*height:\\s*28px');
-      assert.ok(re.test(css), cls + ' 容器 28×28');
+      const re = new RegExp('\\.' + cls + '\\s*\\{[^}]*width:\\s*20px;[^}]*height:\\s*20px');
+      assert.ok(re.test(css), cls + ' 静止态 20×20');
+      const reHover = new RegExp('\\.header--hover\\s+\\.' + cls + '[^{]*\\{[^}]*width:\\s*24px'); // 选择器组（逗号续行）容忍
+      assert.ok(reHover.test(css), cls + ' hover 恢复 24×24');
     }
     assert.ok(/\.header button:focus-visible/.test(css), 'focus-visible 焦点环');
     assert.ok(/\.pin-btn\.cd-running/.test(css), 'cd-running 三态 CSS');
