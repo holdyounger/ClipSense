@@ -21,6 +21,7 @@ const { PasteBridge } = require('./paste-bridge');
 const { buildTriggerScript, DRAWER } = require('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker');
 const updater = require('./updater');
+const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims');
 
 class ClipboardSpikeApp {
   constructor() {
@@ -39,11 +40,11 @@ class ClipboardSpikeApp {
 
   createWindow() {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    const windowWidth = 360;
+    const windowWidth = WINDOW_WIDTH; // 黄金比例常量（window-dims.js，340×550 ≈ φ）
 
     this.mainWindow = new BrowserWindow({
       width: windowWidth,
-      height: 480,
+      height: WINDOW_HEIGHT,
       // x: width - windowWidth,
       // y: 0,
       frame: false,          // 无边框（配合边缘吸附）
@@ -365,13 +366,23 @@ class ClipboardSpikeApp {
       },
       { type: 'separator' },
     ];
-    // v2 12 类三组分隔线（拍板 #3：平铺 + 分隔线，非二级菜单）
+    // 标签分组（拍板 #3：平铺 + 分隔线，非二级菜单）。
+    // 2026-09-30 通用化扩展：v2 12 类 + v1.0.7 新增 10 类 = 22 类，五组分隔线。
+    // ⚠️ 维护提示：新增标签类型时必须同步本清单 + tag-utils.js 的 TAG_PRIORITY
+    //   + normalizeEnabled 开关 + i18n 的 tagXxx key（四处，缺一处即托盘/筛选/UI 失联）。
     const tagGroups = [
-      [ // 基础（v1 通用类；代码片段为 v1 粗桶，随 v1 标签留在本组，凑齐 12 项，见交付报告偏离记录）
+      [ // 基础（v1 通用类；代码片段为 v1 粗桶，随 v1 标签留在本组）
         { id: 'link', label: '链接' },
         { id: 'email', label: '邮箱' },
         { id: 'otp', label: '验证码' },
         { id: 'snippet', label: '代码片段' },
+      ],
+      [ // 生活通用（v1.0.7 新增，PRD §2.1）
+        { id: 'tracking', label: '快递单号' },
+        { id: 'phone', label: '手机号' },
+        { id: 'meeting', label: '会议日程' },
+        { id: 'todo', label: '待办' },
+        { id: 'address', label: '地址' },
       ],
       [ // 开发（结构类，v2 新增除 path 外含 cmd/stack/config/ip/hash）
         { id: 'cmd', label: '命令行' },
@@ -381,9 +392,16 @@ class ClipboardSpikeApp {
         { id: 'hash', label: '哈希指纹' },
         { id: 'path', label: '文件路径' },
       ],
-      [ // 安全
+      [ // 设计与标识（v1.0.7 新增）
+        { id: 'uuid', label: 'UUID' },
+        { id: 'color', label: '颜色值' },
+      ],
+      [ // 安全与凭据
         { id: 'sensitive', label: '敏感信息' },
         { id: 'vuln', label: '漏洞编号' },
+        { id: 'urlcred', label: '账号凭据' },
+        { id: 'bankcard', label: '银行卡' },
+        { id: 'idcard', label: '身份证' },
       ],
     ];
     tagGroups.forEach((group, gi) => {

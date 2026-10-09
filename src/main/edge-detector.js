@@ -20,6 +20,7 @@ const {
   HEADER_DRAG_RESUME_MS,
 } = require('./header-hover');
 const { computeOpacity } = require('./window-opacity');
+const { WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_HALF_WIDTH } = require('./window-dims');
 
 class EdgeDetector {
   constructor(mainWindow, triggerWindow = null) {
@@ -299,8 +300,8 @@ class EdgeDetector {
     if (this._onShown) this._onShown();
 
     const { width, height } = display.workAreaSize;
-    const windowWidth = 360;
-    const windowHeight = Math.min(560, height);
+    const windowWidth = WINDOW_WIDTH; // 黄金比例常量（window-dims.js）
+    const windowHeight = Math.min(WINDOW_HEIGHT, height);
 
     let targetX, targetY;
     // 防御：残留的 _hiddenAtPos 若落在工作区外（异常中断残留），直接丢弃，
@@ -482,7 +483,7 @@ class EdgeDetector {
 
   _getNearestEdgeForPoint(x, display) {
     const { x: dx, width: dw } = display.workArea;
-    return (x + 180 - dx) <= ((dx + dw) - (x + 180)) ? 'left' : 'right';
+    return (x + WINDOW_HALF_WIDTH - dx) <= ((dx + dw) - (x + WINDOW_HALF_WIDTH)) ? 'left' : 'right';
   }
 
   _getNearestEdge() {
