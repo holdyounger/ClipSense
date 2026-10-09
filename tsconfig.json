@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    /* 输出：编译到 CommonJS，产物与现有 JS 共存于 src/（.js 与 .ts 并列，零 ESM 迁移） */
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "outDir": "dist",
+    "rootDir": "src",
+    "sourceMap": false,
+
+    /* 渐进迁移核心：允许 .js 与 .ts 共存，旧 JS 不检查、逐步迁移 */
+    "allowJs": true,
+    "checkJs": false,
+
+    /* 严格模式：新 TS 代码全量严格（迁移价值所在） */
+    "strict": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* Electron 环境 */
+    "types": ["node"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* 不产出声明文件（现阶段无下游 TS 消费者） */
+    "declaration": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.js"],
+  "exclude": ["node_modules", "dist", "tests"]
+}
