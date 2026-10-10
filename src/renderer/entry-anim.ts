@@ -136,14 +136,16 @@ function createEntryAnim(deps: EntryAnimDeps) {
       // 兑底补播：visibilitychange 的 playPending 因时序未命中（如标签筛选重渲染
       // 竞态）时，后续渲染 tick 顶部命中待播条目则补播（仅可见态；标记语义
       // 为「下次展开补播一次」，不重验 timestamp 时效）
-      if (id === prevId) {
+      if (id === prevId || prevId === null) {
+        // prevId === null = 首渲染基线：只记录不播（.ts 迁移时曾丢失此分支，
+        // 2026-10-10 统一切换测试到产物后被 12 条电池捕获——回归实证）
         if (pendingEntry && id === pendingEntry && visibility() !== 'hidden' && entry) {
           pendingEntry = null;
           pulseFiredFor = null;
           play(entry);
           return true;
         }
-        return false; // rebase/普通刷新/粘贴后重建/bump 置顶：不播
+        return false; // rebase/普通刷新/粘贴后重建/bump 置顶/基线：不播
       }
 
       // id 变化：区分真新增（timestamp 距 now < 10s）与陈旧装载
