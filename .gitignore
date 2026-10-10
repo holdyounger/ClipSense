@@ -16,5 +16,5 @@ temp/
 # 语法注意：必须用 Docs/*（内容级）而非 Docs/（目录级）——后者使内部否定规则全部失效。
 Docs/*
 # ── 白名单：需要同步到远程的文档，按需增删 ──
-!Docs/Release-*.md
+!Docs/CHANGELOG.md
 !Docs/PRD-*.md
