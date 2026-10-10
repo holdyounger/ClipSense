@@ -19,14 +19,7 @@
 // clipboardAPI 来自 preload contextBridge（运行时由主进程注入）
 declare function tagI18nKey(id: string): string;
 
-/** preload contextBridge 暴露的 clipboardAPI（本文件用到的子集） */
-declare interface Window {
-  clipboardAPI: {
-    openExternal: (url: string) => Promise<{ ok?: boolean; error?: string } | null>;
-    openFileLocation: (path: string) => Promise<{ ok?: boolean; error?: string } | null>;
-    getFileIcon: (path: string) => Promise<string | null>;
-  };
-}
+/** clipboardAPI 契约已收口至 main.ts（Window 同名属性接口合并要求两处类型一致） */
 
 /** 剪贴板历史条目（四类型联合的公共字段 + 各自可选字段） */
 interface ClipboardItem {
