@@ -2,12 +2,15 @@
   "name": "clipboard-spike",
   "version": "1.0.11",
   "description": "剪贴板程序可行性 spike demo —— 验证：剪贴板轮询监听 → 面板展示 → 点击回写",
-  "main": "src/main/index.js",
+  "main": "dist/main/index.js",
   "scripts": {
+    "prestart": "npm run build:ts",
     "start": "electron .",
+    "prestart:dev": "npm run build:ts",
     "start:dev": "set NODE_ENV=development&& electron .",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
+    "build:ts": "tsc && node scripts/copy-assets.js",
+    "build": "npm run build:ts && electron-builder",
+    "build:win": "npm run build:ts && electron-builder --win",
     "gen:icon": "node scripts/gen-icon.js"
   },
   "keywords": [
@@ -31,7 +34,7 @@
       "output": "build"
     },
     "files": [
-      "src/**/*",
+      "dist/**/*",
       "scripts/**/*",
       "package.json",
       "README.md"

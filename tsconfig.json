@@ -8,7 +8,8 @@
     "rootDir": "src",
     "sourceMap": false,
 
-    /* 渐进迁移核心：允许 .js 与 .ts 共存，旧 JS 不检查、逐步迁移 */
+    /* 统一切换（2026-10-10）：include 只含 .ts——src .js 已退役不再参与编译，
+       消除 dist 同名输出碰撞；allowJs 保留（历史兼容，无 .js 输入即无效） */
     "allowJs": true,
     "checkJs": false,
 
@@ -27,6 +28,6 @@
     /* 不产出声明文件（现阶段无下游 TS 消费者） */
     "declaration": false
   },
-  "include": ["src/**/*.ts", "src/**/*.js"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "tests"]
 }
