@@ -32,7 +32,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
+const RENDERER_DIR = path.join(__dirname, '..', 'dist', 'renderer');
 // spring-anim.js / entry-anim.js 必须先于 main.js（main 顶层 createEntryAnim + 播放链路引用）
 const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'header-hover-ui.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
   .map(f => fs.readFileSync(path.join(RENDERER_DIR, f), 'utf8'))
@@ -771,7 +771,7 @@ describe('Header 改造落盘断言（公共修正基线 + 方案 B 静态结构
   });
 
   test('focus-debug 临时埋点已清理（2026-09-20 验收后移除）；焦点链本身保持', () => {
-    const mainProc = readRoot('src/main/index.js');
+    const mainProc = readRoot('src/main/index.ts');
     assert.ok(/focus-search[\s\S]*?webContents\.focus\(\)/.test(mainProc),
       'focus-search 交付 WebContents 键盘焦点');
     assert.ok(/focus-search[\s\S]*?this\.mainWindow\.show\(\)/.test(mainProc),
@@ -780,7 +780,7 @@ describe('Header 改造落盘断言（公共修正基线 + 方案 B 静态结构
     assert.ok(!/setFocusable\(true\)/.test(mainProc), '焦点模型回切：不再按需切换 setFocusable');
     // 临时埋点已随验收移除（2026-09-20，辉光/计数实机验证齐后清埋点）：
     assert.ok(!(mainProc.includes('[focus-debug]')), '主进程 focus-debug 埋点已清理');
-    const rendererMain = readRoot('src/renderer/main.js');
+    const rendererMain = readRoot('src/renderer/main.ts');
     assert.ok(!rendererMain.includes('[focus-debug]'), '渲染层 focus-debug 埋点已清理');
   });
 });
@@ -883,7 +883,7 @@ describe('实机 BUG 修复回归二：Escape 按键检查 + 输入框 no-drag�
     // 注意：readRoot 定义在其他 describe 作用域内，此处用 fs 直读（__dirname 相对路径）
     const fs = require('fs');
     const path = require('path');
-    const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'main.css'), 'utf8');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'dist', 'renderer', 'main.css'), 'utf8');
     const m = css.match(/\.header-search \{[^}]*\}/);
     assert.ok(m, '.header-search 规则存在');
     assert.ok(/-webkit-app-region:\s*no-drag/.test(m[0]),

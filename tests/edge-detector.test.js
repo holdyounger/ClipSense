@@ -25,7 +25,7 @@ const origRequire = Module.prototype.require;
 Module.prototype.require = function (id) {
   return id === 'electron' ? { screen: screenStub } : origRequire.apply(this, arguments);
 };
-const EdgeDetector = require(path.join(__dirname, '..', 'src', 'main', 'edge-detector.js'));
+const EdgeDetector = require(path.join(__dirname, '..', 'dist', 'main', 'edge-detector.js'));
 Module.prototype.require = origRequire;
 
 /** 窗口桩：记录 getBounds 触达次数；destroyed 控制销毁态 */

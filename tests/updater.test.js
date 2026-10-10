@@ -37,7 +37,7 @@ Module.prototype.require = function (id) {
   return id === 'electron' ? electronStub : stubRequire.apply(this, arguments);
 };
 
-const updater = require(path.join(__dirname, '..', 'src', 'main', 'updater.js'));
+const updater = require(path.join(__dirname, '..', 'dist', 'main', 'updater.js'));
 
 // ==================== compareVersion ====================
 
@@ -283,7 +283,7 @@ describe('installer.nsh 静默升级自动启动（取代 buildRestartScript）'
   });
 
   test('N3 installUpdate：不再生成应用侧重启脚本（clipsense-restart.cmd 零引用）', () => {
-    const src = readRoot('src/main/updater.js');
+    const src = readRoot('src/main/updater.ts');
     assert.ok(!src.includes('clipsense-restart.cmd'), '不写 restart 脚本文件');
     assert.ok(!src.includes("spawn('cmd.exe'"), '不再 spawn cmd 轮询');
     assert.ok(typeof updater.buildRestartScript === 'function', '兼容导出仍在');

@@ -41,7 +41,7 @@ Module.prototype.require = function (id) {
   return id === 'electron' ? electronStub : stubRequire.apply(this, arguments);
 };
 
-const ClipboardMonitor = require(path.join(__dirname, '..', 'src', 'main', 'clipboard-monitor.js')); // module.exports = 类本身
+const ClipboardMonitor = require(path.join(__dirname, '..', 'dist', 'main', 'clipboard-monitor.js')); // module.exports = 类本身
 
 // ==================== monitor 计数 ====================
 

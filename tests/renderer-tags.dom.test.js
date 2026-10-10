@@ -27,7 +27,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
+const RENDERER_DIR = path.join(__dirname, '..', 'dist', 'renderer');
 // spring-anim.js / entry-anim.js 必须先于 main.js（main 顶层 createEntryAnim + 播放链路引用）
 const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
   .map(f => fs.readFileSync(path.join(RENDERER_DIR, f), 'utf8'))

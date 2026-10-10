@@ -17,7 +17,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 const { createDockEffect, falloff, DOCK_DEFAULTS } =
-  require(path.join(__dirname, '..', 'src', 'renderer', 'dock-anim.js'));
+  require(path.join(__dirname, '..', 'dist', 'renderer', 'dock-anim.js'));
 
 // ---------------- 桩 ----------------
 

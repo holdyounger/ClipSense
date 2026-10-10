@@ -24,13 +24,13 @@ const {
   isCursorInHeaderRegion, clampHeaderHeight, createHeaderHoverState,
   HEADER_REST_HEIGHT, HEADER_HOVER_HEIGHT,
   HEADER_HOVER_SUPPRESS_MS, HEADER_HOVER_LEAVE_DEBOUNCE_MS, BOUNDS_TOLERANCE_PX,
-} = require(path.join(__dirname, '..', 'src', 'main', 'header-hover.js'));
+} = require(path.join(__dirname, '..', 'dist', 'main', 'header-hover.js'));
 
 const {
   computeFlipDelta, formatRelativeTime, createHeaderHoverUi, FLIP_SPRING,
-} = require(path.join(__dirname, '..', 'src', 'renderer', 'header-hover-ui.js'));
+} = require(path.join(__dirname, '..', 'dist', 'renderer', 'header-hover-ui.js'));
 
-const { springFrames } = require(path.join(__dirname, '..', 'src', 'renderer', 'spring-anim.js'));
+const { springFrames } = require(path.join(__dirname, '..', 'dist', 'renderer', 'spring-anim.js'));
 
 // ==================== 主进程判定：isCursorInHeaderRegion ====================
 
@@ -490,10 +490,10 @@ describe('主进程接线（edge-detector 集成面）', () => {
   test('triggerHeight 默认 = HEADER_REST_HEIGHT（40），_headerHeight 初始同值', () => {
     // 结构断言：edge-detector.js 源码里触发条高度消费常量（防止回退硬编码 56）
     const src = require('node:fs').readFileSync(
-      require('node:path').join(__dirname, '..', 'src', 'main', 'edge-detector.js'), 'utf8');
+      require('node:path').join(__dirname, '..', 'src', 'main', 'edge-detector.ts'), 'utf8');
     assert.match(src, /this\.triggerHeight = HEADER_REST_HEIGHT/, '触发条默认高度用常量');
     assert.match(src, /this\._headerHeight = HEADER_REST_HEIGHT/, '实测基准初始为常量');
-    assert.match(src, /clampHeaderHeight\(h\)/, '实测值经钳制函数');
+    assert.match(src, /clampHeaderHeight\(h/, '实测值经钳制函数');
     assert.ok(!/this\.triggerHeight = 56/.test(src), '不回退硬编码 56');
   });
 

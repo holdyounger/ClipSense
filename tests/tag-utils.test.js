@@ -15,10 +15,10 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const tagUtils = require('../src/common/tag-utils');
-const { extractLinks } = require('../src/common/link-utils');
+const tagUtils = require('../dist/common/tag-utils.js');
+const { extractLinks } = require('../dist/common/link-utils.js');
 const { BATTERY } = require('../temp/tag-v2-validation-20260910/battery');
-const ClipboardMonitor = require('../src/main/clipboard-monitor');
+const ClipboardMonitor = require('../dist/main/clipboard-monitor.js');
 
 const { computeTags, luhnCheck, MAX_TAGS, TAG_PRIORITY } = tagUtils;
 
@@ -80,7 +80,7 @@ describe('公共约定', () => {
 
   test('零进程通信/零联网：源码审计（PRD 验收 6）', () => {
     const fs = require('node:fs');
-    const src = fs.readFileSync(require.resolve('../src/common/tag-utils'), 'utf8');
+    const src = fs.readFileSync(require.resolve('../src/common/tag-utils.ts'), 'utf8');
     for (const banned of ['ipcMain', 'ipcRenderer', 'electron', 'fetch(', 'http.request', 'net.connect', 'XMLHttpRequest', 'require(\'electron\')']) {
       assert.ok(!src.includes(banned), `tag-utils 不得引用 ${banned}`);
     }

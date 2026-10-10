@@ -3,7 +3,7 @@
 /**
  * trigger-anim.test.js - 贴边触发条 V0.5「真抽屉」收纳动画测试（2026-09-12）
  *
- * 覆盖 src/main/trigger-anim.js（主进程侧预积分 + 注入脚本生成）：
+ * 覆盖 src/main/trigger-anim.ts（主进程侧预积分 + 注入脚本生成）：
  *  - springFrames：收敛、精确落位帧、无 NaN、无界积分防护
  *  - buildKeyframes 三段物理：拉开（dx 0→travel）、塞入（光珠坠入缝内）、
  *    推回（收敛到 0 + 机械限位钳制 [0,travel]）、时长预算、末帧精确静息、
@@ -25,7 +25,7 @@ const { execFileSync } = require('node:child_process');
 const {
   springFrames, buildKeyframes, buildTriggerScript,
   DRAWER, BEAD, CLOSE, GLOW, DT_MS, MAX_FRAMES,
-} = require('../src/main/trigger-anim');
+} = require('../dist/main/trigger-anim.js');
 
 describe('springFrames 半隐式欧拉积分', () => {
   test('从初速出发收敛到目标并补精确落位帧', () => {

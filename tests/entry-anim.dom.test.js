@@ -18,7 +18,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
+const RENDERER_DIR = path.join(__dirname, '..', 'dist', 'renderer');
 const {
   springFrames,
   entryFrames,

@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const {
   OPACITY_PINNED, OPACITY_GHOST, OPAQUE, computeOpacity,
-} = require(path.join(__dirname, '..', 'src', 'main', 'window-opacity.js'));
+} = require(path.join(__dirname, '..', 'dist', 'main', 'window-opacity.js'));
 
 const EPS = 1e-9;
 

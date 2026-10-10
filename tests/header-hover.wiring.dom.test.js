@@ -36,15 +36,15 @@ const path = require('node:path');
 
 const {
   isCursorInHeaderRegion, clampHeaderHeight, createHeaderHoverState,
-} = require(path.join(__dirname, '..', 'src', 'main', 'header-hover.js'));
+} = require(path.join(__dirname, '..', 'dist', 'main', 'header-hover.js'));
 
 const {
   createHeaderHoverUi,
-} = require(path.join(__dirname, '..', 'src', 'renderer', 'header-hover-ui.js'));
+} = require(path.join(__dirname, '..', 'dist', 'renderer', 'header-hover-ui.js'));
 
-const springFrames = require(path.join(__dirname, '..', 'src', 'renderer', 'spring-anim.js')).springFrames;
+const springFrames = require(path.join(__dirname, '..', 'dist', 'renderer', 'spring-anim.js')).springFrames;
 
-const RENDERER_DIR = path.join(__dirname, '..', 'src', 'renderer');
+const RENDERER_DIR = path.join(__dirname, '..', 'dist', 'renderer');
 // 加载顺序同 search-ux.dom.test.js：spring-anim / entry-anim 必须先于 main.js
 const SOURCES = ['i18n.js', 'renderer.js', 'spring-anim.js', 'header-hover-ui.js', 'entry-anim.js', 'dock-anim.js', 'main.js']
   .map((f) => fs.readFileSync(path.join(RENDERER_DIR, f), 'utf8'))
@@ -552,16 +552,16 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
   });
 
   test('D5 preload 桥 + i18n 双语辅助行 key', () => {
-    const preload = readRoot('src/renderer/preload.js');
+    const preload = readRoot('src/renderer/preload.ts');
     assert.ok(preload.includes('onHeaderHover'), 'preload 暴露 onHeaderHover');
     assert.ok(preload.includes("'header:hover'"), 'preload 订阅 header:hover 频道');
-    const i18n = readRoot('src/renderer/i18n.js');
+    const i18n = readRoot('src/renderer/i18n.ts');
     assert.ok(i18n.includes('`共 ${total} 条 · 上次复制 ${rel}`'), '中文辅助行文案');
     assert.ok(i18n.includes('`${total} items · last copy ${rel}`'), '英文辅助行文案');
   });
 
   test('D6 edge-detector 接线：收起/拖拽/动画期悬挂防护（任务书第 3 项锚定）', () => {
-    const ed = readRoot('src/main/edge-detector.js');
+    const ed = readRoot('src/main/edge-detector.ts');
     // 收起瞬间悬挂：滑出中（_isHiding）与不可见期不再喂状态机，避免收起动画期间
     // 光标恰在 header 带上导致误展开/IPC 抖动
     assert.ok(/isWindowVisible && !this\._isHiding/.test(ed),
@@ -573,7 +573,7 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
       '拖拽/滑出/滑入期间轮询整体冻结');
   });
   test('D7 edge-detector 接线六要素 + main.js 强制展开/重建标记/snap 桥', () => {
-    const ed = readRoot('src/main/edge-detector.js');
+    const ed = readRoot('src/main/edge-detector.ts');
     assert.ok(ed.includes('this._headerHeight = HEADER_REST_HEIGHT'), '触发条高度常量 32 起步（约束 2）');
     assert.ok(/clampHeaderHeight\(/.test(ed), '滑出实测走钳制（min(h,44)）');
     assert.ok(ed.includes('this._headerHover.markShown()'), '弹出抑制 400ms 覆盖所有弹出路径');
@@ -581,7 +581,7 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
     assert.ok(ed.includes("send('header:hover'"), '状态翻转才走 IPC');
     assert.ok(ed.includes('__clipSenseHeaderSnap'), '滑出通知渲染层 snap');
     assert.ok(/isWindowVisible && !this\._isHiding/.test(ed), '仅可见且非滑出中判定（收起瞬间悬挂防护）');
-    const mj = readRoot('src/renderer/main.js');
+    const mj = readRoot('src/renderer/main.ts');
     assert.ok(mj.includes('window.__clipSenseHeaderSnap'), '渲染层 snap 桥落盘');
     assert.ok(mj.includes('const force = searchOpen;'), '强制展开汇总：搜索（菜单已取消，单一来源）');
     // 2026-09-30 菜单取消：强制展开汇总仅剩搜索一路（菜单迁托盘）
@@ -601,12 +601,12 @@ describe('E. D-2 修复验证：拖拽结束 200ms 恢复缓冲（设计稿 §�
   const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
   test('edge-detector：drag-end 设 _dragResumeAt；轮询判定带恢复门禁；常量 200ms 单一来源', () => {
-    const src = readRoot('src/main/edge-detector.js');
+    const src = readRoot('src/main/edge-detector.ts');
     assert.match(src, /this\._dragResumeAt = Date\.now\(\) \+ HEADER_DRAG_RESUME_MS/,
       'drag-end 设置恢复时点');
     assert.match(src, /Date\.now\(\) >= \(this\._dragResumeAt \|\| 0\)/,
       '轮询判定带恢复门禁（缓冲期内冻结）');
-    const hh = readRoot('src/main/header-hover.js');
+    const hh = readRoot('src/main/header-hover.ts');
     assert.match(hh, /HEADER_DRAG_RESUME_MS = 200/, '缓冲常量 200ms（设计稿口径）');
     assert.match(src, /HEADER_DRAG_RESUME_MS/, 'edge-detector 引用常量而非字面量');
   });
@@ -619,15 +619,15 @@ describe('F. 窗口透明度渲染层迁移（CSS alpha 替代原生 setOpacity�
   const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
   test('F1 edge-detector：推送 window:opacity 而非原生 setOpacity（子元素需能超越窗口透明度）', () => {
-    const ed = readRoot('src/main/edge-detector.js');
+    const ed = readRoot('src/main/edge-detector.ts');
     assert.ok(ed.includes("webContents.send('window:opacity'"), '推送透明度 IPC');
     assert.ok(!ed.includes('.setOpacity('), '不再整窗缩放（子元素无法超越）');
   });
 
   test('F2 preload/main：onWindowOpacity 桥 + --win-alpha 变量写入（旧桩静默降级）', () => {
-    const preload = readRoot('src/renderer/preload.js');
-    assert.ok(preload.includes("on('window:opacity'"), 'preload 订阅 window:opacity');
-    const main = readRoot('src/renderer/main.js');
+    const preload = readRoot('src/renderer/preload.ts');
+    assert.ok(preload.includes("'window:opacity'"), 'preload 订阅 window:opacity（subscribe 泛型辅助，统一切换适配 .ts 源）');
+    const main = readRoot('src/renderer/main.ts');
     assert.match(main, /onWindowOpacity/, '渲染层订阅存在');
     assert.match(main, /--win-alpha/, '写入 --win-alpha 变量');
   });
@@ -655,28 +655,28 @@ describe('G. 贴边动画 gate 可见性源迁移（backgroundThrottling:false �
   const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
   test('G1 edge-detector：可见性回调注册 + 两个状态写点均触发通知', () => {
-    const ed = readRoot('src/main/edge-detector.js');
-    assert.match(ed, /setOnVisibilityChanged\(callback\)/, '回调注册方法存在');
+    const ed = readRoot('src/main/edge-detector.ts');
+    assert.match(ed, /setOnVisibilityChanged\(callback/, '回调注册方法存在');
     assert.match(ed, /this\._onWindowVisibilityChanged\(true\)/, '滑出写点通知 false→true');
     assert.match(ed, /this\._onWindowVisibilityChanged\(false\)/, '收起写点通知 true→false');
   });
 
   test('G2 index.js：可见性变化推送 window:visibility 频道', () => {
-    const main = readRoot('src/main/index.js');
+    const main = readRoot('src/main/index.ts');
     assert.match(main, /setOnVisibilityChanged/, '主进程已注册回调');
     assert.match(main, /send\('window:visibility'/, '推送频道存在');
   });
 
   test('G3 渲染层：贴边 gate 改用主进程权威可见性（不再依赖 visibilityState）', () => {
-    const main = readRoot('src/renderer/main.js');
+    const main = readRoot('src/renderer/main.ts');
     assert.match(main, /let winVisibleFromMain = true/, '权威状态变量存在');
     assert.match(main, /visibility: \(\) => \(winVisibleFromMain \? 'visible' : 'hidden'\)/, 'entryAnim gate 消费权威状态（字符串语义与 visibilityState 同构）');
     assert.match(main, /onWindowVisibility/, '订阅权威信号');
-    assert.match(main, /entryAnim\.playPending\(listEl\)/, '重显时贴边补播');
+    assert.match(main, /entryAnim\.playPending\(listEl/, '重显时贴边补播');
   });
 
   test('G4 preload：onWindowVisibility 桥', () => {
-    const preload = readRoot('src/renderer/preload.js');
+    const preload = readRoot('src/renderer/preload.ts');
     assert.match(preload, /onWindowVisibility/, '桥接存在');
     assert.match(preload, /'window:visibility'/, '频道一致');
   });
@@ -725,9 +725,9 @@ describe('I. 透明度覆盖收敛（footer/backtop/计数唯一位）', () => {
   });
 
   test('I3 main.js 无 statCount 引用（声明+两处赋值同步删除，防 null TypeError）；headerMeta 更新保留', () => {
-    const js = readRoot('src/renderer/main.js');
+    const js = readRoot('src/renderer/main.ts');
     assert.ok(!js.includes('statCount'), 'main.js 无 statCount 残留');
-    const updateStats = js.match(/function updateStats\(\)\s*\{[\s\S]*?\n\}/);
+    const updateStats = js.match(/function updateStats\(\): void \{[\s\S]*?\n\}/);
     assert.ok(updateStats, 'updateStats 函数体可提取');
     assert.ok(updateStats[0].includes("getElementById('headerMeta')"), 'headerMeta 更新保留');
   });
