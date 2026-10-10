@@ -190,6 +190,11 @@ class EdgeDetector {
 
   _checkMousePosition() {
     if (this._isDragging || this._isHiding || this._showAnimationId) return; // 拖拽/动画期间跳过
+    // 窗口已销毁（关窗驻托盘 / before-quit 销毁窗口与 stop() 的时间差）：
+    // 轮询还在跑但不能触碰已销毁的 BrowserWindow——否则每拍在下方
+    // getBounds() 抛 "Object has been destroyed"，控制台被
+    // [EdgeDetector] 检测错误 刷屏（2026-10-10 实机）。早退空转即可。
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     try {
       const point = screen.getCursorScreenPoint();
       const display = screen.getDisplayNearestPoint(point);
