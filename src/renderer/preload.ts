@@ -94,6 +94,10 @@ const clipboardAPI = {
     ipcRenderer.invoke('get-history') as Promise<PreloadHistoryItem[]>,
   copyItem: (id: string): Promise<IpcResult> =>
     ipcRenderer.invoke('copy-item', id) as Promise<IpcResult>,
+  copyItemPath: (id: string): Promise<IpcResult> =>
+    ipcRenderer.invoke('copy-item-path', id) as Promise<IpcResult>,
+  openPath: (path: string): Promise<IpcResult> =>
+    ipcRenderer.invoke('open-path', path) as Promise<IpcResult>,
   simulateInput: (id: string): Promise<IpcResult> =>
     ipcRenderer.invoke('simulate-input', id) as Promise<IpcResult>,
   getFileIcon: (path: string): Promise<string | null> =>

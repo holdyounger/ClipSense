@@ -13,6 +13,8 @@ interface LinkUtilsApi {
   RE_WHOLE_URL: RegExp;
   RE_WHOLE_BARE: RegExp;
   RE_EXTRACT: RegExp;
+  /** 文本条目「打开路径」按钮的形态判定（2026-10-10） */
+  isPathLikeText: (text: string) => boolean;
 }
 
 (function (): void {
@@ -57,7 +59,27 @@ interface LinkUtilsApi {
     return found.length > 0 ? found : null;
   }
 
-  const api: LinkUtilsApi = { extractLinks, isValidIpUrl, RE_WHOLE_URL, RE_WHOLE_BARE, RE_EXTRACT };
+  /**
+   * 文本条目「打开路径」按钮形态判定（2026-10-10）：
+   * 整条文本（trim 后）就是一个可打开的本地路径——严格整条匹配，不做包含检测
+   * （长文本里含路径归内容文本，不打按钮）。支持：盘符（C:\\ / C:/）、UNC、
+   * file:/// URI、受限 POSIX 顶层（/usr|etc|var|opt|home|root|mnt|tmp|proc|srv|Users）。
+   * URL 归 🌐 按钮不判；裸盘符（C:）/裸顶层（/tmp）不判（误报面大）；
+   * 存在性校验在主进程点击时做（fs），形态匹配 ≠ 可访问。
+   */
+  function isPathLikeText(text: string): boolean {
+    if (typeof text !== 'string') return false;
+    const t = text.trim();
+    if (!t || t.length > 500 || /\r?\n/.test(t)) return false;
+    if (/^https?:\/\//i.test(t)) return false; // URL 归 🌐 按钮
+    if (/^file:\/\//i.test(t)) return true;     // file URI（openPath 前 fileURLToPath）
+    if (/^[A-Za-z]:[\\/]/.test(t)) return true;  // 盘符路径 C:\\ 或 C:/
+    if (/^\\\\[^\\]+\\/.test(t)) return true;   // UNC \\\\server\\share
+    if (/^\/(?:usr|etc|var|opt|home|root|mnt|tmp|proc|srv|Users)(?:\/\S+)/.test(t)) return true;
+    return false;
+  }
+
+  const api: LinkUtilsApi = { extractLinks, isValidIpUrl, RE_WHOLE_URL, RE_WHOLE_BARE, RE_EXTRACT, isPathLikeText };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;

@@ -758,3 +758,74 @@ describe('I. 透明度覆盖收敛（footer/backtop/计数唯一位）', () => {
     assert.ok(!/var\(--accent-hover\)/.test(hover[0]), '无实色 --accent-hover 残留');
   });
 });
+
+// ==================== J. file 条目「复制路径」按钮（2026-10-10） ====================
+
+describe('J. file 条目复制路径链路（preload 频道 + 主进程 handler + 渲染层按钮）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('J1 全链路字面量：preload 频道 / 主进程 handler / monitor 方法 / 渲染层按钮 / i18n / css', () => {
+    const preload = readRoot('src/renderer/preload.ts');
+    assert.ok(preload.includes("'copy-item-path'"), 'preload 暴露 copy-item-path 频道');
+    assert.ok(preload.includes('copyItemPath'), 'preload 暴露 copyItemPath 方法');
+
+    const mainProc = readRoot('src/main/index.ts');
+    assert.match(mainProc, /ipcMain\.handle\('copy-item-path'/, '主进程注册 handler');
+    assert.match(mainProc, /copyItemPath\(id\)/, 'monitor 方法接线');
+
+    const monitor = readRoot('src/main/clipboard-monitor.ts');
+    assert.match(monitor, /copyItemPath\(id: string\)/, 'monitor 方法存在');
+    assert.match(monitor, /paths\.join\('\\n'\)/, '多文件路径换行分隔');
+
+    const renderer = readRoot('src/renderer/renderer.ts');
+    assert.match(renderer, /copy-path-btn/, 'file 条目渲染复制路径按钮');
+    assert.match(renderer, /copyItemPath\(item\.id\)/, '按钮点击走 IPC');
+
+    const i18n = readRoot('src/renderer/i18n.ts');
+    assert.ok(i18n.includes("copyPath: '复制路径'"), '中文 key');
+    assert.ok(i18n.includes("copyPath: 'Copy path'"), '英文 key');
+
+    const css = readRoot('src/renderer/main.css');
+    assert.match(css, /\.copy-path-btn/, '按钮样式（复用 actions 按钮组）');
+  });
+});
+
+// ==================== K. 文本条目「打开路径」按钮（2026-10-10） ====================
+
+describe('K. 文本条目打开路径链路（link-utils 判定 + open-path 频道 + 渲染层按钮）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('K1 全链路字面量：link-utils 判定 / index.html 装载 / open-path 频道 / 渲染层防御式按钮 / i18n / css', () => {
+    const linkUtils = readRoot('src/common/link-utils.ts');
+    assert.match(linkUtils, /isPathLikeText\(text: string\): boolean/, '形态判定函数存在');
+
+    const html = readRoot('src/renderer/index.html');
+    assert.match(html, /<script src="link-utils\.js"><\/script>/, '渲染层装载 link-utils');
+    // 用完整 script 标签前缀比较——裸 indexOf('main.js') 会命中头部注释里的文字（46 行进度环说明）
+    assert.ok(html.indexOf('<script src="link-utils.js">') < html.indexOf('<script src="main.js">'), '先于 main.js 装载');
+
+    const mainProc = readRoot('src/main/index.ts');
+    assert.match(mainProc, /ipcMain\.handle\('open-path'/, '主进程注册 handler');
+    assert.match(mainProc, /shell\.openPath/, 'shell.openPath 打开');
+    assert.match(mainProc, /fs\.existsSync/, '存在性校验');
+    assert.match(mainProc, /fileURLToPath/, 'file URI 转换');
+
+    const preload = readRoot('src/renderer/preload.ts');
+    assert.ok(preload.includes("'open-path'"), 'preload 暴露 open-path 频道');
+
+    const renderer = readRoot('src/renderer/renderer.ts');
+    assert.match(renderer, /open-path-btn/, '文本条目渲染打开路径按钮');
+    assert.match(renderer, /__clipSenseLinkUtils/, '形态判定经 link-utils 挂载对象（IIFE 模块非全局）');
+    assert.match(renderer, /typeof linkApi\?\.isPathLikeText === 'function'/, '可选链防御式引用');
+    assert.match(renderer, /openPath\(item\.text!/, '按钮点击传 trim 后路径');
+
+    const i18n = readRoot('src/renderer/i18n.ts');
+    assert.ok(i18n.includes("openPath: '打开路径'"), '中文 key');
+    assert.ok(i18n.includes("openPath: 'Open path'"), '英文 key');
+
+    const css = readRoot('src/renderer/main.css');
+    assert.match(css, /\.open-path-btn/, '按钮样式');
+  });
+});

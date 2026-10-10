@@ -605,6 +605,32 @@ class ClipboardMonitor {
   }
 
   /**
+   * 复制文件路径文本（file 条目「复制路径」按钮，2026-10-10）：
+   * 写纯文本路径（多文件换行分隔）而非文件本体——与 copyToClipboard 的
+   * FileNameW 回写区分。回写抑制同款：自写内容不当作用户复制归档，
+   * 下一拍重建基线为当前剪贴板（路径文本不入历史）。
+   * @param {string} id 条目 id
+   * @returns {{ok: boolean, error?: string}}
+   */
+  copyItemPath(id: string): { ok: boolean; error?: string } {
+    const item = this.history.find(h => h.id === id);
+    if (!item) return { ok: false, error: '未找到该条目' };
+    const paths = (item.files || [])
+      .map(f => f.path)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+    if (paths.length === 0 && item.path) paths.push(item.path);
+    if (paths.length === 0) return { ok: false, error: '条目无路径' };
+    this._suppressUntil = Date.now() + 1500; // 回写抑制（copyToClipboard 同款）
+    try {
+      clipboard.writeText(paths.join('\n'));
+      return { ok: true };
+    } catch (err) {
+      console.error(`[Monitor] 复制路径失败: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /**
    * 根据 dataUrl 提取 mime 类型
    * @param {string} dataUrl
    * @returns {string}

@@ -96,3 +96,73 @@ describe('ClipboardMonitor 重复内容计数', () => {
     assert.strictEqual(m.history[0].count, 2, '旧数据首个 bump = 2（历史第 1 次 + 本次）');
   });
 });
+
+// ==================== copyItemPath（file 条目「复制路径」按钮，2026-10-10） ====================
+
+describe('ClipboardMonitor copyItemPath（file 条目复制路径）', () => {
+  test('file 条目：写路径文本（多文件换行分隔）', () => {
+    const m = new ClipboardMonitor();
+    m._persist = () => {};
+    const written = [];
+    const origWrite = electronStub.clipboard.writeText;
+    electronStub.clipboard.writeText = (t) => written.push(t);
+    try {
+      const item = m._buildItem({ kind: 'file', files: [
+        { uri: 'file:///C:/a.txt', path: 'C:/a.txt', name: 'a.txt' },
+        { uri: 'file:///D:/b.log', path: 'D:/b.log', name: 'b.log' },
+      ], uriList: 'file:///C:/a.txt\nfile:///D:/b.log' });
+      m.history.unshift(item);
+
+      const r = m.copyItemPath(item.id);
+      assert.strictEqual(r.ok, true);
+      assert.deepStrictEqual(written, ['C:/a.txt\nD:/b.log']);
+    } finally {
+      electronStub.clipboard.writeText = origWrite;
+    }
+  });
+
+  test('未知 id → 结构化错误', () => {
+    const m = new ClipboardMonitor();
+    const r = m.copyItemPath('no-such-id');
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error, '未找到该条目');
+  });
+
+  test('无路径条目 → 结构化错误', () => {
+    const m = new ClipboardMonitor();
+    m._persist = () => {};
+    const item = m._buildItem({ kind: 'file', files: [], uriList: '' });
+    m.history.unshift(item);
+    const r = m.copyItemPath(item.id);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error, '条目无路径');
+  });
+
+  test('回写抑制：copyItemPath 后紧随 tick 不把路径文本归档', () => {
+    const m = new ClipboardMonitor();
+    m._persist = () => {};
+    const item = m._buildItem({ kind: 'file', files: [
+      { uri: 'file:///C:/a.txt', path: 'C:/a.txt', name: 'a.txt' },
+    ], uriList: 'file:///C:/a.txt' });
+    m.history.unshift(item);
+
+    // 让桩剪贴板真实反映 writeText（否则抑制无从验证）
+    let clip = '';
+    const origW = electronStub.clipboard.writeText;
+    const origFmt = electronStub.clipboard.availableFormats;
+    const origRead = electronStub.clipboard.readText;
+    electronStub.clipboard.writeText = (t) => { clip = t; };
+    electronStub.clipboard.availableFormats = () => (clip ? ['text/plain'] : []);
+    electronStub.clipboard.readText = () => clip;
+    try {
+      assert.strictEqual(m.copyItemPath(item.id).ok, true);
+      const r = m.tick(); // 抑制窗口内：自写路径不归档
+      assert.strictEqual(r.changed, false);
+      assert.strictEqual(m.history.length, 1, '历史无新增（路径文本不入库）');
+    } finally {
+      electronStub.clipboard.writeText = origW;
+      electronStub.clipboard.availableFormats = origFmt;
+      electronStub.clipboard.readText = origRead;
+    }
+  });
+});

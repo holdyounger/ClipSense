@@ -604,6 +604,46 @@ function renderHistory(
       actions.appendChild(openBtn);
     }
 
+    // file 条目：「复制路径」按钮——写路径文本（多文件换行分隔）而非文件本体；
+    // 回写抑制在主进程（自写路径不当作用户复制归档）。防御式条件与 openBtn 同款。
+    if (item.type === 'file' && window.clipboardAPI && window.clipboardAPI.copyItemPath) {
+      const pathBtn = document.createElement('button');
+      pathBtn.className = 'copy-path-btn';
+      pathBtn.textContent = ctx.t('copyPath');
+      pathBtn.title = '复制文件路径文本';
+      pathBtn.addEventListener('click', async (e: Event) => {
+        e.stopPropagation();
+        const r = await window.clipboardAPI.copyItemPath(item.id);
+        if (r && r.ok) {
+          div.classList.add('flash');
+          setTimeout(() => div.classList.remove('flash'), 300);
+        } else {
+          console.warn(r && r.error ? r.error : '复制路径失败');
+        }
+      });
+      actions.appendChild(pathBtn);
+    }
+
+    // 文本条目整体为可打开的本地路径（盘符/UNC/file:///受限 POSIX 顶层）→「打开路径」；
+    // 形态判定经 window.__clipSenseLinkUtils（link-utils 是 IIFE 挂 api 对象的旧式模块，
+    // 函数非全局——与 springFrames 等顶层挂载不同款，typeof 裸标识会 TS2304）；
+    // 存在性校验在主进程点击时做（fs + shell.openPath）。可选链防御：DOM 测试
+    // 装载不含 link-utils.js 时静默不渲染。
+    const linkApi = (window as unknown as { __clipSenseLinkUtils?: { isPathLikeText?: (t: string) => boolean } }).__clipSenseLinkUtils;
+    if (item.type === 'text' && item.text && typeof linkApi?.isPathLikeText === 'function' && linkApi.isPathLikeText(item.text)
+        && window.clipboardAPI && window.clipboardAPI.openPath) {
+      const openPathBtn = document.createElement('button');
+      openPathBtn.className = 'open-path-btn';
+      openPathBtn.textContent = ctx.t('openPath');
+      openPathBtn.title = '打开该路径（系统关联程序/资源管理器）';
+      openPathBtn.addEventListener('click', async (e: Event) => {
+        e.stopPropagation();
+        const r = await window.clipboardAPI.openPath(item.text!.trim());
+        if (!r || !r.ok) console.warn(r && r.error ? r.error : '打开路径失败');
+      });
+      actions.appendChild(openPathBtn);
+    }
+
     actions.appendChild(delBtn);
 
     div.appendChild(previewEl);

@@ -142,6 +142,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, sc
 };
 const fs = require('fs');
 const path = require('path');
+const { fileURLToPath } = require('url');
 // ClipboardMonitor 保持 .js require 的 any 语义：其 MonitorStorageLike 与 HistoryStorage 的
 // StorageItem 在 links/tags 可空性与 files 形状上结构互斥（运行时 JSON 序列化天然兼容），
 // typeof import 断言会误报下方 storage 注入——条目模型统一属后续专项，本批不扩散。
@@ -690,6 +691,33 @@ class ClipboardSpikeApp {
         return ok ? { ok: true } : { ok: false, error: '回写失败' };
       }
       return { ok: false, error: '未找到该条目' };
+    });
+
+    // file 条目「复制路径」按钮：写路径文本而非文件本体（回写抑制在 monitor 内）
+    ipcMain.handle('copy-item-path', (event, id) => this.monitor.copyItemPath(id));
+
+    // 文本条目「打开路径」按钮：shell.openPath 用系统关联程序打开（目录则资源管理器）；
+    // file:// URI 先 fileURLToPath；存在性校验在此（fs），路径失效返回结构化错误
+    ipcMain.handle('open-path', async (event, rawPath) => {
+      if (typeof rawPath !== 'string' || !rawPath.trim()) {
+        return { ok: false, error: '路径为空' };
+      }
+      let p = rawPath.trim();
+      if (/^file:\/\//i.test(p)) {
+        try {
+          p = fileURLToPath(p);
+        } catch (_) { /* 非法 URI 保留原串，交给 existsSync 判定 */ }
+      }
+      const normalized = process.platform === 'win32' ? p.replace(/\//g, '\\') : p;
+      if (!fs.existsSync(normalized)) {
+        return { ok: false, error: '路径不存在或已失效' };
+      }
+      try {
+        const errMsg = await shell.openPath(normalized);
+        return errMsg ? { ok: false, error: errMsg } : { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
     });
 
     // 双击条目（Ditto/CopyQ 模型，2026-09-02 对齐竞品实现）：

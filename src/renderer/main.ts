@@ -55,6 +55,8 @@ interface Window {
   clipboardAPI: {
     getHistory: () => Promise<MainHistoryItem[]>;
     copyItem: (id: string) => Promise<{ ok?: boolean; error?: string }>;
+    copyItemPath: (id: string) => Promise<{ ok?: boolean; error?: string }>;
+    openPath: (path: string) => Promise<{ ok?: boolean; error?: string }>;
     simulateInput: (id: string) => Promise<{ ok?: boolean; error?: string }>;
     removeItem: (id: string) => Promise<unknown>;
     openFileLocation: (path: string) => Promise<{ ok?: boolean; error?: string } | null>;

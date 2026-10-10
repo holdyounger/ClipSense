@@ -991,7 +991,7 @@ html, body {
   justify-content: flex-end;
 }
 
-.copy-btn, .del-btn, .open-btn {
+.copy-btn, .copy-path-btn, .open-path-btn, .del-btn, .open-btn {
   padding: 3px 10px;
   font-size: 11px;
   border: 1px solid var(--border);
@@ -1010,6 +1010,16 @@ html, body {
 .open-btn:hover {
   background: var(--accent);
   border-color: var(--accent-hover);
+}
+
+.copy-path-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.open-path-btn:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 .del-btn:hover {
