@@ -154,6 +154,9 @@ const { buildTriggerScript, DRAWER } = require('./trigger-anim') as typeof impor
 const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tracker');
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
+const crashDump = require('./crash-dump') as typeof import('./crash-dump');
+// 尽早启动 Crashpad：覆盖主/渲染/GPU/native 崩溃，本地 .dmp 不上传（先于 app ready）
+crashDump.startCrashReporter();
 
 class ClipboardSpikeApp {
   mainWindow: IndexMainWindow | null;
@@ -1088,6 +1091,29 @@ class ClipboardSpikeApp {
       this._diagCapture();
     });
     this.edgeDetector.start();
+    // 异常快照接线（2026-10-11）：渲染进程/子进程异常落盘；原生崩溃的 .dmp 由 Crashpad 接管
+    app.on('render-process-gone', (_event: unknown, webContents: any, details: any) => {
+      crashDump.writeTextSnapshot(
+        crashLogDir,
+        'render-process-gone',
+        crashDump.buildExceptionLines('render-process-gone', `${details.reason} (exitCode=${details.exitCode})`, {
+          url: webContents.getURL(),
+        })
+      );
+      crashDump.rotateCrashLogs(crashLogDir);
+    });
+    app.on('child-process-gone', (_event: unknown, details: any) => {
+      crashDump.writeTextSnapshot(
+        crashLogDir,
+        `child-process-gone-${details.type}`,
+        crashDump.buildExceptionLines('child-process-gone', `${details.reason} (exitCode=${details.exitCode})`)
+      );
+      crashDump.rotateCrashLogs(crashLogDir);
+    });
+    try {
+      console.log(`[Spike] 崩溃转储目录(dmp): ${app.getPath('crashDumps')}`);
+    } catch (_) { /* 尚未就绪时忽略 */ }
+    console.log(`[Spike] 异常快照目录: ${crashLogDir}`);
     // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。
     this.edgeDetector.forceShow();
     // 2026-09-10 焦点模型回切：窗口恒为可聚焦（原 setFocusable(false) 移除）。
@@ -1131,6 +1157,22 @@ class ClipboardSpikeApp {
 }
 
 const spikeApp = new ClipboardSpikeApp();
+
+// JS 层异常快照接线（2026-10-11）：uncaughtException/unhandledRejection 记录完整快照后
+// 保持应用存活（托盘常驻工具单点 JS 异常不应整体退出）；原生崩溃由 Crashpad 接管
+const crashLogDir = path.join(app.getPath('userData'), 'crash-logs');
+crashDump.setupExceptionCapture({
+  logDir: crashLogDir,
+  keep: 50,
+  getState: () => ({
+    version: app.getVersion(),
+    uptimeSec: Math.round(process.uptime()),
+    heapUsed: process.memoryUsage().heapUsed,
+    mainWindowAlive: !!spikeApp.mainWindow && !spikeApp.mainWindow.isDestroyed(),
+    panelVisible: spikeApp.edgeDetector ? spikeApp.edgeDetector.isWindowVisible : null,
+    historyCount: (() => { try { return spikeApp.monitor.getHistory().length; } catch (_) { return null; } })(),
+  }),
+});
 
 // 单实例锁（2026-09-11 22:24）：双实例并行会争抢全局快捷键与剪贴板监听，
 // 粘贴目标跟踪互相污染（实测 21:22 起双实例并行）。抢不到锁 = 已有实例在跑，直接退出。
