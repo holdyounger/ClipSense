@@ -63,3 +63,37 @@ describe('EdgeDetector 销毁防护（2026-10-10 报错修复）', () => {
     assert.doesNotThrow(() => det.stop());
   });
 });
+
+// ==================== setOverlayActive（关于/欢迎页挂起，2026-10-11 BUG1） ====================
+
+describe('setOverlayActive：模态 overlay 挂起自动隐藏', () => {
+  test('active 时 _startHideTimer 不创建定时器', () => {
+    const det = new EdgeDetector(makeWindowStub(false), null);
+    det.isWindowVisible = true;
+    det.setOverlayActive(true);
+    det._startHideTimer();
+    assert.strictEqual(det.hideTimerId, null);
+  });
+
+  test('active 取消已在跑的倒计时；关闭且鼠标在外恢复', () => {
+    const det = new EdgeDetector(makeWindowStub(false), null);
+    det.isWindowVisible = true;
+    det._lastIsOverPanel = false;
+    det._startHideTimer();
+    assert.ok(det.hideTimerId, '前置：倒计时已启动');
+    det.setOverlayActive(true);
+    assert.strictEqual(det.hideTimerId, null, 'overlay 打开取消倒计时');
+    det.setOverlayActive(false);
+    assert.ok(det.hideTimerId, '关闭且鼠标在外恢复倒计时');
+    det._cancelHideTimer(); // 清理句柄，避免 node:test 挂在定时器上
+  });
+
+  test('关闭且鼠标在面板上：不恢复倒计时', () => {
+    const det = new EdgeDetector(makeWindowStub(false), null);
+    det.isWindowVisible = true;
+    det._lastIsOverPanel = true;
+    det.setOverlayActive(true);
+    det.setOverlayActive(false);
+    assert.strictEqual(det.hideTimerId, null);
+  });
+});

@@ -112,6 +112,8 @@ interface IndexStorageApi {
   getLastShownVersion: () => string;
   setLastShownVersion: (v: string) => void;
   isEncryptionAvailable: () => boolean;
+  getCustomRules: () => Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>;
+  setCustomRules: (rules: Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>) => void;
   _readConfig: () => Record<string, unknown>;
   _writeConfig: (patch: Record<string, unknown>) => void;
 }
@@ -180,6 +182,8 @@ class ClipboardSpikeApp {
       // 自动打标签设置注入（2026-09-09）：识别时 disabled 类直接跳过
       tagOptions: this.storage.getTagSettings(),
     });
+    // 自定义标签规则注入（标签体系二期，2026-10-11）
+    this.monitor.setCustomRules(this.storage.getCustomRules());
     this.edgeDetector = null;
   }
 
@@ -388,6 +392,13 @@ class ClipboardSpikeApp {
   /** 关于页（2026-09-30）：复用欢迎 overlay（渲染层 about 模式）；窗口不可用回退原生对话框 */
   _showAboutDialog() {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      // BUG1（2026-10-11）：托盘触发时面板可能贴边收起——先唤出主界面再发 IPC，
+      // 否则 about:show 发进隐藏窗口什么都看不到；forceShow 兼取消在跑的隐藏倒计时
+      if (this.edgeDetector) {
+        this.edgeDetector.forceShow();
+      } else {
+        this.mainWindow.show();
+      }
       this.mainWindow.webContents.send('about:show', app.getVersion());
       return;
     }
@@ -505,7 +516,7 @@ class ClipboardSpikeApp {
         this.mainWindow.webContents.send('tag-settings-updated', next);
       }
     };
-    const items = [
+    const items: Array<Record<string, unknown>> = [
       {
         label: '总开关',
         type: 'checkbox',
@@ -569,6 +580,34 @@ class ClipboardSpikeApp {
         });
       }
     });
+
+    // 自定义标签规则（二期 P2，2026-10-11）：动态区（托盘硬编码 zh 为既有惯例）
+    const customRules = this.storage.getCustomRules();
+    if (customRules.length > 0) {
+      items.push({
+        label: '自定义标签',
+        submenu: [
+          ...customRules.map(r => ({
+            label: `${r.name}${r.enabled ? '' : '（已关）'}`,
+            type: 'checkbox',
+            checked: r.enabled,
+            click: (menuItem: { checked: boolean }) => {
+              const cur = this.storage.getCustomRules();
+              const next = cur.map(x => x.id === r.id ? { ...x, enabled: menuItem.checked } : x);
+              this.storage.setCustomRules(next);
+              this.monitor.setCustomRules(next);
+              this.pushHistory();
+              this._broadcastTagRulesUpdated();
+            },
+          })),
+          { label: '打开管理面板', click: () => {
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+              this.mainWindow.webContents.send('tag-rules-manager:open');
+            }
+          } },
+        ],
+      });
+    }
     return items;
   }
 
@@ -698,6 +737,32 @@ class ClipboardSpikeApp {
 
     // file 条目「复制路径」按钮：写路径文本而非文件本体（回写抑制在 monitor 内）
     ipcMain.handle('copy-item-path', (event, id) => this.monitor.copyItemPath(id));
+
+    // 自定义标签规则（标签体系二期，2026-10-11）：CRUD 存 storage，变更广播渲染层
+    ipcMain.handle('get-tag-rules', () => this.storage.getCustomRules());
+    ipcMain.handle('set-tag-rules', (event, rules) => {
+      if (!Array.isArray(rules)) return { ok: false, error: '规则表格式错误' };
+      const clean = rules
+        .filter((r: any) => r && typeof r.id === 'string' && typeof r.name === 'string'
+          && typeof r.pattern === 'string' && r.pattern.length > 0 && r.pattern.length <= 200)
+        .map((r: any) => ({
+          id: r.id, name: String(r.name).slice(0, 40), pattern: r.pattern,
+          enabled: r.enabled !== false,
+          createdAt: typeof r.createdAt === 'number' ? r.createdAt : Date.now(),
+        }));
+      this.storage.setCustomRules(clean);
+      this.monitor.setCustomRules(clean);
+      this._broadcastTagRulesUpdated();
+      return { ok: true, count: clean.length };
+    });
+    ipcMain.handle('validate-tag-rule', (event, pattern) => {
+      try {
+        const { validateCustomRule } = require('../common/tag-utils');
+        return validateCustomRule(typeof pattern === 'string' ? pattern : '');
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    });
 
     // 文本条目「打开路径」按钮：shell.openPath 用系统关联程序打开（目录则资源管理器）；
     // file:// URI 先 fileURLToPath；存在性校验在此（fs），路径失效返回结构化错误
@@ -921,6 +986,11 @@ class ClipboardSpikeApp {
       if (this.edgeDetector) this.edgeDetector.setSearchActive(active);
     });
 
+    // 模态 overlay（关于/欢迎页）开关上报：挂起/恢复自动隐藏（2026-10-11 BUG1）
+    ipcMain.on('set-overlay-active', (event, active) => {
+      if (this.edgeDetector) this.edgeDetector.setOverlayActive(active);
+    });
+
     // 获取窗口 bounds（拖拽用）
     ipcMain.handle('get-window-bounds', () => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -1001,6 +1071,13 @@ class ClipboardSpikeApp {
   pushHistory() {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send('history-updated', this.monitor.getHistory());
+    }
+  }
+
+  /** 自定义标签规则变更广播（托盘开关/管理面板保存共用，2026-10-11） */
+  _broadcastTagRulesUpdated(): void {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('tag-rules-updated', this.storage.getCustomRules());
     }
   }
 

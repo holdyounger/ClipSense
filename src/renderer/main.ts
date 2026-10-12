@@ -68,6 +68,7 @@ interface Window {
     blurSearch: () => Promise<boolean>;
     getCountdown: () => Promise<RendererCountdownState>;
     mouseEnter: () => void;
+    setOverlayActive: (active: boolean) => void;
     mouseLeave: () => void;
     getLang: () => Promise<string>;
     setLang: (lang: string) => Promise<string>;
@@ -84,6 +85,11 @@ interface Window {
     onLangChanged: (cb: (lang: string) => void) => void;
     onAboutShow: (cb: (version: string) => void) => void;
     onTagSettingsUpdated: (cb: (settings: RendererTagSettings) => void) => void;
+    getTagRules: () => Promise<unknown>;
+    setTagRules: (rules: unknown) => Promise<{ ok?: boolean; error?: string }>;
+    validateTagRule: (pattern: string) => Promise<{ ok?: boolean; error?: string }>;
+    onTagRulesUpdated: (cb: (rules: unknown) => void) => void;
+    onTagRulesManagerOpen: (cb: () => void) => void;
   };
   /** 主进程滑出前调用的滑出 snap（约束 4「面板即将收起」规则） */
   __clipSenseHeaderSnap?: () => void;
@@ -103,11 +109,20 @@ let fullHistory: MainHistoryItem[] = []; // 完整历史（未过滤）
 const tagFilterEl = document.getElementById('tagFilter');
 // 标签展示顺序（与 src/common/tag-utils.js 的 TAG_PRIORITY 保持一致，v2 12 类）
 const TAG_ORDER = [
-  'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
-  'ip', 'hash', 'link', 'email', 'snippet', 'path',
+  'sensitive', 'vuln', 'otp', 'urlcred', 'bankcard', 'idcard', 'tracking', 'phone',
+  'cmd', 'stack', 'config', 'meeting', 'todo', 'ip', 'ippub', 'hash', 'uuid',
+  'color', 'address', 'link', 'email', 'snippet', 'path',
 ];
 let activeTagFilter: string | null = null; // null | tagId；窗口隐藏不销毁页面，visibilitychange 时显式重置
 let tagSettings: RendererTagSettings | null = null;     // 最近一次 { enabled, tags }；null = 尚未拉取（全部视为可用，降级开放）
+
+// 自定义标签规则缓存（二期 P2，2026-10-11）：启动拉取 + tag-rules-updated 订阅维护
+let tagRulesCache: Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }> = [];
+
+function getTagRuleName(id: string): string | null {
+  const r = tagRulesCache.find(x => x.id === id);
+  return r ? r.name : null;
+}
 
 // ========== 标签搜索（2026-09-11，[ClipSense] 标签搜索支持） ==========
 // 12 类标签 id → i18n 显示名 key（tagI18nKey 驼峰命名），搜索按显示名与 id 双轨匹配
@@ -120,7 +135,8 @@ const TAG_DISPLAY_KEYS = {
 /** 标签 id → 当前语言显示名（未收录 id 返回 null） */
 function getTagDisplayName(id: string): string | null {
   const key = (TAG_DISPLAY_KEYS as Record<string, string>)[id];
-  return key ? t(key) : null;
+  if (key) return t(key);
+  return getTagRuleName(id); // 自定义规则标签：显示名 = 规则名（用户自命名，无 i18n）
 }
 
 /**
@@ -138,6 +154,12 @@ function buildTagIndex(): Map<string, string> {
     }
     index.set(id, id);
     index.set(id.toLowerCase(), id);
+  }
+  // 自定义规则标签：显示名/id 双轨入库（二期 P2）
+  for (const rule of tagRulesCache) {
+    index.set(rule.name, rule.id);
+    index.set(rule.name.toLowerCase(), rule.id);
+    index.set(rule.id, rule.id);
   }
   return index;
 }
@@ -504,6 +526,10 @@ function computeEnabledTagIds(): Set<string> | null {
   for (const id of TAG_ORDER) {
     if (tags[id] !== false) enabled.add(id);
   }
+  // 自定义规则标签：规则自带开关（不受 tags 表约束）
+  for (const rule of tagRulesCache) {
+    if (rule.enabled) enabled.add(rule.id);
+  }
   return enabled;
 }
 
@@ -517,12 +543,15 @@ function renderTagFilter(): void {
   for (const item of fullHistory) {
     if (Array.isArray(item.tags)) {
       for (const id of item.tags) {
-        if (TAG_ORDER.includes(id)) present.add(id);
+        if (TAG_ORDER.includes(id) || tagRulesCache.some(r => r.id === id)) present.add(id);
       }
     }
   }
   const enabled = computeEnabledTagIds();
-  const ids = TAG_ORDER.filter(id => present.has(id) && (!enabled || enabled.has(id)));
+  const ids = [
+    ...TAG_ORDER.filter(id => present.has(id) && (!enabled || enabled.has(id))),
+    ...tagRulesCache.filter(r => present.has(r.id) && r.enabled && (!enabled || enabled.has(r.id))).map(r => r.id),
+  ];
   if (ids.length === 0) {
     tagFilterEl.hidden = true;
     tagFilterEl.innerHTML = '';
@@ -540,7 +569,7 @@ function renderTagFilter(): void {
   };
   tagFilterEl.appendChild(mkChip(null, t('filterAll')));
   for (const id of ids) {
-    tagFilterEl.appendChild(mkChip(id, t(tagI18nKey(id))));
+    tagFilterEl.appendChild(mkChip(id, getTagDisplayName(id) || t(tagI18nKey(id))));
   }
 }
 
@@ -1057,6 +1086,25 @@ if (window.clipboardAPI && window.clipboardAPI.onTagSettingsUpdated) {
   window.clipboardAPI.onTagSettingsUpdated((s) => applyTagSettings(s));
 }
 
+// 自定义标签规则（二期 P2，2026-10-11）：启动拉取 + 变更订阅（托盘开关/管理面板共用）
+async function initTagRules(): Promise<void> {
+  try {
+    if (!window.clipboardAPI || typeof window.clipboardAPI.getTagRules !== 'function') return;
+    const rules = await window.clipboardAPI.getTagRules();
+    if (Array.isArray(rules)) tagRulesCache = rules as typeof tagRulesCache;
+    renderTagFilter();
+  } catch (err) {
+    console.warn('[TagRules] 读取自定义规则失败（不影响内置标签）:', (err as Error).message);
+  }
+}
+initTagRules();
+if (window.clipboardAPI && window.clipboardAPI.onTagRulesUpdated) {
+  window.clipboardAPI.onTagRulesUpdated((rules) => {
+    if (Array.isArray(rules)) tagRulesCache = rules as typeof tagRulesCache;
+    renderTagFilter();
+  });
+}
+
 // ========== 欢迎页 / 关于页 overlay（2026-09-30） ==========
 // 同一 overlay 两种模式：upgrade（版本变化展示，关闭回写 lastShownVersion）/
 // about（托盘「关于」触发，只读展示不回写）。
@@ -1069,6 +1117,8 @@ function openWelcomeOverlay({ title, version, btnText, persistent }: { title: st
   document.getElementById('welcomeVersion')!.textContent = version;
   document.getElementById('welcomeCloseBtn')!.textContent = btnText;
   overlay.hidden = false; // CSS [hidden] 规则已锚定，属性切换即开合
+  // BUG1（2026-10-11）：overlay（关于/欢迎页）打开期间挂起自动隐藏倒计时
+  window.clipboardAPI.setOverlayActive(true);
 
   const onOverlayClick = (e: MouseEvent): void => { if (e.target === overlay) closeWelcomeOverlay(persistent); };
   const onCloseBtn = (): void => closeWelcomeOverlay(persistent);
@@ -1079,6 +1129,8 @@ function openWelcomeOverlay({ title, version, btnText, persistent }: { title: st
 function closeWelcomeOverlay(persistent: boolean): void {
   const overlay = document.getElementById('welcomeOverlay');
   if (overlay) overlay.hidden = true;
+  // BUG1（2026-10-11）：overlay 关闭后恢复自动隐藏（鼠标在外则重启倒计时）
+  window.clipboardAPI.setOverlayActive(false);
   if (persistent && window.clipboardAPI.setWelcomeShown) {
     window.clipboardAPI.setWelcomeShown().catch(() => { /* 回写失败不阻塞 */ });
   }
@@ -1110,6 +1162,90 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onAboutShow === 'function'
       persistent: false,
     });
   });
+}
+
+// 自定义标签规则管理面板（二期 P2，2026-10-11）：托盘「打开管理面板」触发；
+// CRUD 走 set-tag-rules IPC（主进程净化 + 存储 + 广播），校验走 validate-tag-rule（引擎 ReDoS 审查）。
+// 无 i18n 的辅助文案硬编码 zh（托盘先例，既有债务）。
+function openTagRulesManager(): void {
+  if (document.getElementById('rulesOverlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'rulesOverlay';
+  overlay.innerHTML = `
+    <div class="rules-box">
+      <div class="rules-head"><span>${t('tagRulesTitle')}</span><button id="rulesClose">✕</button></div>
+      <div class="rules-list" id="rulesList"></div>
+      <div class="rules-form">
+        <input id="ruleNameInput" placeholder="${t('tagRulesName')}">
+        <input id="rulePatternInput" placeholder="${t('tagRulesPattern')}（忽略大小写）">
+        <div class="rules-form-row">
+          <button id="ruleValidateBtn">${t('tagRulesTest')}</button>
+          <span id="ruleValidateResult"></span>
+        </div>
+        <div class="rules-form-row">
+          <button id="ruleAddBtn">${t('tagRulesSave')}</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const renderList = (): void => {
+    const list = overlay.querySelector('#rulesList') as HTMLElement;
+    list.innerHTML = '';
+    if (tagRulesCache.length === 0) {
+      list.textContent = t('tagRulesEmpty');
+      return;
+    }
+    for (const rule of tagRulesCache) {
+      const row = document.createElement('div');
+      row.className = 'rules-row';
+      const name = document.createElement('span');
+      name.className = 'rules-name';
+      name.textContent = rule.name;
+      const patternEl = document.createElement('code');
+      patternEl.className = 'rules-pattern';
+      patternEl.textContent = rule.pattern;
+      patternEl.title = rule.pattern;
+      const del = document.createElement('button');
+      del.textContent = '✕';
+      del.className = 'rules-del';
+      del.addEventListener('click', async () => {
+        const next = tagRulesCache.filter(x => x.id !== rule.id);
+        await window.clipboardAPI.setTagRules(next);
+        renderList();
+      });
+      row.append(name, patternEl, del);
+      list.appendChild(row);
+    }
+  };
+  renderList();
+
+  overlay.querySelector('#rulesClose')!.addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  const patternInput = overlay.querySelector('#rulePatternInput') as HTMLInputElement;
+  const resultEl = overlay.querySelector('#ruleValidateResult') as HTMLElement;
+  overlay.querySelector('#ruleValidateBtn')!.addEventListener('click', async () => {
+    const r = await window.clipboardAPI.validateTagRule(patternInput.value);
+    resultEl.textContent = r && r.ok ? '✓ 可用' : '✗ ' + ((r as { error?: string }).error || '不可用');
+  });
+  overlay.querySelector('#ruleAddBtn')!.addEventListener('click', async () => {
+    const nameInput = overlay.querySelector('#ruleNameInput') as HTMLInputElement;
+    const name = nameInput.value.trim();
+    const pattern = patternInput.value.trim();
+    if (!name || !pattern) { resultEl.textContent = '✗ 标签名与正则均必填'; return; }
+    const v = await window.clipboardAPI.validateTagRule(pattern);
+    if (!v || !v.ok) { resultEl.textContent = '✗ ' + ((v as { error?: string }).error || '校验失败'); return; }
+    const rule = { id: 'c' + Date.now().toString(36), name, pattern, enabled: true, createdAt: Date.now() };
+    await window.clipboardAPI.setTagRules([...tagRulesCache, rule]);
+    nameInput.value = ''; patternInput.value = ''; resultEl.textContent = '✓ 已添加';
+    renderList();
+  });
+}
+
+// 托盘「打开管理面板」→ 打开管理器
+if (window.clipboardAPI && typeof window.clipboardAPI.onTagRulesManagerOpen === 'function') {
+  window.clipboardAPI.onTagRulesManagerOpen(() => openTagRulesManager());
 }
 
 refresh();

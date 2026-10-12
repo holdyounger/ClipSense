@@ -65,15 +65,18 @@ function excludesTag(text, id, msg) {
 // ==================== 公共约定 ====================
 
 describe('公共约定', () => {
-  test('导出与常量（§4.0；v2 12 类 + v1.0.7 通用化 10 类，PRD §3）', () => {
+  test('导出与常量（§4.0；v2 12 类 + v1.0.7 通用化 10 类 + 二期 ippub/自定义规则，PRD §3）', () => {
     assert.equal(typeof computeTags, 'function');
     assert.equal(typeof luhnCheck, 'function');
+    assert.equal(typeof tagUtils.normalizeEnabled, 'function', '二期：normalizeEnabled 导出');
+    assert.equal(typeof tagUtils.validateCustomRule, 'function', '二期：validateCustomRule 导出');
+    assert.equal(typeof tagUtils.detectIppub, 'function', '二期：detectIppub 导出');
     assert.equal(MAX_TAGS, 8);
     assert.deepStrictEqual(TAG_PRIORITY, [
       'sensitive', 'vuln', 'otp', 'urlcred',
       'bankcard', 'idcard', 'tracking', 'phone',
       'cmd', 'stack', 'config', 'meeting', 'todo',
-      'ip', 'hash', 'uuid', 'color', 'address',
+      'ip', 'ippub', 'hash', 'uuid', 'color', 'address',
       'link', 'email', 'snippet', 'path',
     ]);
   });
@@ -750,5 +753,68 @@ describe('v2 重迁移 _migrateTagsV2（clipboard-monitor + 桩 storage）', () 
     m.storage = { save: () => {} }; // 无 schema 版本方法
     assert.doesNotThrow(() => m._migrateTagsV2());
     assert.deepStrictEqual(m.history[0].tags, ['link']);
+  });
+});
+
+// ==================== 标签体系二期（2026-10-11）：ippub / EXEC SQL / 自定义规则 ====================
+
+describe('二期：ippub 裸公网 IP（默认关闭）', () => {
+  test('detectIppub：公网 IP 命中', () => {
+    assert.strictEqual(tagUtils.detectIppub('服务器 8.8.8.8 连不上'), true);
+    assert.strictEqual(tagUtils.detectIppub('1.2.3.4'), true);
+  });
+  test('detectIppub：私网让位给 ip 识别器', () => {
+    assert.strictEqual(tagUtils.detectIppub('192.168.1.100'), false);
+    assert.strictEqual(tagUtils.detectIppub('10.0.0.1'), false);
+  });
+  test('normalizeEnabled：ippub 默认关闭、显式开启', () => {
+    assert.strictEqual(tagUtils.normalizeEnabled(undefined).ippub, false);
+    assert.strictEqual(tagUtils.normalizeEnabled({ enabled: true, tags: { ippub: true } }).ippub, true);
+  });
+  test('computeTags：默认不开 ippub，显式开启后命中', () => {
+    const text = '服务器 8.8.8.8 连不上';
+    const off = tagUtils.computeTags(text, { enabled: { enabled: true, tags: {} } });
+    assert.ok(!off || !off.includes('ippub'));
+    const on = tagUtils.computeTags(text, { enabled: { enabled: true, tags: { ippub: true } } });
+    assert.ok(on && on.includes('ippub'));
+  });
+});
+
+describe('二期：SQL EXEC 形态（snippet S3 扩）', () => {
+  test('exec xp_cmdshell 注入形态命中 snippet', () => {
+    const r = tagUtils.computeTags("exec master..xp_cmdshell 'whoami'");
+    assert.ok(r && r.includes('snippet'));
+  });
+});
+
+describe('二期：自定义规则引擎', () => {
+  test('validateCustomRule：合法正则通过', () => {
+    assert.deepStrictEqual(tagUtils.validateCustomRule('TKT-\\d{6,}'), { ok: true });
+  });
+  test('validateCustomRule：空/超长/语法错误被拒', () => {
+    assert.strictEqual(tagUtils.validateCustomRule('  ').ok, false);
+    assert.strictEqual(tagUtils.validateCustomRule('a'.repeat(201)).ok, false);
+    const bad = tagUtils.validateCustomRule('(');
+    assert.strictEqual(bad.ok, false);
+    assert.match(bad.error || '', /语法/);
+  });
+  test('validateCustomRule：嵌套量词灾难被探针拦截', () => {
+    assert.strictEqual(tagUtils.validateCustomRule('(a+)+$').ok, false);
+  });
+  test('computeTags：自定义规则命中 / 禁用跳过 / master 关闭不参与', () => {
+    const rules = [{ id: 'ctest', pattern: 'TKT-\\d{6}', enabled: true }];
+    const text = '工单 TKT-123456 已建';
+    const r1 = tagUtils.computeTags(text, { customRules: rules });
+    assert.ok(r1 && r1.includes('ctest'));
+    const r2 = tagUtils.computeTags(text, { customRules: rules.map(x => ({ ...x, enabled: false })) });
+    assert.ok(!r2 || !r2.includes('ctest'));
+    const r3 = tagUtils.computeTags(text, { enabled: { enabled: false, tags: {} }, customRules: rules });
+    assert.ok(!r3 || !r3.includes('ctest'), 'master 关闭：自定义规则不参与');
+  });
+  test('computeTags：自定义标签排在内置之后', () => {
+    const rules = [{ id: 'ctest', pattern: 'TKT-\\d{6}', enabled: true }];
+    const r = tagUtils.computeTags('foo@example.com TKT-123456', { customRules: rules });
+    assert.ok(r && r.includes('ctest'));
+    assert.ok(r.indexOf('email') < r.indexOf('ctest'), '内置优先于自定义');
   });
 });

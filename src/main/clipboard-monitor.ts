@@ -96,6 +96,13 @@ interface TagOptionsLike {
   tags: Record<string, boolean>;
 }
 
+/** 用户自定义标签规则运行时形态（标签体系二期 P2；与 tag-utils 引擎入参同构） */
+interface MonitorCustomRule {
+  id: string;
+  pattern: string;
+  enabled: boolean;
+}
+
 /** storage 注入的最小面（结构化 duck 类型，兼容 HistoryStorage 实例） */
 interface MonitorStorageLike {
   save?: (history: MonitorHistoryItem[]) => void;
@@ -131,6 +138,7 @@ class ClipboardMonitor {
   intervalId: NodeJS.Timeout | null;
   storage: MonitorStorageLike | null;
   _tagOptions: TagOptionsLike | null;
+  _customRules: MonitorCustomRule[] | null = null;
   _onPersist: (() => void) | null;
 
   constructor(options: ClipboardMonitorOptions = {}) {
@@ -488,7 +496,7 @@ class ClipboardMonitor {
         let tags;
         try {
           const { computeTags } = require('../common/tag-utils');
-          tags = computeTags(text, { links, enabled: this._tagOptions });
+          tags = computeTags(text, { links, enabled: this._tagOptions, customRules: this._customRules ?? undefined });
         } catch (err) {
           console.warn('[Monitor] computeTags failed:', (err as Error).message);
         }
@@ -678,6 +686,11 @@ class ClipboardMonitor {
    */
   setTagOptions(opts: TagOptionsLike | null): void {
     this._tagOptions = opts;
+  }
+
+  /** 设置自定义标签规则（标签体系二期 P2，2026-10-11；computeTags 运行时入参） */
+  setCustomRules(rules: MonitorCustomRule[]): void {
+    this._customRules = Array.isArray(rules) && rules.length > 0 ? rules : null;
   }
 
   /**

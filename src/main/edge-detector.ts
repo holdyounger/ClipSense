@@ -103,6 +103,7 @@ class EdgeDetector {
   triggerWindow: EdgeTriggerWindow | null;
   intervalId: NodeJS.Timeout | null;
   _searchActive: boolean;
+  _overlayActive: boolean;
   hideTimerId: NodeJS.Timeout | null;
   isActive: boolean;
   isWindowVisible: boolean;
@@ -144,6 +145,7 @@ class EdgeDetector {
     this.triggerWindow = triggerWindow;
     this.intervalId = null;
     this._searchActive = false;   // 搜索输入中（挂起自动隐藏）
+    this._overlayActive = false;  // 模态 overlay（关于/欢迎页）打开中（挂起自动隐藏，2026-10-11 BUG1）
     this.hideTimerId = null;
     this.isActive = false;
     this.isWindowVisible = false;
@@ -762,12 +764,28 @@ class EdgeDetector {
     }
   }
 
+  /**
+   * 模态 overlay（关于/升级欢迎页）打开中挂起自动隐藏（2026-10-11 BUG1）：
+   * 关于界面展示期间鼠标离开窗口不应触发隐藏倒计时，否则面板带着 overlay
+   * 一起缩回去，用户什么都看不到。关闭时若鼠标仍在外按正常流程恢复倒计时。
+   */
+  setOverlayActive(active: boolean): void {
+    this._overlayActive = !!active;
+    if (active) {
+      this._cancelHideTimer();
+    } else if (this.isWindowVisible && !this.isPinned && !this._lastIsOverPanel) {
+      this._startHideTimer();
+    }
+  }
+
   _startHideTimer(): void {
     if (this.isPinned || this._isHiding) return;
     if (this.hideTimerId) return;
     if (this._lastIsOverPanel) return;
     // 搜索输入期间挂起自动隐藏：用户正在打字，键盘活跃优先于鼠标离开
     if (this._searchActive) return;
+    // 模态 overlay（关于/欢迎页）打开中挂起自动隐藏（2026-10-11 BUG1）
+    if (this._overlayActive) return;
 
     const deadline = Date.now() + this.hideDelay;
     this._hideDeadline = deadline;

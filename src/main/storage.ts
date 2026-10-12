@@ -384,6 +384,32 @@ class HistoryStorage {
   }
 
   /**
+   * 自定义标签规则（标签体系二期 P2，2026-10-11；config.customRules）。
+   * 读取时做形状净化（存量/手改配置防御），非法条目直接丢弃。
+   */
+  getCustomRules(): Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }> {
+    const saved = this._readConfig().customRules;
+    if (!Array.isArray(saved)) return [];
+    return (saved as unknown[]).filter((r): r is Record<string, unknown> =>
+      !!r && typeof r === 'object'
+      && typeof (r as Record<string, unknown>).id === 'string'
+      && typeof (r as Record<string, unknown>).name === 'string'
+      && typeof (r as Record<string, unknown>).pattern === 'string').map(r => ({
+        id: r.id as string,
+        name: (r.name as string).slice(0, 40),
+        pattern: r.pattern as string,
+        enabled: r.enabled !== false,
+        createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+      }));
+  }
+
+  /** 保存自定义标签规则（整体覆盖写入，不影响同文件其他配置） */
+  setCustomRules(rules: Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>): void {
+    if (!Array.isArray(rules)) return;
+    this._writeConfig({ customRules: rules });
+  }
+
+  /**
    * 标签 schema 版本（2026-09-10 v2 标签集扩展引入，方案 §5）。
    * 语义：缺省视为 1（v1 五类引擎产物）；v2 全量重迁移完成后写 2，
    * 二次启动读到 ≥2 直接跳过迁移（幂等，验收 5）。

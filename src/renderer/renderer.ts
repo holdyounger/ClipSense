@@ -200,8 +200,9 @@ function fileIcon(name: string): string {
  * 渲染层只消费 item.tags；此处仅为防御性重排与白名单过滤，不重复识别）。
  */
 const TAG_DISPLAY_PRIORITY = [
-  'sensitive', 'vuln', 'otp', 'cmd', 'stack', 'config',
-  'ip', 'hash', 'link', 'email', 'snippet', 'path',
+  'sensitive', 'vuln', 'otp', 'urlcred', 'bankcard', 'idcard', 'tracking', 'phone',
+  'cmd', 'stack', 'config', 'meeting', 'todo', 'ip', 'ippub', 'hash', 'uuid',
+  'color', 'address', 'link', 'email', 'snippet', 'path',
 ];
 /** 条目上最多展示的 chip 数，超出以 "+N" 溢出计数 */
 const TAG_CHIPS_MAX = 2;
@@ -215,7 +216,7 @@ function buildTagChips(item: ClipboardItem, ctx: RenderContext): HTMLElement | n
   if (tags.length === 0) return null;
   const allowed = ctx.enabledTags ?? null;
   const visible = tags
-    .filter(id => TAG_DISPLAY_PRIORITY.includes(id))
+    .filter(id => TAG_DISPLAY_PRIORITY.includes(id) || tagRulesCache.some(r => r.id === id))
     .filter(id => !allowed || allowed.has(id));
   if (visible.length === 0) return null;
   visible.sort((a, b) =>
@@ -228,14 +229,18 @@ function buildTagChips(item: ClipboardItem, ctx: RenderContext): HTMLElement | n
   for (const id of shown) {
     const chip = document.createElement('span');
     chip.className = 'tag-chip' + (id === 'sensitive' ? ' tag-chip--sensitive' : '');
-    chip.textContent = ctx.t(tagI18nKey(id));
+    const rule = tagRulesCache.find(r => r.id === id);
+    chip.textContent = rule ? rule.name : ctx.t(tagI18nKey(id));
     wrap.appendChild(chip);
   }
   if (overflow > 0) {
     const more = document.createElement('span');
     more.className = 'tag-chip tag-chip--more';
     more.textContent = '+' + overflow;
-    more.title = visible.slice(TAG_CHIPS_MAX).map(id => ctx.t(tagI18nKey(id))).join('、');
+    more.title = visible.slice(TAG_CHIPS_MAX).map(id => {
+      const rule = tagRulesCache.find(r => r.id === id);
+      return rule ? rule.name : ctx.t(tagI18nKey(id));
+    }).join('、');
     wrap.appendChild(more);
   }
   return wrap;

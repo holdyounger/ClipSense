@@ -27,7 +27,7 @@
     | 'sensitive' | 'vuln' | 'otp' | 'urlcred' | 'bankcard' | 'idcard'
     | 'tracking' | 'phone' | 'cmd' | 'stack' | 'config' | 'meeting' | 'todo'
     | 'ip' | 'hash' | 'uuid' | 'color' | 'address' | 'link' | 'email'
-    | 'snippet' | 'path';
+    | 'snippet' | 'path' | 'ippub';
 
   /** 标签设置输入（storage.getTagSettings 形态；语义 = AND(总开关, 单项)） */
   interface TagSettingsInput {
@@ -41,6 +41,15 @@
     links?: string[] | null;
     /** 设置对象；缺省视为全开。disabled 类直接跳过识别 */
     enabled?: TagSettingsInput;
+    /** 用户自定义规则（二期 P2，2026-10-11）：enabled=false 或 master 关闭时不参与 */
+    customRules?: CustomTagRuleInput[];
+  }
+
+  /** 用户自定义规则运行时形态（id 即标签 id，建议 c<时间戳36> 前缀避让内置 id） */
+  interface CustomTagRuleInput {
+    id: string;
+    pattern: string;
+    enabled: boolean;
   }
 
   /** link-utils extractLinks 函数形态 */
@@ -48,7 +57,8 @@
 
   /** 双端共用收口对象（module.exports / window.__clipSenseTagUtils） */
   interface TagUtilsApi {
-    computeTags: (text: unknown, options?: ComputeTagsOptions) => TagId[] | null;
+    computeTags: (text: unknown, options?: ComputeTagsOptions) => string[] | null;
+    normalizeEnabled: (settings?: TagSettingsInput | null) => Record<TagId, boolean>;
     luhnCheck: (digits: string) => boolean;
     MAX_INPUT_LENGTH: number;
     MAX_TAGS: number;
@@ -70,6 +80,10 @@
     detectUuid: (text: string) => boolean;
     detectColor: (text: string) => boolean;
     detectAddress: (text: string) => boolean;
+    /** 裸公网 IP（默认关闭，显式开启） */
+    detectIppub: (text: string) => boolean;
+    /** 自定义规则安全审查（保存前调用：语法+长度+ReDoS 探针） */
+    validateCustomRule: (pattern: string) => { ok: boolean; error?: string };
   }
 
   /** 识别输入截断上限 */
@@ -83,9 +97,10 @@
     'sensitive', 'vuln', 'otp', 'urlcred',
     'bankcard', 'idcard', 'tracking', 'phone',
     'cmd', 'stack', 'config', 'meeting', 'todo',
-    'ip', 'hash', 'uuid', 'color', 'address',
+    'ip', 'ippub', 'hash', 'uuid', 'color', 'address',
     'link', 'email', 'snippet', 'path',
   ];
+  const BUILT_IN_TAG_SET = new Set<string>(TAG_PRIORITY);
 
   // ==================== email ====================
   // local part 限 RFC 5321 上限 64：超长无 @ 文本（哈希/证书链）逐位回扫不超线性
@@ -125,6 +140,8 @@
     /\bUPDATE\b[\s\S]{0,300}?\bSET\b/i,
     /\bDELETE\s+FROM\b/i,
     /\bCREATE\s+TABLE\b/i,
+    // 二期检测缺口：SQL 注入 EXEC 系统存储过程形态（exec master..xp_cmdshell 类）
+    /\bEXEC(?:UTE)?\b[\s\S]{0,120}?\b(?:xp_\w+|sp_\w+)\b/i,
   ];
   // S4：命令行动词表（首 token 精确匹配）
   const CLI_VERBS = new Set([
@@ -161,6 +178,17 @@
 
   function detectIp(text: string): boolean {
     return RE_PRIVATE_IP.test(text) || RE_IP_PORT.test(text) || RE_URL_HOST_IP.test(text);
+  }
+
+  // ---------- ippub 裸公网 IP（二期检测缺口落地，默认关闭） ----------
+  // 严格八位组 + 词边界；私网段让位给 ip 识别器（避免双计数）。默认关闭原因：
+  // 合法 IPv4 与四段版本号形态完全重叠（1.2.3.4），误报面大 → normalizeEnabled 显式开启。
+  const RE_IPPUB = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/;
+  const RE_IPPRIVATE = /\b(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|\b192\.168\.\d{1,3}\.\d{1,3}\b|\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/;
+
+  function detectIppub(text: string): boolean {
+    const ips = text.match(new RegExp(RE_IPPUB.source, 'g')) || [];
+    return ips.some(ip => !RE_IPPRIVATE.test(ip));
   }
 
   // ---------- hash 哈希/指纹/编码 ----------
@@ -478,6 +506,7 @@
       stack: on('stack'),
       config: on('config'),
       ip: on('ip'),
+      ippub: masterOn && per['ippub'] === true, // 默认关闭（与版本号形态重叠，显式开启）
       hash: on('hash'),
       link: on('link'),
       email: on('email'),
@@ -672,7 +701,7 @@
    *        设置对象；缺省视为全开。disabled 类直接跳过识别。
    * @returns {string[]|null} 按 TAG_PRIORITY 排序的标签数组；无命中/无可识别文本返回 null
    */
-  function computeTags(text: unknown, options: ComputeTagsOptions = {}): TagId[] | null {
+  function computeTags(text: unknown, options: ComputeTagsOptions = {}): string[] | null {
     if (typeof text !== 'string') return null;
     const trimmed = text.trim();
     if (!trimmed) return null; // 空串/纯空白不打标
@@ -680,9 +709,11 @@
     const t0 = input.trim();
     if (!t0) return null;
 
+    // master 开关独立读取（自定义规则也受总开关门控；normalizeEnabled 内部同款语义）
+    const masterOn = !(options.enabled && typeof options.enabled === 'object') || options.enabled.enabled !== false;
     const enabled = normalizeEnabled(options.enabled);
-    const hits: TagId[] = [];
-    const add = (id: TagId): void => { if (!hits.includes(id)) hits.push(id); };
+    const hits: string[] = []; // 含自定义规则 id（非 TagId 联合成员，故放宽为 string）
+    const add = (id: string): void => { if (!hits.includes(id)) hits.push(id); };
 
     // ① link —— 复用 extractLinks 结果（传入值权威：null = 已算、无链接）
     if (enabled.link) {
@@ -734,6 +765,9 @@
     if (enabled.ip) {
       try { if (detectIp(t0)) add('ip'); } catch (err) { /* 单识别器隔离 */ }
     }
+    if (enabled.ippub) {
+      try { if (detectIppub(t0)) add('ippub'); } catch (err) { /* 单识别器隔离 */ }
+    }
     if (enabled.hash) {
       try { if (detectHash(t0)) add('hash'); } catch (err) { /* 单识别器隔离 */ }
     }
@@ -784,18 +818,90 @@
       try { if (detectAddress(input)) add('address'); } catch (err) { /* 单识别器隔离 */ }
     }
 
-    // 聚合：按展示优先级排序、去重、截断至 MAX_TAGS；空集返回 null
-    const ordered = TAG_PRIORITY.filter(id => hits.includes(id)).slice(0, MAX_TAGS);
+    // ⑨ 用户自定义规则（二期 P2，2026-10-11）：master 关闭时整体跳过；逐条 try/catch 隔离；
+    // 编译缓存避免 600ms 轮询每拍重编译。命中 id = 规则 id（渲染层经规则表解析显示名）
+    if (masterOn && Array.isArray(options.customRules)) {
+      // 运行期输入上限 4KB（小于全局 64KB）：自定义正则经保存审查仍有残余风险，
+      // 缩小输入规模进一步压低最坏情况（用户规则的正则是新风险面，方案 §4）
+      const customInput = input.length > 4096 ? input.slice(0, 4096) : input;
+      for (const rule of options.customRules) {
+        if (!rule || rule.enabled !== true || typeof rule.pattern !== 'string' || rule.pattern.length === 0) continue;
+        try {
+          const re = compileCustomRule(rule.pattern);
+          if (re && re.test(customInput)) add(rule.id);
+        } catch (err) { /* 单识别器隔离 */ }
+      }
+    }
+
+    // 聚合：内置按展示优先级排序，自定义规则按定义序追加在内置之后，再截断至 MAX_TAGS
+    const ordered = [
+      ...TAG_PRIORITY.filter(id => hits.includes(id)),
+      ...hits.filter(id => !BUILT_IN_TAG_SET.has(id)),
+    ].slice(0, MAX_TAGS);
     return ordered.length > 0 ? ordered : null;
   }
 
+  // 自定义规则编译缓存（pattern → RegExp|null；null = 编译失败的坏规则，跳过不抛）
+  const customRuleCache = new Map<string, RegExp | null>();
+  function compileCustomRule(pattern: string): RegExp | null {
+    if (customRuleCache.has(pattern)) return customRuleCache.get(pattern) ?? null;
+    let re: RegExp | null = null;
+    try {
+      if (pattern.length <= 200) re = new RegExp(pattern, 'i');
+    } catch (_) {
+      re = null;
+    }
+    customRuleCache.set(pattern, re);
+    return re;
+  }
+
+  /**
+   * 自定义规则安全审查（保存前调用；D4 三件套之「恶意正则/ReDoS 安全审查」）：
+   * 语法校验 + 长度上限 + 病态输入探针（时间预算 150ms）。
+   * 运行期兑底：识别输入已在 computeTags 截断至 64KB + 每规则 try/catch 隔离。
+   * 注意：探针是启发式而非静态分析，无法证明无 ReDoS——但能拦住常见嵌套量词灾难。
+   */
+  function validateCustomRule(pattern: string): { ok: boolean; error?: string } {
+    if (typeof pattern !== 'string' || pattern.trim().length === 0) {
+      return { ok: false, error: '正则为空' };
+    }
+    if (pattern.length > 200) {
+      return { ok: false, error: '正则过长（>200 字符），请拆分或简化' };
+    }
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, 'i');
+    } catch (e) {
+      return { ok: false, error: '正则语法无效：' + (e as Error).message };
+    }
+    // 静态危险形态拒绝：组内含量词 + 组外再量词（(a+)+ / (?:\w*)* 类）——
+    // 这类模式在长输入上回溯步数指数爆炸，探针本身会永久挂起，必须静态拦截
+    if (/\((\??:?)[^()]*[+*]\)\s*(?:[+*]|\{\d+,)/.test(pattern)) {
+      return { ok: false, error: '检测到嵌套量词（组内量词+组外量词），存在 ReDoS 风险，请改写' };
+    }
+    // 小尺寸有界探针：静态拦截后残余风险有限，最大 64 字符输入可控制在毫秒级；
+    // 绝不用长输入探针——真灾难模式会让探针永不返回（本条教训来自 (a+)+$ 实测挂死）
+    const probes = ['a'.repeat(16) + '!', 'a'.repeat(32) + '!b', 'x'.repeat(64), 'ab'.repeat(16) + 'c'];
+    for (const p of probes) {
+      try {
+        re.lastIndex = 0;
+        re.test(p);
+      } catch (e) {
+        return { ok: false, error: '探针执行异常：' + String(e) };
+      }
+    }
+    return { ok: true };
+  }
+
   const api: TagUtilsApi = {
-    computeTags, luhnCheck, MAX_INPUT_LENGTH, MAX_TAGS, TAG_PRIORITY,
+    computeTags, normalizeEnabled, luhnCheck, MAX_INPUT_LENGTH, MAX_TAGS, TAG_PRIORITY,
     // v2 新增识别器单独导出（测试/诊断用；computeTags 内部已带隔离与 enabled 门控）
-    detectVuln, detectCmd, detectStack, detectConfig, detectIp, detectHash, detectPath,
+    detectVuln, detectCmd, detectStack, detectConfig, detectIp, detectIppub, detectHash, detectPath,
     // v1.0.7 通用化识别器单独导出（测试/诊断用）
     detectUrlCred, isBankCard, detectIdCard, detectTracking, detectPhone,
     detectMeeting, detectTodo, detectUuid, detectColor, detectAddress,
+    // 二期：自定义规则安全审查（存储/管理 UI 保存前调用）
+    validateCustomRule,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

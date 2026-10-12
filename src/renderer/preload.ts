@@ -98,6 +98,15 @@ const clipboardAPI = {
     ipcRenderer.invoke('copy-item-path', id) as Promise<IpcResult>,
   openPath: (path: string): Promise<IpcResult> =>
     ipcRenderer.invoke('open-path', path) as Promise<IpcResult>,
+  getTagRules: (): Promise<unknown> => ipcRenderer.invoke('get-tag-rules'),
+  setTagRules: (rules: unknown): Promise<IpcResult> =>
+    ipcRenderer.invoke('set-tag-rules', rules) as Promise<IpcResult>,
+  validateTagRule: (pattern: string): Promise<IpcResult> =>
+    ipcRenderer.invoke('validate-tag-rule', pattern) as Promise<IpcResult>,
+  onTagRulesUpdated: (callback: (rules: unknown) => void): void =>
+    subscribe<unknown>('tag-rules-updated', callback),
+  onTagRulesManagerOpen: (callback: () => void): void =>
+    subscribe<void>('tag-rules-manager:open', () => callback()),
   simulateInput: (id: string): Promise<IpcResult> =>
     ipcRenderer.invoke('simulate-input', id) as Promise<IpcResult>,
   getFileIcon: (path: string): Promise<string | null> =>
@@ -122,6 +131,7 @@ const clipboardAPI = {
 
   // ========== 窗口定位 / 鼠标事件 ==========
   mouseEnter: (): void => ipcRenderer.send('mouse-enter'),
+  setOverlayActive: (active: boolean): void => ipcRenderer.send('set-overlay-active', active),
   mouseLeave: (): void => ipcRenderer.send('mouse-leave'),
   setSearchActive: (active: boolean): void => ipcRenderer.send('set-search-active', active),
   getWindowBounds: (): Promise<unknown> =>
