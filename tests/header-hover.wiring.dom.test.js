@@ -192,8 +192,18 @@ function makeWindow() {
       onTagSettingsUpdated: (cb) => { handlers.tagSettingsUpdated = cb; },
       // 方案 A 桥：录制主进程 'header:hover' 推送回调（接线测试入口）
       onHeaderHover: (cb) => { handlers.headerHover = cb; },
+      // 修饰键（Alt）按住穿透桥（2026-10-13）：录制 'modifier-passthrough' 推送回调
+      onModifierPassthrough: (cb) => { handlers.modifierPassthrough = cb; },
+      // 欢迎页/Alt 提示链路（2026-10-13）：录制型桩，缺方法 = 渲染层链路静默不接线
+      getWelcomeState: async () => (win._welcomeState === undefined ? null : win._welcomeState),
+      setWelcomeShown: async () => { win._calls.setWelcomeShown += 1; },
+      setAltPassTipShown: async () => { win._calls.setAltPassTipShown += 1; },
+      setOverlayActive: (active) => { win._calls.setOverlayActive.push(active); },
+      // 关于流（托盘「关于」）：录制回调，测 overlay 复用与文案恢复
+      onAboutShow: (cb) => { handlers.aboutShow = cb; },
     },
-    _calls: { focusSearch: 0, blurSearch: 0, setSearchActive: [] },
+    _welcomeState: undefined,
+    _calls: { focusSearch: 0, blurSearch: 0, setSearchActive: [], setWelcomeShown: 0, setAltPassTipShown: 0, setOverlayActive: [] },
   };
   return win;
 }
@@ -211,13 +221,17 @@ function drainQueue(queue) {
  * listEl 的 getBoundingClientRect 按 header class 模拟两态 layout：
  * 静止 32 / 展开 60（与 main.css 常量一致），FLIP Δ 仍 ±28（60-32=28）。
  */
-function loadWiring({ history = [], reduced = false } = {}) {
+function loadWiring({ history = [], reduced = false, welcome } = {}) {
   const rafQueue = [];
   const raf = (fn) => { rafQueue.push(fn); return rafQueue.length; };
   const document = makeDocument();
   const window = makeWindow();
   window._reduced = reduced;
   window._history = history;
+  window._welcomeState = welcome !== undefined ? welcome : null;
+  // 桩保真（§6）：index.html 里 overlay 带 hidden 属性出生，JS 只切属性开合——
+  // 桩元素默认 hidden:false 与真实标记不符，L 类「不弹窗」断言会误判
+  document.getElementById('welcomeOverlay').hidden = true;
   // animate 侦桩：记录 WAAPI 调用（真实 listEl 无内建 animate，等价旧环境降级路径的反向）
   const anims = [];
   const listEl = document.getElementById('list');
@@ -732,30 +746,50 @@ describe('I. 透明度覆盖收敛（footer/backtop/计数唯一位）', () => {
     assert.ok(updateStats[0].includes("getElementById('headerMeta')"), 'headerMeta 更新保留');
   });
 
-  test('I4 backtop 背景/border 消费 --win-alpha（calc 乘算，0.85/0.4 基调不变）', () => {
+  test('I4 backtop 单钮+环形进度：钮底/环底消费 --win-alpha；环与图标 accent 全不透明锚点', () => {
     const css = readRoot('src/renderer/main.css');
     const btn = css.match(/\.back-top-btn\s*\{[^}]*\}/);
     assert.ok(btn, '.back-top-btn 规则存在');
     assert.ok(
-      /background:\s*rgba\(\s*108,\s*92,\s*231,\s*calc\(0\.85\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(btn[0]),
-      'background = rgba(108,92,231,calc(0.85 * --win-alpha))'
+      /background:\s*rgba\(\s*42,\s*42,\s*50,\s*calc\(0\.95\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(btn[0]),
+      '钮底 = rgba(42,42,50,calc(0.95 * --win-alpha))（随窗口降透）'
     );
     assert.ok(
-      /border:\s*1px solid rgba\(\s*162,\s*155,\s*254,\s*calc\(0\.4\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(btn[0]),
-      'border = rgba(162,155,254,calc(0.4 * --win-alpha))'
+      !/background:[^;]*108,\s*92,\s*231/.test(btn[0]),
+      '钮底非紫色实底（升级球既视感不回归）'
     );
-    assert.ok(!/rgba\(108,\s*92,\s*231,\s*0\.85\)/.test(btn[0]), '无固定 alpha 旧值残留');
+    const ringFill = css.match(/\.btt-ring-fill\s*\{[^}]*\}/);
+    assert.ok(ringFill && /stroke:\s*var\(--accent\)/.test(ringFill[0]),
+      '进度环 accent 全不透明（低 alpha 视觉锚点）');
+    const ringTrack = css.match(/\.btt-ring-track\s*\{[^}]*\}/);
+    assert.ok(ringTrack && /stroke:\s*rgba\(\s*61,\s*61,\s*72,\s*calc\(0\.9\s*\*\s*var\(--win-alpha,\s*1\)\)\)/.test(ringTrack[0]),
+      '环底轨消费 --win-alpha（复用 pinBtn 倒计时环隐喻）');
+    assert.ok(
+      /\.list::-webkit-scrollbar\s*\{[^}]*display:\s*none/.test(css),
+      '原生滚动条已隐藏（滚动指示唯一化：环形进度）'
+    );
+    const listBlock = css.match(/\.list\s*\{[^}]*\}/);
+    assert.ok(listBlock && /padding:\s*8px;/.test(listBlock[0]),
+      '水槽已撤销（v2：卡片恢复满宽，单钮悬浮零布局占用）');
   });
 
-  test('I5 backtop hover 态消费 --win-alpha（accent-hover 实色改变量 alpha）', () => {
+  test('I5 backtop hover：图标/进度环转 accent-hover + 发光；进度环 dasharray 由 JS 驱动', () => {
     const css = readRoot('src/renderer/main.css');
     const hover = css.match(/\.back-top-btn:hover\s*\{[^}]*\}/);
-    assert.ok(hover, ':hover 规则存在');
+    assert.ok(hover, '.back-top-btn:hover 规则存在');
     assert.ok(
-      /background:\s*rgba\(\s*162,\s*155,\s*254,\s*var\(--win-alpha,\s*1\)\)/.test(hover[0]),
-      'hover background = rgba(162,155,254,var(--win-alpha,1))'
+      /color:\s*var\(--accent-hover\)/.test(hover[0]),
+      'hover 图标转 accent-hover'
     );
-    assert.ok(!/var\(--accent-hover\)/.test(hover[0]), '无实色 --accent-hover 残留');
+    assert.ok(
+      /box-shadow:[^;]*rgba\(\s*108,\s*92,\s*231/.test(hover[0]),
+      'hover 发光（accent RGB 光晕）'
+    );
+    const ringHover = css.match(/\.back-top-btn:hover \.btt-ring-fill\s*\{[^}]*\}/);
+    assert.ok(ringHover && /stroke:\s*var\(--accent-hover\)/.test(ringHover[0]),
+      'hover 进度环同步转亮');
+    const html = readRoot('src/renderer/index.html');
+    assert.ok(/stroke-dasharray="100\.53"/.test(html), '进度圆 dasharray 落盘（2π×16）');
   });
 });
 
@@ -827,5 +861,149 @@ describe('K. 文本条目打开路径链路（link-utils 判定 + open-path 频�
 
     const css = readRoot('src/renderer/main.css');
     assert.match(css, /\.open-path-btn/, '按钮样式');
+  });
+});
+
+// ==================== K. 修饰键（Alt）按住穿透（2026-10-13，原 Ctrl 方案键位迁移） ====================
+
+describe('K. Alt 按住穿透：渲染层接线（推送 → body.mod-pass + hint 文案）', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('K1 推送 true/false 驱动 body.mod-pass 挂/摘 + hint 文案切换', async () => {
+    const h = loadWiring();
+    await h.settle();
+    assert.strictEqual(typeof h.handlers.modifierPassthrough, 'function', 'onModifierPassthrough 回调已注册');
+    const hintEl = h.document.getElementById('hint');
+    const beforeHint = hintEl.innerHTML;
+
+    h.handlers.modifierPassthrough(true);
+    assert.ok(h.document.body.classList.contains('mod-pass'), '穿透开启挂 body.mod-pass');
+    assert.ok(String(hintEl.innerHTML).includes('穿透'), 'hint 切穿透文案');
+
+    h.handlers.modifierPassthrough(false);
+    assert.ok(!h.document.body.classList.contains('mod-pass'), '穿透关闭摘 class');
+    assert.strictEqual(hintEl.innerHTML, beforeHint, 'hint 恢复默认文案');
+  });
+
+  test('K2 全链路字面量：preload 频道 / main 订阅 / i18n 两语 / CSS 反馈样式 / 主进程 send', () => {
+    const preload = readRoot('src/renderer/preload.ts');
+    assert.ok(preload.includes("'modifier-passthrough'"), 'preload 订阅 modifier-passthrough 频道');
+    assert.ok(preload.includes('onModifierPassthrough'), 'preload 暴露 onModifierPassthrough');
+
+    const main = readRoot('src/renderer/main.ts');
+    assert.match(main, /onModifierPassthrough/, '渲染层订阅存在');
+    assert.match(main, /mod-pass/, 'body class 切换');
+
+    const i18n = readRoot('src/renderer/i18n.ts');
+    assert.ok(i18n.includes("passthroughHint: '已按住 Alt"), '中文文案（Alt）');
+    assert.ok(i18n.includes("passthroughHint: 'Alt held"), '英文文案（Alt）');
+
+    const css = readRoot('src/renderer/main.css');
+    assert.match(css, /body\.mod-pass \.hint/, '穿透态 hint 视觉反馈样式');
+
+    // 断链回归锁（2026-10-13）：v1 渲染层订阅了频道但主进程从未 send（K1 桩直驱回调掩盖）；
+    // 键位迁移时补上，此处锁死「主进程确认边沿必须 send 渲染层」
+    const ed = readRoot('src/main/edge-detector.ts');
+    assert.match(ed, /send\('modifier-passthrough',\s*active\)/, '主进程确认边沿推送渲染层（断链回归锁）');
+  });
+
+  test('K3 主进程接线字面量：VK_MENU 探针 + 状态机注入 + 穿透无转发（面板彻底惰性）', () => {
+    const index = readRoot('src/main/index.ts');
+    assert.match(index, /GetAsyncKeyState/, 'koffi 全局键态绑定');
+    assert.match(index, /VK_MENU/, 'Alt 虚键码（0x12，左右 Alt 共享）');
+    assert.match(index, /setModifierProbe/, '探针注入 edgeDetector');
+
+    const ed = readRoot('src/main/edge-detector.ts');
+    assert.match(ed, /createModifierPassthrough/, '状态机接入');
+    assert.match(ed, /setIgnoreMouseEvents\(active\)/,
+      '穿透不带 forward：渲染层收不到鼠标事件 = 视觉彻底惰性（v1 forward 镜像导致面板仍反应，返工点）');
+    assert.ok(ed.includes('_modPass.reset()'), '窗口隐藏/停用复位确认态');
+    assert.match(ed, /!this\._modPass\.isActive\(\)/,
+      '穿透期间冻结 header hover 判定（读 OS 光标坐标，与命中无关）');
+    assert.match(ed, /_headerHover\.reset\(\)\s*;\s*\n\s*this\._headerHoverLast = false;/,
+      '穿透开启瞬间复位 header hover 状态机并回推 false（防卡展开态）');
+  });
+
+  test('K4 旧主进程兼容：订阅带 typeof 防御（缺桥静默降级不抛错）', () => {
+    const main = readRoot('src/renderer/main.ts');
+    assert.match(main,
+      /typeof window\.clipboardAPI\.onModifierPassthrough === 'function'/,
+      '订阅前 typeof 防御（旧主进程无此桥时静默降级）');
+  });
+});
+
+// ==================== L. Alt 穿透提示（首次/更新后弹窗，2026-10-13） ====================
+
+describe('L. Alt 穿透提示：欢迎页双路径展示与一次性标记', () => {
+  const ROOT = path.join(__dirname, '..');
+  const readRoot = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('L1 版本变化 + 未看提示：欢迎页附加 Alt 穿透条目，关闭回写双标记', async () => {
+    const h = loadWiring({ welcome: { shouldShow: true, version: '1.0.13', showAltPassTip: true } });
+    await h.settle();
+    const overlay = h.document.getElementById('welcomeOverlay');
+    assert.strictEqual(overlay.hidden, false, '欢迎页已展示');
+    assert.ok(String(h.document.getElementById('welcomeTitle').textContent).includes('欢迎使用'));
+    const text = String(h.document.getElementById('welcomeText').innerHTML);
+    assert.ok(text.includes('Alt') && text.includes('穿透'), '欢迎文案含 Alt 穿透新功能条目');
+
+    h.document.getElementById('welcomeCloseBtn').dispatch('click');
+    assert.strictEqual(overlay.hidden, true, '关闭后隐藏');
+    assert.strictEqual(h.window._calls.setWelcomeShown, 1, '回写版本已展示');
+    assert.strictEqual(h.window._calls.setAltPassTipShown, 1, '回写 Alt 提示标记');
+    assert.deepStrictEqual(h.window._calls.setOverlayActive, [true, false],
+      '展示期挂起自动隐藏，关闭恢复（BUG1 语义不破）');
+  });
+
+  test('L2 存量用户（同版本未看提示）：独立弹新功能提示，关闭回写标记', async () => {
+    const h = loadWiring({ welcome: { shouldShow: false, version: '1.0.12', showAltPassTip: true } });
+    await h.settle();
+    const overlay = h.document.getElementById('welcomeOverlay');
+    assert.strictEqual(overlay.hidden, false, '独立提示已展示');
+    assert.ok(String(h.document.getElementById('welcomeTitle').textContent).includes('新功能'), '独立提示标题');
+    const text = String(h.document.getElementById('welcomeText').innerHTML);
+    assert.ok(text.includes('穿透'), '提示文案含穿透说明');
+
+    h.document.getElementById('welcomeCloseBtn').dispatch('click');
+    assert.strictEqual(h.window._calls.setAltPassTipShown, 1, '回写 Alt 提示标记（一次性）');
+    assert.strictEqual(h.window._calls.setWelcomeShown, 1,
+      'persistent 流程统一回写（主进程版本回写幂等空转）');
+  });
+
+  test('L3 已看提示且无版本变化：不弹窗、零回写', async () => {
+    const h = loadWiring({ welcome: { shouldShow: false, version: '1.0.12', showAltPassTip: false } });
+    await h.settle();
+    assert.strictEqual(h.document.getElementById('welcomeOverlay').hidden, true, '不弹窗');
+    assert.strictEqual(h.window._calls.setAltPassTipShown, 0, '无标记回写');
+    assert.deepStrictEqual(h.window._calls.setOverlayActive, [], '未触发 overlay 挂起');
+  });
+
+  test('L4 关于流复用 overlay：再次打开时文案恢复默认快照，不残留提示文案', async () => {
+    const h = loadWiring({ welcome: { shouldShow: false, version: '1.0.12', showAltPassTip: true } });
+    await h.settle();
+    h.document.getElementById('welcomeCloseBtn').dispatch('click'); // 关独立提示
+    assert.ok(typeof h.handlers.aboutShow === 'function', 'about 回调已注册');
+    h.handlers.aboutShow('9.9.9');
+    assert.ok(String(h.document.getElementById('welcomeTitle').textContent).includes('关于'), '关于模式标题');
+    assert.strictEqual(String(h.document.getElementById('welcomeText').innerHTML), '',
+      '文案恢复加载期默认（桩 DOM 默认为空串），不残留 Alt 提示文案');
+  });
+
+  test('L5 全链路字面量：storage 标记 / 主进程 handler / preload 桥 / 渲染层双路径', () => {
+    const storage = readRoot('src/main/storage.ts');
+    assert.match(storage, /getAltPassTipShown/, 'storage 读标记');
+    assert.match(storage, /setAltPassTipShown/, 'storage 写标记');
+
+    const index = readRoot('src/main/index.ts');
+    assert.match(index, /showAltPassTip/, 'get-welcome-state 携带提示标记');
+    assert.match(index, /set-alt-pass-tip-shown/, '主进程注册标记回写 handler');
+
+    const preload = readRoot('src/renderer/preload.ts');
+    assert.ok(preload.includes("'set-alt-pass-tip-shown'"), 'preload 暴露回写频道');
+
+    const main = readRoot('src/renderer/main.ts');
+    assert.match(main, /showAltPassTip/, '渲染层消费提示标记');
+    assert.ok(main.includes('ClipSense 新功能'), '独立提示标题落盘');
   });
 });

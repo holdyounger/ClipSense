@@ -53,7 +53,7 @@ interface EdgeMainWindow {
   showInactive: () => void;
   setBounds: (bounds: EdgeRect) => void;
   setMinimumSize: (minWidth: number, minHeight: number) => void;
-  setIgnoreMouseEvents: (ignore: boolean) => void;
+  setIgnoreMouseEvents: (ignore: boolean, opts?: { forward?: boolean }) => void;
   webContents: EdgeWebContents;
 }
 
@@ -97,6 +97,8 @@ const { WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_HALF_WIDTH } = require('./window-dim
   WINDOW_HEIGHT: number;
   WINDOW_HALF_WIDTH: number;
 };
+// 修饰键按住穿透状态机（2026-10-13，触发键=Alt）：纯逻辑防抖 + 边沿生成；键态探针由 index.ts 注入
+const { createModifierPassthrough } = require('./modifier-passthrough') as typeof import('./modifier-passthrough');
 
 class EdgeDetector {
   mainWindow: EdgeMainWindow;
@@ -139,6 +141,12 @@ class EdgeDetector {
   _onHidden: (() => void) | null = null;
   /** 弹出回调（setOnShown 注入） */
   _onShown: (() => void) | null = null;
+  /** 修饰键（Alt）全局键态探针（index.ts 注入 koffi GetAsyncKeyState；null=未注入，功能禁用） */
+  _modProbe: (() => boolean) | null;
+  /** 穿透链路取证日志句柄（index.ts 注入，落盘 userData；null=不落盘） */
+  _modDiag: ((msg: string) => void) | null;
+  /** 穿透状态机（纯逻辑：防抖 + 边沿生成，modifier-passthrough；键位无关，探针决定键位） */
+  _modPass: ReturnType<typeof createModifierPassthrough>;
 
   constructor(mainWindow: EdgeMainWindow, triggerWindow: EdgeTriggerWindow | null = null) {
     this.mainWindow = mainWindow;
@@ -198,6 +206,9 @@ class EdgeDetector {
      */
     this._showGeneration = 0;
     this._isHiding = false;
+    this._modProbe = null;
+    this._modDiag = null;
+    this._modPass = createModifierPassthrough();
   }
 
   /**
@@ -231,6 +242,12 @@ class EdgeDetector {
     this._onWindowVisibilityChanged = typeof callback === 'function' ? callback : null;
   }
 
+  /** 修饰键（Alt）全局键态探针注入（koffi GetAsyncKeyState；null=禁用穿透）；diag=取证日志句柄 */
+  setModifierProbe(probe: (() => boolean) | null, diag?: (msg: string) => void): void {
+    this._modProbe = typeof probe === 'function' ? probe : null;
+    this._modDiag = typeof diag === 'function' ? diag : null;
+  }
+
   start(): void {
     if (this.isActive) return;
 
@@ -257,6 +274,7 @@ class EdgeDetector {
     this._cancelHideAnimation();
     this._cancelShowAnimation();
     this._appliedOpacity = null;
+    this._modPass.reset(); // 停用即清穿透确认态：下次 start 后按当前键态重新确认
     this._syncWindowOpacity(); // 模块停用：复位不透明，不留残效
     console.log('[EdgeDetector] 停止边缘检测');
   }
@@ -377,6 +395,7 @@ class EdgeDetector {
       //（以上均在 header-hover.js 状态机内）；状态翻转才走 IPC。
       // drag 区吞 DOM 鼠标事件（约束 1），渲染层 :hover 不可靠 → 判定必须在主进程。
       if (this.isWindowVisible && !this._isHiding
+          && !this._modPass.isActive() // 穿透期间面板 inert：冻结 header hover 判定（读 OS 光标坐标，与命中无关）
           && Date.now() >= (this._dragResumeAt || 0)) { // D-2：拖拽结束 200ms 缓冲内冻结判定
         const inHeader = isCursorInHeaderRegion(point, wb);
         const { changed, state } = this._headerHover.update(inHeader);
@@ -391,6 +410,42 @@ class EdgeDetector {
       // ===== 两段式窗口透明度（2026-09-30）：固定 80% / 倒计时线性降至可透视档 =====
       if (this.isWindowVisible && !this._isHiding) {
         this._syncWindowOpacity();
+      }
+
+      // ===== 修饰键（Alt）按住穿透（2026-10-13，原 Ctrl 方案键位迁移）：按住 Alt 时窗口对鼠标完全不存在 =====
+      // 键态必须主进程轮询 GetAsyncKeyState：面板 WS_EX_NOACTIVATE 不夺焦，用户按
+      // Alt 时焦点在他处，渲染层 keydown/keyup 不可达（paste-bridge 同坑已证）。
+      // 100ms 轮询 + 状态机 2 拍防抖；确认边沿才动 setIgnoreMouseEvents。
+      if (this._modProbe && this.isWindowVisible && !this._isHiding) {
+        const { active, changed } = this._modPass.tick({ isDown: this._modProbe });
+        if (changed) {
+          if (this._modDiag) this._modDiag(`[S3] 状态机确认边沿 → active=${active}`);
+          try {
+            // 不带 forward（=false）：穿透期间渲染层完全收不到鼠标事件 = 彻底惰性
+            //（v1 forward:true 会把 mousemove 镜像回渲染层，面板仍响应 ≈ 没穿透，实机返工点）；
+            // 键释放解除 ignore 时 Windows 重新投递 WM_MOUSEMOVE，悬停语义自然恢复。
+            // 自动隐藏由主进程轮询 isOverPanel 兑底（几何判定，不依赖渲染层事件）。
+            this.mainWindow.setIgnoreMouseEvents(active);
+            if (this._modDiag) this._modDiag(`[S4] setIgnoreMouseEvents(${active}) 调用成功`);
+          } catch (err) {
+            if (this._modDiag) this._modDiag(`[S4] setIgnoreMouseEvents 异常: ${(err as Error).message}`);
+          }
+          // 渲染层视觉反馈推送（body 态 + hint 文案）：此前缺失——渲染层订阅了频道但
+          // 主进程从未 send，K1 桩直驱回调掩盖了断链（2026-10-13 键位迁移时补上）
+          if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+            try { this.mainWindow.webContents.send('modifier-passthrough', active); } catch (_) { /* 销毁竞态 */ }
+          }
+          if (active) {
+            // 穿透瞬间面板必须 inert：清 header hover 状态机并回推 false，
+            // 防止「按住 Alt 前光标已悬停 header → 穿透后 header 卡在展开态」。
+            this._headerHover.reset();
+            this._headerHoverLast = false;
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+              this.mainWindow.webContents.send('header:hover', false);
+            }
+          }
+          console.log(`[EdgeDetector] Alt 穿透 ${active ? '开启（鼠标事件完全穿透）' : '关闭'}`);
+        }
       }
     } catch (err) {
       console.error(`[EdgeDetector] 检测错误: ${(err as Error).message}`);
@@ -468,6 +523,7 @@ class EdgeDetector {
     // 恢复正常面板前解除触发条阶段的最小尺寸限制。
     this.mainWindow.setMinimumSize(0, 0);
     this.mainWindow.setIgnoreMouseEvents(false);
+    this._modPass.reset(); // 残留确认态不跨显示周期：弹回后按当前键态重新确认
     this.mainWindow.setBounds({
       x: Math.round(targetX),
       // targetX/Y 由三条路径成对赋值（隐藏位/拖拽位/工作区回退），逻辑上恒同时有值

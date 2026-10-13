@@ -443,6 +443,22 @@ class HistoryStorage {
     if (typeof v !== 'string' || !v) return;
     this._writeConfig({ lastShownVersion: v });
   }
+
+  /**
+   * 读取「Alt 穿透功能提示已展示」一次性标记（2026-10-13）
+   * 语义：独立于版本号——同版本内已看过欢迎页、但未见过 Alt 新功能提示的
+   * 存量用户（lastShownVersion 已等于当前版本）也能补看一次专属提示。
+   */
+  getAltPassTipShown(): boolean {
+    return this._readConfig().altPassTipShown === true;
+  }
+
+  /**
+   * 写入「Alt 穿透功能提示已展示」（合并写入；只置 true 不回退）
+   */
+  setAltPassTipShown(): void {
+    this._writeConfig({ altPassTipShown: true });
+  }
 }
 
 // CJS 单导出：require('./storage') 直接得到类本身（与 .js 原版 module.exports 形状一致）

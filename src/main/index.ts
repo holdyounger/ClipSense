@@ -111,6 +111,8 @@ interface IndexStorageApi {
   setTagSettings: (settings: IndexTagSettings) => void;
   getLastShownVersion: () => string;
   setLastShownVersion: (v: string) => void;
+  getAltPassTipShown: () => boolean;
+  setAltPassTipShown: () => void;
   isEncryptionAvailable: () => boolean;
   getCustomRules: () => Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>;
   setCustomRules: (rules: Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>) => void;
@@ -157,6 +159,58 @@ const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tr
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
+
+// ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
+// 面板 WS_EX_NOACTIVATE 不夺焦：用户按 Alt 时系统焦点在目标应用，渲染层收不到
+// keydown/keyup（GetKeyState 也只反映本线程队列）——必须 GetAsyncKeyState 全局态。
+// koffi 惰性绑定：首次探针调用才 require；绑定失败/非 win32 恒 false = 功能自动禁用。
+// VK_MENU(0x12) = Alt：左右 Alt 共享同一虚键码，一次查询覆盖两键。
+const VK_MENU = 0x12;
+let _modUser32: { GetAsyncKeyState: (vk: number) => number } | null = null;
+let _modBindLogged = false; // 一次性诊断：绑定失败静默 = 整条链路死掉且无提示
+let _lastRawMod: boolean | null = null; // 原始键态变化检测（仅在变化拍落盘，不刷屏）
+
+/** 取证日志（§5-③）：console 在打包版/窗口隐藏期不可见，落盘 userData 逐站编号 */
+function _modDiag(line: string): void {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const { app } = require('electron') as { app?: { getPath: (p: string) => string } };
+    if (!app) return;
+    const file = path.join(app.getPath('userData'), 'modifier-passthrough-diag.log');
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+  } catch (err) { /* 诊断失败不影响功能 */ }
+}
+
+function _isAltPhysicallyDown(): boolean {
+  if (process.platform !== 'win32') return false;
+  try {
+    if (!_modUser32) {
+      const koffi = require('koffi');
+      const user32 = koffi.load('user32.dll');
+      _modUser32 = {
+        GetAsyncKeyState: user32.func('int16 __stdcall GetAsyncKeyState(int nVirtKey)'),
+      };
+      console.log('[AltPass] user32 探针绑定成功（GetAsyncKeyState/VK_MENU）');
+      _modDiag('[S1] koffi user32 绑定成功（VK_MENU/Alt）');
+    }
+    // int16 → 无符号 → 最高位 = 物理按下（paste-bridge 同款判定位）
+    const raw = _modUser32.GetAsyncKeyState(VK_MENU) & 0xffff;
+    const down = (raw & 0x8000) !== 0;
+    if (down !== _lastRawMod) {
+      _lastRawMod = down;
+      _modDiag(`[S2] GetAsyncKeyState 原始值变化 → down=${down} (raw=0x${raw.toString(16)})`);
+    }
+    return down;
+  } catch (err) {
+    if (!_modBindLogged) {
+      _modBindLogged = true;
+      console.log('[AltPass] 探针绑定失败，穿透禁用:', err);
+      _modDiag(`[S1] 绑定失败: ${(err as Error).message}`);
+    }
+    return false;
+  }
+}
 // 尽早启动 Crashpad：覆盖主/渲染/GPU/native 崩溃，本地 .dmp 不上传（先于 app ready）
 crashDump.startCrashReporter();
 
@@ -900,9 +954,16 @@ class ClipboardSpikeApp {
     ipcMain.handle('get-welcome-state', () => ({
       shouldShow: app.getVersion() !== this.storage.getLastShownVersion(),
       version: app.getVersion(),
+      // Alt 穿透功能提示一次性标记（2026-10-13）：独立于版本号，
+      // 覆盖「同版本已看过欢迎页、但未见过 Alt 提示」的存量用户
+      showAltPassTip: !this.storage.getAltPassTipShown(),
     }));
     ipcMain.handle('set-welcome-shown', () => {
       this.storage.setLastShownVersion(app.getVersion());
+      return { ok: true };
+    });
+    ipcMain.handle('set-alt-pass-tip-shown', () => {
+      this.storage.setAltPassTipShown();
       return { ok: true };
     });
 
@@ -1144,6 +1205,9 @@ class ClipboardSpikeApp {
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
     // createWindow() 已同步创建两窗口；! 为类型收窄（运行时恒非空）
     this.edgeDetector = new EdgeDetector(this.mainWindow!, this.triggerWindow!);
+    // 修饰键（Alt）按住穿透（2026-10-13）：注入全局键态探针（koffi 惰性绑定，非 win32 恒 false）+
+    // 取证日志句柄（§5-③：落盘 userData，逐站编号定位链路断点）
+    this.edgeDetector.setModifierProbe(() => _isAltPhysicallyDown(), _modDiag);
     this.edgeDetector.setOnHidden(() => {
       // 面板收起后句柄生命周期结束：下次唤出时重新 capture。
       // （双击不收面板，同一显示周期内句柄持续有效，支持连续粘贴多条目）

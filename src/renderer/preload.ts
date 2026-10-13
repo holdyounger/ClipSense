@@ -157,6 +157,10 @@ const clipboardAPI = {
   // 窗口可见性权威信号（2026-09-30）：backgroundThrottling:false 下 visibilityState 失灵
   onWindowVisibility: (callback: (visible: boolean) => void): void =>
     subscribe<boolean>('window:visibility', callback),
+  // 修饰键（Alt）按住穿透（2026-10-13）：主进程 GetAsyncKeyState 状态机确认后推送；
+  // 渲染层仅做视觉反馈（body.mod-pass + hint 文案），逻辑权威在主进程
+  onModifierPassthrough: (callback: (active: boolean) => void): void =>
+    subscribe<boolean>('modifier-passthrough', callback),
   // 语言切换（2026-09-30 二级菜单取消后迁托盘）：托盘 _switchLang 推送新语言
   onLangChanged: (callback: (lang: string) => void): void =>
     subscribe<string>('lang-changed', callback),
@@ -165,6 +169,8 @@ const clipboardAPI = {
   // 升级欢迎页（2026-09-30）：版本变化检测 + 已展示回写
   getWelcomeState: (): Promise<unknown> => ipcRenderer.invoke('get-welcome-state'),
   setWelcomeShown: (): Promise<void> => ipcRenderer.invoke('set-welcome-shown') as Promise<void>,
+  // Alt 穿透功能提示一次性标记回写（2026-10-13）
+  setAltPassTipShown: (): Promise<void> => ipcRenderer.invoke('set-alt-pass-tip-shown') as Promise<void>,
   // 关于页（2026-09-30）：复用欢迎 overlay，托盘「关于」触发
   onAboutShow: (callback: (version: string) => void): void =>
     subscribe<string>('about:show', callback),

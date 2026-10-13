@@ -570,29 +570,24 @@ html, body {
 .list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 8px; /* UI 重设计 v2（2026-10-13）：滑轨撤销，卡片恢复满宽，单钮悬浮不占布局 */
 }
 
 /* 优化滚动条，与主界面风格一致 */
+/* 原生滚动条隐藏（2026-10-13 Bug1）：返回顶部滑轨（.btt）已完整承担滚动指示
+   （进度填充/百分比/日期刻度/点击跳转），双滑轨并存视觉冗余（todo-hub 同款唯一化）。 */
+.list {
+  scrollbar-width: none; /* Firefox 语义对齐（防御性，主渲染为 Chromium） */
+}
+
 .list::-webkit-scrollbar {
-  width: 6px;
+  display: none;
 }
 
-.list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.list::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-.list::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
-}
-
-/* 返回顶部：悬浮于列表右下角（footer 上方），滚动超过阈值才出现。
-   用 visibility+opacity 切换而非 display，隐藏时不拦截列表项点击。 */
+/* 返回顶部（2026-10-13 UI 重设计 v2）：单钮 + 环形进度——复用 pinBtn 倒计时环的
+   本仓既有视觉隐喻（方案 B），滚动越深环越满，点击回顶。悬浮右下角零布局占用
+   （水槽撤销、卡片恢复满宽）。透明度契约：底色 calc 乘算消费 --win-alpha；
+   环与图标 = var(--accent) 全不透明（低 alpha 视觉锚点，紫底白图标「升级悬浮球」不回归）。 */
 .back-top-btn {
   position: absolute;
   right: 14px;
@@ -602,18 +597,17 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(162, 155, 254, calc(0.4 * var(--win-alpha, 1)));
+  border: none;
   border-radius: 50%;
-  /* 透明度覆盖（2026-09-30）：calc 乘算消费 --win-alpha，保持 0.85 基调；文字/svg 仍全不透明 */
-  background: rgba(108, 92, 231, calc(0.85 * var(--win-alpha, 1)));
-  color: #fff;
+  background: rgba(42, 42, 50, calc(0.95 * var(--win-alpha, 1)));
+  color: var(--accent);
   cursor: pointer;
   z-index: 40;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   opacity: 0;
   visibility: hidden;
   transform: translateY(8px);
-  transition: opacity 0.2s, visibility 0.2s, transform 0.2s, background 0.15s;
+  transition: opacity 0.2s, visibility 0.2s, transform 0.2s, color 0.15s, box-shadow 0.2s;
   -webkit-app-region: no-drag;
 }
 
@@ -624,17 +618,57 @@ html, body {
 }
 
 .back-top-btn:hover {
-  /* 透明度覆盖（2026-09-30）：accent-hover 的 RGB + --win-alpha（原为实色 accent-hover） */
-  background: rgba(162, 155, 254, var(--win-alpha, 1));
+  color: var(--accent-hover);
+  box-shadow: 0 0 14px rgba(108, 92, 231, 0.45);
+}
+
+.back-top-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(162, 155, 254, 0.8);
 }
 
 .back-top-btn:active {
   transform: translateY(1px);
 }
 
-.back-top-btn svg {
-  width: 16px;
-  height: 16px;
+.btt-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg); /* 进度从 12 点方向顺时针（表盘惯例，与 pinBtn 环一致） */
+  pointer-events: none;
+}
+
+.btt-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.btt-ring-track {
+  stroke: rgba(61, 61, 72, calc(0.9 * var(--win-alpha, 1)));
+}
+
+.btt-ring-fill {
+  stroke: var(--accent); /* 全不透明锚点：低 alpha 下进度环仍清晰 */
+  transition: stroke-dashoffset 0.1s linear, stroke 0.15s;
+}
+
+.back-top-btn:hover .btt-ring-fill {
+  stroke: var(--accent-hover);
+}
+
+.btt-icon {
+  width: 14px;
+  height: 14px;
+  pointer-events: none; /* 图形点击归位到 button */
+}
+
+/* 修饰键（Alt）按住穿透（2026-10-13）：body.mod-pass 期间 hint 提示转主题亮色。
+   color 全不透明消费 var(--accent-hover)：窗口降透明（--win-alpha 低至 0.4）时
+   仍是可读视觉锚点，与穿透状态机的紫色图标回弹设计同源。 */
+body.mod-pass .hint {
+  color: var(--accent-hover);
 }
 
 /* 日期分组线：每天之间 */

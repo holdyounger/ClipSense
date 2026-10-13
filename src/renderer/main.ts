@@ -35,6 +35,8 @@ interface RendererCountdownState {
 interface MainWelcomeState {
   shouldShow?: boolean;
   version?: string;
+  /** Alt 穿透功能提示一次性标记（2026-10-13）：独立于版本号，覆盖存量用户补提示 */
+  showAltPassTip?: boolean;
 }
 
 /** parseDateQuery 返回（key = 自然日过滤，year = 按年过滤，二选一） */
@@ -75,6 +77,7 @@ interface Window {
     getTagSettings: () => Promise<RendererTagSettings>;
     getWelcomeState: () => Promise<MainWelcomeState | null>;
     setWelcomeShown: () => Promise<void>;
+    setAltPassTipShown: () => Promise<void>;
     requestEntryPulse: (id: string) => void;
     diagHit: (data: Record<string, unknown>) => void;
     onHistoryUpdated: (cb: (history: MainHistoryItem[]) => void) => void;
@@ -82,6 +85,7 @@ interface Window {
     onHeaderHover: (cb: (expanded: boolean) => void) => void;
     onWindowOpacity: (cb: (alpha: number) => void) => void;
     onWindowVisibility: (cb: (visible: boolean) => void) => void;
+    onModifierPassthrough: (cb: (active: boolean) => void) => void;
     onLangChanged: (cb: (lang: string) => void) => void;
     onAboutShow: (cb: (version: string) => void) => void;
     onTagSettingsUpdated: (cb: (settings: RendererTagSettings) => void) => void;
@@ -98,7 +102,9 @@ const listEl = document.getElementById('list')!;
 const pinBtn = document.getElementById('pinBtn')!;
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const hintEl = document.getElementById('hint')!;
-const backTopBtn = document.getElementById('backTopBtn')!;
+// 返回顶部（2026-10-13 UI 重设计 v2）：单钮 + 环形进度
+const backTopBtn = document.getElementById('backTopBtn') as HTMLButtonElement;
+const bttRingFill = document.getElementById('bttRingFill') as HTMLElement;
 
 let isPinned = false;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
@@ -834,18 +840,40 @@ document.addEventListener('visibilitychange', () => {
   entryAnim.playPending(listEl as unknown as EntryListContainer);
 });
 
-// ========== 返回顶部 ==========
-// 监听挂在 listEl 上（renderHistory 只重建 innerHTML，容器本身不重建，监听不丢）。
-// 阈值 120px：列表 barely 滚动时不出按钮，避免和条目操作区视觉拥挤。
+// ========== 返回顶部（2026-10-13 UI 重设计 v2）：单钮 + 环形进度 ==========
+// 复用 pinBtn 倒计时环隐喻（方案 B）：滚动越深环越满（stroke-dashoffset 递减），
+// 点击回顶。监听挂在 listEl 上（renderHistory 只重建 innerHTML，容器本身不重建，
+// 监听不丢）。阈值 120px：列表 barely 滚动时不出现，避免和条目操作区视觉拥挤。
 const BACK_TOP_THRESHOLD = 120;
+const BTT_RING_CIRCUMFERENCE = 100.53; // 2π×16，与 index.html 进度圆 dasharray 一致
+
+function bttUpdate(): void {
+  const max = listEl.scrollHeight - listEl.clientHeight;
+  const ratio = max > 0 ? Math.min(1, Math.max(0, listEl.scrollTop / max)) : 0;
+  backTopBtn.classList.toggle('visible', listEl.scrollTop > BACK_TOP_THRESHOLD);
+  bttRingFill.style.strokeDashoffset = String(BTT_RING_CIRCUMFERENCE * (1 - ratio));
+}
 
 listEl.addEventListener('scroll', () => {
-  backTopBtn.classList.toggle('visible', listEl.scrollTop > BACK_TOP_THRESHOLD);
+  bttUpdate();
 }, { passive: true });
 
+// 列表内容重建（历史更新/搜索/标签筛选）改变 scrollHeight → 重算环进度；
+// MutationObserver 在测试桩不存在 → typeof 防御静默跳过（scroll 链路兑底）
+if (typeof MutationObserver === 'function') {
+  let bttRoTimer: ReturnType<typeof setTimeout> | null = null;
+  new MutationObserver(() => {
+    if (bttRoTimer) clearTimeout(bttRoTimer);
+    bttRoTimer = setTimeout(bttUpdate, 100);
+  }).observe(listEl, { childList: true, subtree: false });
+}
+
+// 回顶：smooth 滚动期间 scroll 事件链自动刷新进度环
 backTopBtn.addEventListener('click', () => {
   listEl.scrollTo({ top: 0, behavior: 'smooth' });
 });
+
+bttUpdate(); // 初始态：空列表/未滚动 → 钮隐藏、环 0%
 
 // ========== 窗口固定 ==========
 async function togglePin(): Promise<void> {
@@ -1035,6 +1063,18 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onWindowOpacity === 'funct
   });
 }
 
+// 修饰键（Alt）按住穿透（2026-10-13）：主进程 GetAsyncKeyState 状态机确认后推送。
+// 渲染层只做视觉反馈：body.mod-pass 挂/摘 + hint 文案切换；逻辑权威在主进程
+//（面板 WS_EX_NOACTIVATE 不夺焦，渲染层收不到真实 keydown/keyup，此推送是唯一信号源）。
+if (window.clipboardAPI && typeof window.clipboardAPI.onModifierPassthrough === 'function') {
+  window.clipboardAPI.onModifierPassthrough((active) => {
+    if (active) document.body.classList.add('mod-pass');
+    else document.body.classList.remove('mod-pass');
+    const hintP = document.getElementById('hint');
+    if (hintP) hintP.innerHTML = active ? t('passthroughHint') : t('hintHtml');
+  });
+}
+
 // 语言切换（2026-09-30 二级菜单取消后迁托盘）：承接原菜单 handler 的三连调语义
 //（setLang + applyStaticText + refresh）；订阅须在 onWindowVisibility 语义块外独立注册
 if (window.clipboardAPI && typeof window.clipboardAPI.onLangChanged === 'function') {
@@ -1110,12 +1150,19 @@ if (window.clipboardAPI && window.clipboardAPI.onTagRulesUpdated) {
 // about（托盘「关于」触发，只读展示不回写）。
 // 关闭失效教训：.welcome-overlay 显式 display:flex 的作者样式覆盖 hidden 属性的
 // UA display:none——必须 [hidden] 锚定规则（main.css），JS 开合只切换 hidden 属性。
-function openWelcomeOverlay({ title, version, btnText, persistent }: { title: string; version: string; btnText: string; persistent: boolean }): void {
+// 欢迎页默认文案快照（2026-10-13）：openWelcomeOverlay textHtml 缺省时恢复默认
+//（关于流复用同一 overlay 不带文案参数，不能残留上一次的提示文案）
+const welcomeDefaultTextHtml = document.getElementById('welcomeText')?.innerHTML ?? '';
+
+function openWelcomeOverlay({ title, version, btnText, persistent, textHtml }: { title: string; version: string; btnText: string; persistent: boolean; textHtml?: string }): void {
   const overlay = document.getElementById('welcomeOverlay');
   if (!overlay) return;
   document.getElementById('welcomeTitle')!.textContent = title;
   document.getElementById('welcomeVersion')!.textContent = version;
   document.getElementById('welcomeCloseBtn')!.textContent = btnText;
+  // 文案可注入（Ctrl 穿透提示条目/独立提示）；缺省恢复默认快照（关于流复用）
+  const textEl = document.getElementById('welcomeText');
+  if (textEl) textEl.innerHTML = textHtml ?? welcomeDefaultTextHtml;
   overlay.hidden = false; // CSS [hidden] 规则已锚定，属性切换即开合
   // BUG1（2026-10-11）：overlay（关于/欢迎页）打开期间挂起自动隐藏倒计时
   window.clipboardAPI.setOverlayActive(true);
@@ -1134,19 +1181,39 @@ function closeWelcomeOverlay(persistent: boolean): void {
   if (persistent && window.clipboardAPI.setWelcomeShown) {
     window.clipboardAPI.setWelcomeShown().catch(() => { /* 回写失败不阻塞 */ });
   }
+  // Alt 穿透提示一次性标记（2026-10-13）：两个 persistent 流程（欢迎附加/独立提示）
+  // 关闭时一并回写；独立提示流程下 set-welcome-shown 为幂等空转（版本已一致）
+  if (persistent && window.clipboardAPI.setAltPassTipShown) {
+    window.clipboardAPI.setAltPassTipShown().catch(() => { /* 回写失败不阻塞 */ });
+  }
 }
 
-// 升级流：主进程判定版本变化 → 欢迎模式展示（关闭回写已展示版本）
+// 展示流（2026-10-13 双路径）：① 首次安装/版本更新 → 欢迎页（未看过 Ctrl 提示则附加条目）；
+// ② 存量用户（同版本已看过欢迎页、未见过 Ctrl 提示）→ 独立弹一次专属提示。
+// 标记关闭时回写（persistent 流程统一走 closeWelcomeOverlay）；只提示一次不随每次更新重弹。
 (async () => {
   try {
     const st = await window.clipboardAPI.getWelcomeState();
-    if (!st || !st.shouldShow) return;
-    openWelcomeOverlay({
-      title: '欢迎使用 ClipSense',
-      version: `v${st.version}`,
-      btnText: '开始使用',
-      persistent: true,
-    });
+    if (!st) return;
+    if (st.shouldShow) {
+      openWelcomeOverlay({
+        title: '欢迎使用 ClipSense',
+        version: `v${st.version}`,
+        btnText: '开始使用',
+        persistent: true,
+        textHtml: st.showAltPassTip
+          ? '复制任意内容（Ctrl+C），它会自动出现在下方列表。<br>双击列表条目可粘贴回原窗口；悬停顶部可展开搜索。<br><b>新功能：按住 <kbd>Alt</kbd> 时鼠标将穿透本面板，可直接点击下方的窗口；松开恢复。</b>'
+          : undefined,
+      });
+    } else if (st.showAltPassTip) {
+      openWelcomeOverlay({
+        title: 'ClipSense 新功能',
+        version: `v${st.version}`,
+        btnText: '知道了',
+        persistent: true,
+        textHtml: '按住 <kbd>Alt</kbd> 时，鼠标点击/滚轮将穿透面板直达下层窗口，松开恢复正常。<br>适合不收起面板的前提下操作背后的应用。',
+      });
+    }
   } catch (err) {
     console.warn('[Welcome] 初始化失败（不阻塞主流程）:', (err as Error).message);
   }
