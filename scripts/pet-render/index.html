@@ -1,0 +1,117 @@
+<!doctype html>
+<!-- pet-render/index.html - 离线渲染页 v3（2026-10-14）：混元 3D 比熊（静态模型）
+     idle = 360° 转身 + 呼吸（8s/96帧，首尾无缝）；react = 弹跳两连（3s/36帧）
+     归一化一次锁定 baseScale，动画只乘净系数（不再逐帧 Box3 循环依赖） -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>html,body{margin:0;overflow:hidden;background:transparent}</style>
+<script type="importmap">
+{"imports":{"three":"../../node_modules/three/build/three.module.js","three/addons/":"../../node_modules/three/examples/jsm/"}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const { ipcRenderer } = require('electron');
+const fs = require('fs');
+const path = require('path');
+
+const OUT_ROOT = path.join(__dirname, '..', '..', 'temp', 'pet-frames-hunyuan');
+const W = 300, H = 380, FPS = 12;
+const progress = (line) => ipcRenderer.send('render-progress', line);
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, W / H, 0.05, 50);
+camera.position.set(0, 0.75, 2.9);
+camera.lookAt(0, 0.6, 0);
+scene.add(new THREE.AmbientLight(0xffffff, 1.25));
+const key = new THREE.DirectionalLight(0xffffff, 1.5);
+key.position.set(1.2, 2.2, 2.4);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xdfe8ff, 0.6);
+fill.position.set(-1.5, 1.0, 1.5);
+scene.add(fill);
+
+const loader = new GLTFLoader();
+const buf = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'pet-model-hunyuan.glb'));
+const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+progress('GLB size=' + Math.round(buf.length / 1024 / 1024) + 'MB');
+
+loader.parse(arrayBuffer, '', (gltf) => {
+  const root = gltf.scene;
+  // 归一化一次：目标高 1.2、足底贴地、水平居中；锁定 baseScale
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const baseScale = 1.2 / Math.max(0.0001, size.y);
+  progress('raw ' + size.x.toFixed(2) + 'x' + size.y.toFixed(2) + 'x' + size.z.toFixed(2) + ' baseScale=' + baseScale.toFixed(4));
+  root.scale.setScalar(baseScale);
+  const b2 = new THREE.Box3().setFromObject(root);
+  const c2 = b2.getCenter(new THREE.Vector3());
+  root.position.set(root.position.x - c2.x, root.position.y - b2.min.y, root.position.z - c2.z);
+  const baseY = root.position.y;
+  scene.add(root);
+
+  async function renderFrames(name, frames, poseFn) {
+    const outDir = path.join(OUT_ROOT, name);
+    fs.mkdirSync(outDir, { recursive: true });
+    for (let f = 0; f < frames; f++) {
+      poseFn(f);
+      renderer.render(scene, camera);
+      const url = canvas.toDataURL('image/png');
+      fs.writeFileSync(path.join(outDir, 'frame_' + String(f).padStart(4, '0') + '.png'),
+        Buffer.from(url.split(',')[1], 'base64'));
+      if (f % 12 === 0) progress(name + ' ' + f + '/' + frames);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return frames;
+  }
+
+  (async () => {
+    try {
+      // idle：360° 转身 + 呼吸（96 帧无缝循环）
+      const n1 = await renderFrames('idle', 96, (f) => {
+        const t = f / 96;
+        root.rotation.y = t * Math.PI * 2;
+        const br = Math.sin(t * Math.PI * 2 * 1.75);
+        root.scale.set(
+          baseScale * (1 - 0.008 * br),
+          baseScale * (1 + 0.014 * br),
+          baseScale * (1 - 0.008 * br)
+        );
+        root.position.y = baseY;
+      });
+      // react：弹跳两连 + 快速摇摆（36 帧）
+      const n2 = await renderFrames('react', 36, (f) => {
+        const t = f / 36;
+        root.rotation.y = Math.sin(t * Math.PI * 4) * 0.25;
+        const hop = Math.abs(Math.sin(t * Math.PI * 2)) * 0.14;
+        root.position.y = baseY + hop;
+        const sq = Math.sin(t * Math.PI * 2);
+        root.scale.set(
+          baseScale * (1 - 0.04 * sq),
+          baseScale * (1 + 0.05 * sq),
+          baseScale * (1 - 0.04 * sq)
+        );
+      });
+      ipcRenderer.send('render-done', 'hunyuan idle=' + n1 + ' react=' + n2);
+    } catch (err) {
+      progress('渲染失败: ' + (err && err.message));
+      ipcRenderer.send('render-done', 'FAILED');
+    }
+  })();
+}, (err) => {
+  progress('GLB 解析失败: ' + (err && err.message));
+  ipcRenderer.send('render-done', 'FAILED');
+});
+</script>
+</body>
+</html>
