@@ -14,10 +14,23 @@ const DEST = path.join(__dirname, '..', 'dist', 'renderer');
 fs.mkdirSync(DEST, { recursive: true });
 
 let copied = 0;
-for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
-  if (entry.isDirectory()) continue; // 渲染层当前为平面结构；子目录出现时在此扩展
-  if (entry.name.endsWith('.js') || entry.name.endsWith('.ts')) continue; // 代码由 tsc emit
-  fs.copyFileSync(path.join(SRC, entry.name), path.join(DEST, entry.name));
-  copied++;
+// 递归复制（2026-10-14 Live2D 接入）：live2d/（运行时库）与 hiyori/（模型资产）
+// 是子目录，原实现 readdirSync 后 isDirectory 即 continue 会整目录漏掉。
+// .js 跳过规则仅限渲染层根目录（源码由 tsc emit）；子目录的 .js 是 vendor 库
+//（pixi.min.js 等），必须随包分发（v8 实机教训：跳过规则误伤 → PIXI 插件未加载）
+function copyDir(srcDir, destDir, isRoot) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const s = path.join(srcDir, entry.name);
+    const d = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDir(s, d, false);
+    } else {
+      if (isRoot && (entry.name.endsWith('.js') || entry.name.endsWith('.ts'))) continue;
+      fs.copyFileSync(s, d);
+      copied++;
+    }
+  }
 }
-console.log(`[copy-assets] 复制 ${copied} 个静态资源 → dist/renderer/`);
+copyDir(SRC, DEST, true);
+console.log(`[copy-assets] 复制 ${copied} 个静态资源（含子目录） → dist/renderer/`);

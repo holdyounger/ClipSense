@@ -28,6 +28,12 @@
 /** 通用矩形（Electron Rectangle 结构化视图） */
 interface IndexBounds { x: number; y: number; width: number; height: number; }
 
+/** NativeImage 最小面（临时验证截图用，2026-10-14） */
+interface IndexNativeImage {
+  toPNG: () => Buffer;
+  getSize: () => { width: number; height: number };
+}
+
 /** WebContents 消费面（index.js 用到的子集） */
 interface IndexWebContents {
   send: (channel: string, ...args: unknown[]) => void;
@@ -38,6 +44,8 @@ interface IndexWebContents {
   openDevTools: (options?: { mode?: string }) => void;
   on: (channel: string, listener: (...args: unknown[]) => void) => void;
   isDestroyed: () => boolean;
+  /** 临时验证（2026-10-14 UI 验收）：菜单打开态渲染内容截图 */
+  capturePage: (opts?: { x?: number; y?: number }) => Promise<IndexNativeImage>;
 }
 
 /**
@@ -46,6 +54,7 @@ interface IndexWebContents {
  */
 interface IndexMainWindow {
   isDestroyed: () => boolean;
+  setAlwaysOnTop: (flag: boolean) => void;
   getBounds: () => IndexBounds;
   isVisible: () => boolean;
   isMinimized: () => boolean;
@@ -71,12 +80,30 @@ interface IndexTriggerWindow extends IndexMainWindow {
   _edge?: 'left' | 'right';
 }
 
+/** 桌宠舞台窗口（P0 spike）：主窗口面 + forward 语义的穿透开关 + getPosition（拖拽/持久化） */
+interface PetStageWindow {
+  isDestroyed: () => boolean;
+  hide: () => void;
+  showInactive: () => void;
+  setAlwaysOnTop: (flag: boolean, level?: 'screen-saver') => void;
+  getNativeWindowHandle: () => Buffer;
+  getBounds: () => { x: number; y: number; width: number; height: number };
+  setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  getPosition: () => number[];
+  setPosition: (x: number, y: number) => void;
+  setIgnoreMouseEvents: (ignore: boolean, opts?: { forward?: boolean }) => void;
+  loadFile: (filePath: string) => unknown;
+  destroy: () => void;
+  webContents: IndexWebContents;
+}
+
 /** 托盘消费面 */
 interface IndexTray {
   setToolTip: (tip: string) => void;
   setContextMenu: (menu: unknown) => void;
   on: (channel: string, listener: (...args: unknown[]) => void) => void;
   isDestroyed: () => boolean;
+  destroy: () => void;
   displayBalloon: (options: { title: string; content: string; icon: string; iconType: string }) => void;
 }
 
@@ -113,6 +140,10 @@ interface IndexStorageApi {
   setLastShownVersion: (v: string) => void;
   getAltPassTipShown: () => boolean;
   setAltPassTipShown: () => void;
+  getPetPosition: () => { x: number; y: number } | null;
+  setPetPosition: (pos: { x: number; y: number }) => void;
+  getPetScale: () => number;
+  setPetScale: (scale: number) => void;
   isEncryptionAvailable: () => boolean;
   getCustomRules: () => Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>;
   setCustomRules: (rules: Array<{ id: string; name: string; pattern: string; enabled: boolean; createdAt: number }>) => void;
@@ -129,7 +160,7 @@ interface IndexFocusTrackerApi {
   _trackedAt: number;
 }
 
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell } = require('electron') as {
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell, powerMonitor } = require('electron') as {
   app: any;
   BrowserWindow: any;
   globalShortcut: any;
@@ -143,7 +174,12 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, sc
   nativeImage: any;
   screen: any;
   shell: any;
+  powerMonitor: any;
 };
+// 置顶保活配套（2026-10-14，对照网易云桌宠取证）：禁用 Windows 遮挡计算，防止置顶
+// 透明小窗被 Chromium 判「被完全遮挡」后停渲染/降帧（桌宠动画莫名停帧第一嫌疑）。
+// 必须先于 app ready 注册；未知 feature 名被 Chromium 静默忽略，无副作用。
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
@@ -159,6 +195,7 @@ const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tr
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition } = require('./pet-manager') as typeof import('./pet-manager');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
 // 面板 WS_EX_NOACTIVATE 不夺焦：用户按 Alt 时系统焦点在目标应用，渲染层收不到
@@ -223,6 +260,21 @@ class ClipboardSpikeApp {
   pasteBridge: PasteBridgeInstance | null = null;   // init() 创建（.js 为 undefined，null 同 falsy 语义）
   focusTracker: IndexFocusTrackerApi | null = null; // 同上
   edgeDetector: EdgeDetectorInstance | null;
+  // 桌宠（P0 spike，2026-10-13）：舞台窗口与模式状态（_applyHideMode 驱动，PRD-桌宠系统 V0.2）
+  petStage: PetStageWindow | null = null;
+  _petModeOn: boolean = false;
+  _petPaintReady: boolean = false; // 渲染层双 rAF 首帧确认（paint-verified show，09-17 模式继承）
+  _petShowFallback: ReturnType<typeof setTimeout> | null = null; // 确认链异常兑底直显定时器
+  _petDragOffset: { dx: number; dy: number } | null = null;
+  _petAltActive: boolean = false;   // Alt 穿透态（edge-detector 边沿回调写入）
+  _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
+  _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
+  _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
+  _petCtxOpen: boolean = false;            // 右键菜单打开中（全窗可交互，渲染层 mouseleave 关闭）
+  _petCtxPollId: ReturnType<typeof setInterval> | null = null;
+  _petCtxHold: boolean = false; // 临时验证用：true 时失焦轮询暂停
+  _altRescueId: ReturnType<typeof setInterval> | null = null; // Alt 残留自愈轮询（2026-10-15）
+  _petCtxDir: { dirH: 'l' | 'r'; dirV: 'u' | 'd' } = { dirH: 'l', dirV: 'u' }; // 菜单打开期间的固定边方向（2026-10-15）
 
   constructor() {
     this.mainWindow = null;
@@ -366,6 +418,9 @@ class ClipboardSpikeApp {
   }
 
   initTray() {
+    // 幂等守卫（2026-10-13 桌宠模式引入重建）：模式切换刷新单选态需重建菜单，
+    // 销毁旧托盘防图标泄漏（原实现一次性创建，重建语义随桌宠功能引入）
+    if (this.tray && !this.tray.isDestroyed()) this.tray.destroy();
     // 托盘图标（16x16，Windows 推荐；@2x 供高分屏）
     const iconPath = path.join(__dirname, '../renderer/tray-icon.png');
     let icon = nativeImage.createFromPath(iconPath);
@@ -386,6 +441,24 @@ class ClipboardSpikeApp {
         submenu: [
           { label: '中文', type: 'radio', checked: this._getTrayLang() === 'zh-CN', click: () => this._switchLang('zh-CN') },
           { label: 'English', type: 'radio', checked: this._getTrayLang() === 'en', click: () => this._switchLang('en') },
+        ],
+      },
+      {
+        label: '隐藏模式',
+        submenu: [
+          { label: '桌宠（实验）', type: 'radio', checked: this._getHideMode() === 'pet', click: () => this._setHideMode('pet') },
+          { label: '贴边', type: 'radio', checked: this._getHideMode() === 'edge', click: () => this._setHideMode('edge') },
+          { label: '纯隐藏', type: 'radio', checked: this._getHideMode() === 'hidden', click: () => this._setHideMode('hidden') },
+        ],
+      },
+      {
+        label: '桌宠大小',
+        submenu: [
+          { label: '小（0.7×）', type: 'radio', checked: Math.abs(this._getPetScale() - 0.7) < 0.05, click: () => this._setPetScalePreset(0.7) },
+          { label: '标准（1×）', type: 'radio', checked: Math.abs(this._getPetScale() - 1) < 0.05, click: () => this._setPetScalePreset(1) },
+          { label: '大（1.3×）', type: 'radio', checked: Math.abs(this._getPetScale() - 1.3) < 0.05, click: () => this._setPetScalePreset(1.3) },
+          { label: '特大（1.6×）', type: 'radio', checked: Math.abs(this._getPetScale() - 1.6) < 0.05, click: () => this._setPetScalePreset(1.6) },
+          { label: '巨大（2×）', type: 'radio', checked: Math.abs(this._getPetScale() - 2) < 0.05, click: () => this._setPetScalePreset(2) },
         ],
       },
       {
@@ -442,6 +515,215 @@ class ClipboardSpikeApp {
       this.mainWindow.webContents.send('lang-changed', lang);
     }
   }
+
+  // ==================== 桌宠模式（P0 spike，2026-10-13，PRD-桌宠系统 V0.2） ====================
+
+  /** 隐藏模式（决策 1：缺省 edge 不惊扰存量用户；旧配置无此键同样回落 edge） */
+  _getHideMode(): 'pet' | 'edge' | 'hidden' {
+    try { return normalizeHideMode(this.storage._readConfig().hideMode); } catch (_) { return 'edge'; }
+  }
+
+  /** 切换隐藏模式：持久化 → 应用 → 重建托盘单选态 */
+  _setHideMode(mode: 'pet' | 'edge' | 'hidden'): void {
+    try { this.storage._writeConfig({ hideMode: mode }); } catch (_) { /* 持久化失败不阻断切换 */ }
+    this._applyHideMode();
+    this.initTray(); // 重建单选态（幂等守卫已内置，先 destroy 旧托盘）
+  }
+
+  // ==================== 桌宠大小可调（2026-10-14）：滚轮 + 托盘档位 ====================
+
+  /** 读缩放系数（storage 缺省 1，normalize 钳入档位边界） */
+  _getPetScale(): number {
+    try { return normalizeScale(this.storage.getPetScale()); } catch (_) { return 1; }
+  }
+
+  /** 设置缩放：持久化 → 重设舞台尺寸（底边锚定，防缩放时“脚下打滑”）→ 推送渲染层 */
+  _setPetScale(scale: number): void {
+    this._petScale = normalizeScale(scale);
+    try { this.storage.setPetScale(this._petScale); } catch (_) { /* 持久化失败不影响当次生效 */ }
+    // 去 resize 化（2026-10-20）：窗口恒定 220x220，缩放仅推渲染层（video 高度变化，窗口零操作）
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    try { win.webContents.send('pet:scale', this._petScale); } catch (_) { /* 销毁竞态 */ }
+    this.initTray(); // 重建单选态
+  }
+
+  /** 托盘档位入口（离散档，直观可逆） */
+  _setPetScalePreset(v: number): void {
+    this._setPetScale(v);
+  }
+
+  /**
+   * 应用隐藏模式（幂等，可重复调用）：桌宠 ⟷ 贴边/纯隐藏互斥切换。
+   * 轮询恒运行（Alt 探针 tick/面板自动隐藏依赖）；模式只改变「热区唤出/贴边条回归」。
+   */
+  _applyHideMode(): void {
+    const mode = this._getHideMode();
+    const wasPet = this._petModeOn;
+    this._petModeOn = mode === 'pet';
+    const ed = this.edgeDetector;
+    if (!ed) return; // init 早于 edgeDetector 创建时不会发生（调用点在 start() 后）
+    ed.setMode(mode);
+    ed.setTriggerSuppressed(mode !== 'edge');
+    if (mode === 'pet') {
+      if (!wasPet) {
+        // 收面板 + 收贴边条：桌宠接管隐藏态（轮询不停，穿透探针继续 tick）
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
+        if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
+      }
+      this._createPetStage();
+    } else {
+      this._destroyPetStage();
+      if (mode === 'edge') {
+        // 贴边回归：面板显式唤出一次 → 鼠标离开自动隐藏 → 隐藏动画恢复贴边条
+        //（_finishHideAnimation 的 suppressed 门已解除，贴边条自然回归）
+        ed.forceShow();
+      } else {
+        // 纯隐藏：全收，仅 Alt+V/托盘 toggle 显式唤出
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
+        if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
+      }
+    }
+    console.log(`[Pet] 隐藏模式 → ${mode}`);
+  }
+
+  /** 创建桌宠舞台（幂等）：loadFile pet-stage.html → did-finish-load 后定位+等待首帧 */
+  _createPetStage(): void {
+    if (this.petStage && !this.petStage.isDestroyed()) {
+      this._positionAndShowPet();
+      return;
+    }
+    const win = new BrowserWindow({
+      width: 220,
+      height: 220,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      alwaysOnTop: true,
+      resizable: false,
+      skipTaskbar: true,
+      show: false,
+      focusable: false, // 全程不夺焦（focus-tracker 链路安全）
+      webPreferences: {
+        // petStage 需 require('three')（CJS 产物）+ ipcRenderer：直开 node 集成，
+        // 舞台加载的是仓库内置页面，无远程内容（PRD §2.1 本地依赖策略）
+        nodeIntegration: true,
+        contextIsolation: false,
+        // 必须显式关 sandbox：Electron 20+ 默认 sandbox=true，其下 require('three')
+        // 直接抛错（仅白名单 electron 子集可 require）——实机「团子不可见」根因：
+        // 顶层 require 死掉 → paint-ready 不发 → 兑底显示了一个全透明空窗
+        sandbox: false,
+        // Live2D 资产加载（2026-10-14）：file:// 页面下 XHR/fetch 拉取 moc3/纹理被
+        // webSecurity 拦截——本窗口只加载仓库内置内容（无远程页面），关闭安全策略
+        // 是 spike 期的务实解；正式化时换自定义 privileged protocol
+        webSecurity: false,
+      },
+    });
+    this.petStage = win;
+    win.loadFile(path.join(__dirname, '../renderer/pet-stage.html'));
+    // v8 取证网（2026-10-14）：渲染层零输出的情况下，把 console（含未捕获错误）
+    // 转发落盘 + 3s 后探询内部状态，断点必须能从日志读出
+    win.webContents.on('console-message', (_e: unknown, level: unknown, message: string, line: number, sourceId: string) => {
+      try {
+        const short = String(sourceId || '').split(/[\\/]/).pop() || '?';
+        _modDiag(`[PetStage:console:L${line}] ${message} (${short})`);
+      } catch (_) {}
+      void level;
+    });
+    win.webContents.on('did-fail-load', (_e: unknown, code: number, desc: string) => {
+      _modDiag(`[PetStage] loadFile 失败 code=${code} ${desc}`);
+    });
+    win.webContents.on('did-finish-load', () => {
+      _modDiag('[PetStage] did-finish-load（页面加载完成）');
+      // 大小可调（2026-10-14）：重启后把持久化缩放系数推给渲染层（窗口尺寸主进程已按其定位）
+      try { win.webContents.send('pet:scale', this._petScale); } catch (_) { /* 销毁竞态 */ }
+      setTimeout(() => {
+        try {
+          win.webContents.executeJavaScript(
+            'JSON.stringify({booted: !!window.__petBooted, pixi: !!window.PIXI,'
+            + ' live2d: !!(window.PIXI && window.PIXI.live2d),'
+            + ' core: !!window.Live2DCubismCore, mode: window.__petMode || "none"})'
+          ).then((s: unknown) => {
+            _modDiag(`[PetStage] 状态探询 ${String(s)}`);
+          }).catch((err: Error) => {
+            _modDiag(`[PetStage] 状态探询失败: ${err.message}`);
+          });
+        } catch (_) {}
+      }, 3000);
+      this._positionAndShowPet();
+    });
+  }
+
+  /** 定位（持久化位 → clamp；首次用右下默认位）+ 等待 paint-ready（确认链异常 1200ms 兑底直显） */
+  _positionAndShowPet(): void {
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    const display = screen.getPrimaryDisplay();
+    const saved = this.storage.getPetPosition();
+    let bx: number, by: number;
+    if (saved) {
+      const c = clampPetPosition(saved.x, saved.y, display, this._petScale);
+      bx = c.x; by = c.y;
+    } else {
+      const b = buildPetStageBounds(display, this._petScale);
+      bx = b.x; by = b.y;
+    }
+    win.setBounds({ x: bx, y: by, width: 220, height: 220 });
+    this._petCursorOnModel = false; // 重置命中缓存：新定位后旧命中态作废
+    this._petPaintReady = false;
+    if (this._petShowFallback) clearTimeout(this._petShowFallback);
+    // paint-verified show（09-17 模式继承）：渲染层双 rAF 确认后才 showInactive；
+    // 确认链异常（WebGL 失败兜底路径自带 50ms 兜底，此处是终极保底）不白屏
+    this._petShowFallback = setTimeout(() => this._showPetWindow(), 1200);
+  }
+
+  /** paint-ready 兑底/正常两路汇聚：显示舞台 + 应用命中语义 */
+  _showPetWindow(): void {
+    if (this._petShowFallback) { clearTimeout(this._petShowFallback); this._petShowFallback = null; }
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    win.showInactive();
+    // show 后重申置顶（2026-10-14 置顶修复；2026-10-20 二次修复）：hide→show 周期不保证保留
+    // topmost 带成员资格。'screen-saver' 等级强制 SetWindowPos(HWND_TOPMOST) 重新入带；
+    // 随后 _applyNoActivate 单次原子写 NOACTIVATE|TOPMOST（避免两处读改写互相覆盖掉 TOPMOST 位——
+    // 2026-10-20 小M 实测：模式切换后 TOPMOST=False 桌宠被压到文档窗口下）
+    win.setAlwaysOnTop(true, 'screen-saver');
+    this._applyNoActivate(win);
+    this._applyPetIgnore();
+  }
+
+  /**
+   * 舞台命中语义（唯一写入口）：
+   * - Alt 按住 → 整窗穿透无 forward（与面板同语义：彻底惰性）；
+   * - 常态 → 轮廓命中驱动（命中形象区才接收鼠标，透明区 forward 转发保 hover 链路）。
+   * 注意与面板穿透相反：此处常态需要 forward:true（桌宠 hover 反馈/视线跟随依赖
+   * mousemove 镜像），面板 v1 的「forward 镜像致视觉反应」教训不适用于此窗口。
+   */
+  _applyPetIgnore(): void {
+    // 可靠性定案（2026-10-14 实机两轮复现）：桌宠窗恒可交互，唯一例外 = Alt 按住穿透。
+    // 原「点击穿透 + forward mousemove 转发 + 渲染层命中回报」链路在 Windows 上不可靠
+    //（GPU 进程崩溃后转发静默失效 → cursor-hit 零回报 → 右键/悬停/点击全部穿透，实机复现）；
+    // 窗口本身小且贴角落，全窗交互的可用性代价可接受。轮廓命中/cursor-hit 链路退役。
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.setIgnoreMouseEvents(this._petAltActive);
+    } catch (_) { /* 销毁竞态静默 */ }
+  }
+
+  /** 销毁桌宠舞台（切回贴边/纯隐藏时；拖拽中间态一并清） */
+  _destroyPetStage(): void {
+    this._petDragOffset = null;
+    if (this._petShowFallback) { clearTimeout(this._petShowFallback); this._petShowFallback = null; }
+    if (this.petStage && !this.petStage.isDestroyed()) this.petStage.destroy();
+    this.petStage = null;
+    this._petAltActive = false;
+    this._petCursorOnModel = false;
+  }
+
+  /** 桌宠右键菜单（原生 Menu，popup 于舞台窗口） */
+  /** 桌宠右键菜单已迁移到渲染层 HTML 实现（pet:open-ctx / pet:close-ctx + pet:ctx-show）——
+   *  原生 Menu 无法「失去鼠标焦点自动关闭」（2026-10-14 小M 需求） */
 
   /** 关于页（2026-09-30）：复用欢迎 overlay（渲染层 about 模式）；窗口不可用回退原生对话框 */
   _showAboutDialog() {
@@ -1007,6 +1289,13 @@ class ClipboardSpikeApp {
     // 舞台多余 18px 点击穿透。连续到达时上一轮回放由 __clipSenseBarStop 复位重开。
     // 面板可见时渲染层不会发送此事件；触发条隐藏时仅回放（不可见无视觉副作用）。
     ipcMain.on('window-entry-pulse', () => {
+      // 桌宠模式路由（P0 spike）：新条目反应走舞台渲染层事件，不再脉冲贴边条
+      if (this._petModeOn) {
+        if (this.petStage && !this.petStage.isDestroyed()) {
+          this.petStage.webContents.send('pet:react');
+        }
+        return;
+      }
       const tw = this.triggerWindow;
       if (!tw || tw.isDestroyed()) return;
       tw.webContents.executeJavaScript(
@@ -1014,6 +1303,124 @@ class ClipboardSpikeApp {
       ).catch(() => {});
     });
 
+    // ========== 桌宠舞台 IPC（P0 spike，2026-10-13） ==========
+    // paint-ready：渲染层双 rAF 首帧确认（兑底定时器见 _positionAndShowPet）
+    ipcMain.on('pet-paint-ready', () => {
+      this._petPaintReady = true;
+      this._showPetWindow();
+    });
+    // 轮廓命中上报：驱动 ignore 语义切换（forward 转发保 hover 链路）
+    ipcMain.on('pet:cursor-hit', () => {
+      // 退役（2026-10-14）：桌宠窗恒可交互，命中回报不再驱动穿透切换
+    });
+    // 渲染层诊断上报（2026-10-13 实机返工）：装配/WebGL 失败落盘取证
+    ipcMain.on('pet:diag', (_event: unknown, msg: unknown) => {
+      _modDiag(`[PetStage] ${String(msg).split('\n').join(' | ')}`);
+    });
+    // 左键点击：唤出面板（等价贴边热区；Alt+V 同链路）
+    ipcMain.on('pet:summon', () => {
+      if (this.edgeDetector) this.edgeDetector.forceShow();
+    });
+    // 右键：原生上下文菜单
+    // 右键菜单改为渲染层 HTML 实现（2026-10-14 小M 需求：失去鼠标焦点自动关闭，
+    // 原生 Menu 做不到且样式不可控）——主进程只负责扩窗/还原与状态/动作 IPC
+    ipcMain.on('pet:open-ctx', () => {
+      _modDiag('[Pet] open-ctx received (mode=' + this._getHideMode() + ', scale=' + this._petScale + ')');
+      const win = this.petStage;
+      if (!win || win.isDestroyed()) { _modDiag('[Pet] open-ctx abort: petStage missing'); return; }
+      // 去 resize 化（2026-10-20 小M：右击闪烁+瞬移根因 = transparent 窗口 resize）：
+      // 窗口恒定 220x220（菜单全尺寸），右键纯渲染层展开，主进程零窗口操作。
+      // 宠物常驻居中锚定（渲染层 fromCenter），拖拽走 setBounds 纯 move（无 resize）。
+      if (!this._petCtxOpen) {
+        const b0 = win.getBounds();
+        this._petCtxSaved = { x: b0.x, y: b0.y, width: b0.width, height: b0.height };
+        this._petCtxOpen = true;
+        this._applyPetIgnore(); // 菜单打开：全窗可交互（渲染层 cursorHit 反向控制穿透）
+      }
+      if (this._petCtxPollId) clearInterval(this._petCtxPollId);
+      this._petCtxPollId = setInterval(() => {
+        const w2 = this.petStage;
+        if (!w2 || w2.isDestroyed() || !this._petCtxOpen || this._petCtxHold) {
+          if (this._petCtxPollId) { clearInterval(this._petCtxPollId); this._petCtxPollId = null; }
+          return;
+        }
+        const cur = screen.getCursorScreenPoint();
+        const bb = w2.getBounds();
+        const outside = cur.x < bb.x || cur.x > bb.x + bb.width || cur.y < bb.y || cur.y > bb.y + bb.height;
+        if (outside) {
+          this._petCtxOpen = false;
+          if (this._petCtxPollId) { clearInterval(this._petCtxPollId); this._petCtxPollId = null; }
+          const saved2 = this._petCtxSaved;
+          this._petCtxSaved = null;
+          if (saved2) w2.setBounds(saved2);
+          this._applyPetIgnore();
+          try { w2.webContents.send('pet:ctx-hide'); } catch (_) { /* 销毁竞态 */ }
+          console.log('[Pet] 菜单随光标出界自动关闭');
+        }
+      }, 120);
+      try { win.webContents.send('pet:ctx-show', { mode: this._getHideMode(), scale: this._getPetScale() }); } catch (_) {}
+    });
+    ipcMain.on('pet:close-ctx', () => {
+      const win = this.petStage;
+      const saved = this._petCtxSaved;
+      this._petCtxSaved = null;
+      this._petCtxOpen = false;
+      if (this._petCtxPollId) { clearInterval(this._petCtxPollId); this._petCtxPollId = null; }
+      if (win && !win.isDestroyed()) {
+        if (saved) win.setBounds(saved);
+        this._applyPetIgnore(); // 恢复轮廓命中语义
+      }
+    });
+    ipcMain.handle('pet:get-menu-state', () => ({ mode: this._getHideMode(), scale: this._getPetScale() }));
+    ipcMain.on('pet:set-hide-mode', (_event: unknown, mode: string) => {
+      if (mode === 'pet' || mode === 'edge' || mode === 'hidden') this._setHideMode(mode);
+    });
+    ipcMain.on('pet:set-scale', (_event: unknown, v: unknown) => {
+      const n = Number(v);
+      if (isFinite(n) && n > 0) this._setPetScalePreset(n);
+    });
+    ipcMain.on('pet:quit', () => app.exit(0));
+    // 拖拽三段：start 记录偏移（并临时全穿透防鼠标出窗断链）/ move 30Hz 节流跟随 /
+    // end clamp 落位 + 持久化 + 恢复命中语义。拖拽是用户手势非动画，渐进 setPosition
+    // 是舞台纪律的记录在案例外（PRD §pet-manager 注）。
+    ipcMain.on('pet:drag-start', (_event: unknown, sx: number, sy: number) => {
+      if (!this.petStage || this.petStage.isDestroyed()) return;
+      const pos = this.petStage.getPosition();
+      this._petDragOffset = { dx: sx - pos[0], dy: sy - pos[1] };
+      try { this.petStage.setIgnoreMouseEvents(true); } catch (_) { /* 竞态静默 */ }
+    });
+    ipcMain.on('pet:drag-move', (_event: unknown, sx: number, sy: number) => {
+      if (!this.petStage || this.petStage.isDestroyed() || !this._petDragOffset) return;
+      const c = clampPetPosition(sx - this._petDragOffset.dx, sy - this._petDragOffset.dy, screen.getPrimaryDisplay());
+      // 拖拽变大 bug（2026-10-13 实机）：Electron Windows DPI 缩放下 setPosition 只传坐标，
+      // 窗口尺寸经 DIP↔物理像素往返取整逐次漂移（30Hz 拖拽数秒 = 肉眼可见「一直变大」）。
+      // 修法：setBounds 每拍显式钉死宽高，取整误差无从累积；漂移取证日志实锤根因。
+      const b = this.petStage.getBounds();
+      // 窗口恒定 220（去 resize 化）
+      if (b.width !== 220 || b.height !== 220) {
+        _modDiag(`[Pet] 拖拽尺寸漂移 ${b.width}x${b.height} → 钉回 220x220（DPI 取整实锤）`);
+      }
+      this.petStage.setBounds({ x: c.x, y: c.y, width: 220, height: 220 });
+    });
+    ipcMain.on('pet:drag-end', () => {
+      if (!this.petStage || this.petStage.isDestroyed()) { this._petDragOffset = null; return; }
+      const pos = this.petStage.getPosition();
+      const c = clampPetPosition(pos[0], pos[1], screen.getPrimaryDisplay(), this._petScale);
+      this.petStage.setBounds({ x: c.x, y: c.y, width: 220, height: 220 });
+      this.storage.setPetPosition({ x: c.x, y: c.y });
+      this._petDragOffset = null;
+      this._applyPetIgnore(); // 恢复命中语义
+    });
+
+
+    // 滚轮缩放（2026-10-14）：渲染层在轮廓命中时上报，主进程累加步进并落地
+    ipcMain.on('pet:scale-wheel', (_event: unknown, deltaY: number) => {
+      const cur = this._petScale;
+      const step = 0.06;
+      const next = normalizeScale(cur + (deltaY > 0 ? -step : step)); // 滚轮向下 = 缩小
+      if (Math.abs(next - cur) < 0.001) return; // 到边界后静默
+      this._setPetScale(next);
+    });
 
     // ========== 命中偏移诊断（2026-09-08，定位后可移除） ==========
     // 对比三层坐标系：OS 物理光标 → screen API (DIP) → Chromium 输入事件
@@ -1208,10 +1615,23 @@ class ClipboardSpikeApp {
     // 修饰键（Alt）按住穿透（2026-10-13）：注入全局键态探针（koffi 惰性绑定，非 win32 恒 false）+
     // 取证日志句柄（§5-③：落盘 userData，逐站编号定位链路断点）
     this.edgeDetector.setModifierProbe(() => _isAltPhysicallyDown(), _modDiag);
+    this.edgeDetector.setOnShown(() => {
+      // capture 主进程日志用户看不到；把每次 capture 的判定结果推送到渲染层 console
+      this._diagCapture();
+      // 桌宠模式：面板可见期隐藏舞台（alwaysOnTop 会盖住面板），收起时再召回
+      if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
+        this.petStage.hide();
+      }
+    });
     this.edgeDetector.setOnHidden(() => {
       // 面板收起后句柄生命周期结束：下次唤出时重新 capture。
       // （双击不收面板，同一显示周期内句柄持续有效，支持连续粘贴多条目）
       this.focusTracker!.clear(); // 回调触发时 init 已完成创建（运行时恒非空）
+      // 桌宠模式：面板收起 → 舞台回归。改走 _showPetWindow（show 后重申置顶）：
+      // hide→show 周期是掉 topmost 带的高频路径——置顶丢失的主要场景
+      if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
+        this._showPetWindow();
+      }
     });
     // Ditto/CopyQ 模型：面板显示前记录原前台窗口，双击粘贴时由 PasteBridge 原子恢复+注入。
     // FFI 同步抓取（微秒级），无 PS 冷启动，消除「唤出后立即双击」的时序竞争。
@@ -1227,11 +1647,39 @@ class ClipboardSpikeApp {
         this.mainWindow.webContents.send('window:visibility', v);
       }
     });
-    this.edgeDetector.setOnShown(() => {
-      // capture 主进程日志用户看不到；把每次 capture 的判定结果推送到渲染层 console
-      this._diagCapture();
-    });
+    // setOnShown 单槽回调：桌宠面板可见期隐藏舞台的逻辑已在上方注册处合并
+    //（两处注册会相互覆盖，2026-10-13 去重）
     this.edgeDetector.start();
+    // 桌宠模式接线（P0 spike）：Alt 穿透边沿联动舞台 + 启动时应用持久化模式
+    //（决策 1：缺省/旧配置 = edge，存量用户零感知）
+    this.edgeDetector.setOnModifierEdge((active) => {
+      this._petAltActive = active;
+      this._applyPetIgnore();
+    });
+    // 置顶保活（2026-10-14 置顶修复）：睡眠/恢复后显示拓扑重建，topmost 带成员
+    // 资格不保证保留——resume 重申全部置顶窗口（幂等尽力而为，失败静默）
+    powerMonitor.on('resume', () => {
+      if (this.petStage && !this.petStage.isDestroyed()) this.petStage.setAlwaysOnTop(true);
+      if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.setAlwaysOnTop(true);
+    });
+    // Alt 残留自愈（2026-10-15 发现）：测试脚本/异常路径可能让物理 Alt 态残留
+    // （S3 持续 active=true 但用户没按 Alt）→ 桌宠完全穿透不可交互。每 5s 复查
+    // GetAsyncKeyState，若 Alt 已物理释放但状态机仍 active 则强制复位。
+    this._altRescueId = setInterval(() => {
+      try {
+        if (this._petAltActive && !this.edgeDetector) return;
+        const stillDown = _isAltPhysicallyDown();
+        if (this._petAltActive && !stillDown) {
+          _modDiag('[Pet] Alt 残留自愈触发：物理已释放但状态机仍 active，强制复位');
+          this._petAltActive = false;
+          this._applyPetIgnore();
+        }
+      } catch (_) { /* 取证失败不影响 */ }
+    }, 5000);
+    // 大小可调（2026-10-14）：启动时应用持久化缩放系数（默认 1）
+    this._petScale = this._getPetScale();
+    this._applyHideMode();
+
     // 异常快照接线（2026-10-11）：渲染进程/子进程异常落盘；原生崩溃的 .dmp 由 Crashpad 接管
     app.on('render-process-gone', (_event: unknown, webContents: any, details: any) => {
       crashDump.writeTextSnapshot(
@@ -1256,7 +1704,8 @@ class ClipboardSpikeApp {
     } catch (_) { /* 尚未就绪时忽略 */ }
     console.log(`[Spike] 异常快照目录: ${crashLogDir}`);
     // 初次显示也使用非激活方式，并在抢焦点前记录原目标窗口。
-    this.edgeDetector.forceShow();
+    // 桌宠/纯隐藏模式不开机弹面板（桌宠模式_ applyHideMode 会接管隐藏态）
+    if (this._getHideMode() === 'edge') this.edgeDetector.forceShow();
     // 2026-09-10 焦点模型回切：窗口恒为可聚焦（原 setFocusable(false) 移除）。
 
     // 启动时从磁盘恢复历史（重启不丢失）

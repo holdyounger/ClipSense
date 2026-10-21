@@ -141,6 +141,13 @@ class EdgeDetector {
   _onHidden: (() => void) | null = null;
   /** 弹出回调（setOnShown 注入） */
   _onShown: (() => void) | null = null;
+  /** Alt 穿透确认边沿回调（index.ts 注入，桌宠舞台联动；null = 无接线） */
+  _onModifierEdge: ((active: boolean) => void) | null = null;
+  /** 非贴边模式下抑制贴边条回归（setTriggerSuppressed 写入；默认 false = 现行为） */
+  _triggerSuppressed: boolean = false;
+  /** 隐藏模式（2026-10-13 桌宠 P0）：pet/hidden 停用贴边热区唤出；轮询恒运行
+   * （Alt 穿透探针 tick、面板可见期自动隐藏、透明度同步都依赖这条 100ms 心跳） */
+  _mode: 'edge' | 'pet' | 'hidden' = 'edge';
   /** 修饰键（Alt）全局键态探针（index.ts 注入 koffi GetAsyncKeyState；null=未注入，功能禁用） */
   _modProbe: (() => boolean) | null;
   /** 穿透链路取证日志句柄（index.ts 注入，落盘 userData；null=不落盘） */
@@ -248,6 +255,21 @@ class EdgeDetector {
     this._modDiag = typeof diag === 'function' ? diag : null;
   }
 
+  /** Alt 穿透确认边沿回调注入（桌宠舞台联动，P0 spike） */
+  setOnModifierEdge(callback: ((active: boolean) => void) | null): void {
+    this._onModifierEdge = typeof callback === 'function' ? callback : null;
+  }
+
+  /** 非贴边模式（桌宠/纯隐藏）抑制贴边条回归：面板隐藏动画不再弹出触发条 */
+  setTriggerSuppressed(suppressed: boolean): void {
+    this._triggerSuppressed = suppressed;
+  }
+
+  /** 切换隐藏模式：仅影响贴边热区唤出与贴边条回归；轮询/穿透/自动隐藏不受影响 */
+  setMode(mode: 'edge' | 'pet' | 'hidden'): void {
+    this._mode = mode;
+  }
+
   start(): void {
     if (this.isActive) return;
 
@@ -348,7 +370,8 @@ class EdgeDetector {
       // V1.0.4：舞台窗口固定 24px 后，唤出热区不再等于物理窗口——仍按屏缘
       // triggerWidth(6px) 锚定（条体静止可见区），避免 18px 预留区误触发热区。
       let triggerBounds: EdgeRect | null = null;
-      if (!this.isWindowVisible && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+      if (this._mode === 'edge' // pet/hidden 模式：贴边热区失效（桌宠命中/显式唤出接管）
+        && !this.isWindowVisible && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
         const tb = this.triggerWindow.getBounds();
         const anchoredLeft = this.triggerWindow._edge === 'left';
         triggerBounds = {
@@ -416,7 +439,8 @@ class EdgeDetector {
       // 键态必须主进程轮询 GetAsyncKeyState：面板 WS_EX_NOACTIVATE 不夺焦，用户按
       // Alt 时焦点在他处，渲染层 keydown/keyup 不可达（paste-bridge 同坑已证）。
       // 100ms 轮询 + 状态机 2 拍防抖；确认边沿才动 setIgnoreMouseEvents。
-      if (this._modProbe && this.isWindowVisible && !this._isHiding) {
+      // 桌宠模式下面板隐藏（isWindowVisible=false）时探针仍需 tick：驱动舞台穿透
+      if (this._modProbe && (this.isWindowVisible || this._mode === 'pet') && !this._isHiding) {
         const { active, changed } = this._modPass.tick({ isDown: this._modProbe });
         if (changed) {
           if (this._modDiag) this._modDiag(`[S3] 状态机确认边沿 → active=${active}`);
@@ -445,6 +469,10 @@ class EdgeDetector {
             }
           }
           console.log(`[EdgeDetector] Alt 穿透 ${active ? '开启（鼠标事件完全穿透）' : '关闭'}`);
+          // 桌宠联动（P0 spike）：确认边沿广播 index.ts，由其驱动 petStage 穿透
+          if (this._onModifierEdge) {
+            try { this._onModifierEdge(active); } catch (_) { /* 回调异常不阻断 */ }
+          }
         }
       }
     } catch (err) {
@@ -750,7 +778,7 @@ class EdgeDetector {
       `window.__clipSenseHeaderSnap && window.__clipSenseHeaderSnap()`
     ).catch(() => {});
     this.mainWindow.hide();
-    if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+    if (!this._triggerSuppressed && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.setBounds({
         x: Math.round(triggerX),
         y: Math.round(y),

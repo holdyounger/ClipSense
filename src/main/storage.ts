@@ -459,6 +459,37 @@ class HistoryStorage {
   setAltPassTipShown(): void {
     this._writeConfig({ altPassTipShown: true });
   }
+
+  /** 桌宠舞台位置（P0 spike）：缺省 null = 从未拖拽过（用默认右下定位） */
+  getPetPosition(): { x: number; y: number } | null {
+    const raw = this._readConfig().petPosition;
+    if (
+      raw && typeof raw === 'object' && !Array.isArray(raw) &&
+      typeof (raw as Record<string, unknown>).x === 'number' &&
+      typeof (raw as Record<string, unknown>).y === 'number'
+    ) {
+      return { x: (raw as { x: number }).x, y: (raw as { y: number }).y };
+    }
+    return null;
+  }
+
+  /** 拖拽结束回写桌宠位置（合并写入） */
+  setPetPosition(pos: { x: number; y: number }): void {
+    if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+    this._writeConfig({ petPosition: { x: pos.x, y: pos.y } });
+  }
+
+  /** 桌宠缩放系数（2026-10-14 大小可调）：缺省 1 = 基准档 */
+  getPetScale(): number {
+    const v = this._readConfig().petScale;
+    return typeof v === 'number' && isFinite(v) && v > 0 ? v : 1;
+  }
+
+  /** 缩放系数回写（合并写入） */
+  setPetScale(scale: number): void {
+    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) return;
+    this._writeConfig({ petScale: scale });
+  }
 }
 
 // CJS 单导出：require('./storage') 直接得到类本身（与 .js 原版 module.exports 形状一致）

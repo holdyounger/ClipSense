@@ -1,0 +1,687 @@
+<!doctype html>
+<!-- pet-stage.html - 桌宠舞台渲染层（v10·完整动作库 + 交互，2026-10-14）
+     网易素材全量接入：22 个动作视频（pet-moves/，已色键去底 alpha WebM）：
+       d1-d4   待机组（随机轮播，随机间隔切换——「拟真风格，4种动画」）
+       p1-p13  互动组（左键点击随机播放一个，播完回待机）
+       z1-z3 反馈组（鼠标悬停触发，7s 冷却）；t1 拖拽动作（拖拽期间循环）
+       heart1  新条目入库反应（pet:react IPC）
+     加载：Node fs 读入全部 blob（14MB 内存，src 切换零延迟，无网络/合成器开销）。
+     交互模型对齐网易 desktoppet.onMouseEvent：hover/click 驱动动作切片。
+     协议不变：paint-ready / pet:cursor-hit / pet:drag-* / pet:summon / pet:context-menu /
+     pet:react / pet:scale（滚轮+托盘+右键三入口大小可调）。
+     降级链：动作库 → 2D 精灵 → 剪影。 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body.fallback { background: linear-gradient(180deg, #6c5ce7, #4834d4); border-radius: 42%; }
+  /* 视频桌宠：底部贴地居中；高度由缩放系数动态控制（pet:scale） */
+  /* 右键菜单 v3 · 环形扇形（方案二 2026-10-14 拍板）：主扇 5 叶绕猫左半圆展开，
+     模式/大小叶点击展开二级扇（同轴 78px 小半径）；叶 = 玻璃拟态圆钮 spring 错帧弹出；
+     失去鼠标焦点自动关闭（主进程 OS 光标轮询 + DOM mouseleave 双通道） */
+  #ctxMenu {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    user-select: none;
+    /* 覆盖层不拦截事件（2026-10-14 卡死修复）：否则菜单打开时视频点击/右键全被吞；
+       仅叶与确认气泡可交互，点空白自然落在 video/body 上 → 关闭逻辑可判定 */
+    pointer-events: none;
+  }
+  #ctxMenu .leaf,
+  #ctxMenu .cm-confirm {
+    z-index: 120; pointer-events: auto; }
+  #ctxMenu.show { display: block; }
+  #ctxMenu .leaf {
+    position: absolute;
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    /* 静默态中性深灰（2026-10-15 小M：用户宠物毛色未知，主题紫只做交互态） */
+    background: rgba(46, 46, 56, 0.94);
+    border: 1.5px solid rgba(162, 155, 254, 0.35);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    cursor: pointer;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+    transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1), background 140ms, border-color 140ms, box-shadow 140ms;
+  }
+  /* hover/选中才亮主题色 */
+  #ctxMenu .leaf:hover { transform: scale(1.18); background: linear-gradient(135deg, #8b7cf0, #5a48d4); border-color: #c9c2ff; box-shadow: 0 0 16px rgba(162, 155, 254, 0.8); }
+  #ctxMenu .leaf.selected { border-color: #a29bfe; background: linear-gradient(135deg, #7b6cf0, #5a48d4); box-shadow: 0 0 12px rgba(162, 155, 254, 0.6); }
+  #ctxMenu .leaf-sub { width: 32px; height: 32px; font-size: 13px; }
+  #ctxMenu .cm-hint {
+    z-index: 120;
+    position: absolute;
+    padding: 3px 9px;
+    background: rgba(38, 38, 46, 0.96);
+    border: 1px solid rgba(162, 155, 254, 0.45);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #e8e8f0;
+    white-space: nowrap;
+    display: none;
+    pointer-events: none;
+  }
+  #ctxMenu .cm-confirm {
+    position: absolute;
+    padding: 5px 10px;
+    background: rgba(38, 38, 46, 0.97);
+    border: 1px solid rgba(255, 107, 129, 0.55);
+    border-radius: 8px;
+    font-size: 11px;
+    color: #ffd7de;
+    white-space: nowrap;
+    display: none;
+  }
+  #ctxMenu .cm-confirm .cm-yes { color: #ff6b81; font-weight: 700; margin-right: 10px; cursor: pointer; }
+  #ctxMenu .cm-confirm .cm-no { color: #8a8a96; cursor: pointer; }
+  #ctxMenu .cm-confirm .cm-q { display: block; font-size: 11px; color: #b9b9c4; margin-bottom: 4px; white-space: nowrap; }
+  #petVideo, #petVideo2 {
+    position: absolute; left: 50%; bottom: 0;
+    transform: translateX(-50%);
+    height: 210px; width: auto;
+    user-select: none;
+    cursor: pointer;
+    transition: opacity 180ms ease;
+  }
+  #petVideo2 { opacity: 0; }
+  #sprite {
+    position: absolute; left: 50%; bottom: 6px;
+    width: 138px; height: auto;
+    transform-origin: 50% 92%;
+    will-change: transform;
+    user-select: none; -webkit-user-drag: none;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<video id="petVideo" muted autoplay loop playsinline></video>
+<video id="petVideo2" muted autoplay playsinline></video>
+<div id="ctxMenu">
+  <div class="cm-hint" id="cmHint"></div>
+  <div class="cm-confirm" id="cmConfirm"><span class="cm-q" id="cmQ"></span><span class="cm-yes" id="cmYes">退出</span><span class="cm-no" id="cmNo">取消</span></div>
+</div>
+<img id="sprite" src="pet-sprite.png" alt="" draggable="false">
+<script>
+'use strict';
+try { require('electron').ipcRenderer.send('pet:diag', '[build] RENDER_BUILD_20261015_1050_INPUTLOG block#0'); } catch (_) {}
+// 经典脚本桥：ipcRenderer + fs（动作库 blob 读取，module 作用域无 require）
+try {
+  window.__petIpc = require('electron').ipcRenderer;
+  const __fs = require('fs');
+  const __path = require('path');
+  window.__petMovesDir = __path.join(__dirname, 'pet-moves');
+  window.__petReadMove = function (name) {
+    const buf = __fs.readFileSync(__path.join(window.__petMovesDir, name + '.webm'));
+    return new Blob([buf], { type: 'video/webm' });
+  };
+} catch (e) { window.__petIpcErr = e; }
+window.__petBooted = false;
+window.__petFallbackReported = false;
+window.__petReportFallback = function (reason) {
+  if (window.__petFallbackReported) return;
+  window.__petFallbackReported = true;
+  try { document.body.classList.add('fallback'); } catch (_) {}
+  setTimeout(function () {
+    if (!window.__petIpc) return;
+    window.__petIpc.send('pet-paint-ready');
+    if (reason) window.__petIpc.send('pet:diag', reason);
+  }, 50);
+};
+if (window.__petIpcErr) {
+  window.__petReportFallback('ipcRenderer 获取失败: ' + window.__petIpcErr.message);
+}
+</script>
+<script>
+'use strict';
+const ipcRenderer = window.__petIpc;
+const video = document.getElementById('petVideo');
+const video2 = document.getElementById('petVideo2');
+let frontV = video;   // 当前显示层
+let backV = video2;   // 预加载缓冲层（双缓冲交叉淡入 2026-10-20）
+function eachV(fn) { fn(video); fn(video2); }
+const spriteEl = document.getElementById('sprite');
+
+let mode = 'none';           // webm | sprite
+window.__petMode = mode;
+function setMode(m) { mode = m; try { window.__petMode = m; } catch (_) {} }
+
+// 大小可调（2026-10-14）：缩放系数 → video 高度动态适配（滚轮/托盘/右键三入口共享）
+// v10 重写时丢失本定义导致 ReferenceError（实机取证 L287），补回
+let petScale = 1.0;
+function applyScale(s) {
+  petScale = Number(s) || 1;
+  eachV(function (v) { v.style.height = Math.round(210 * petScale) + 'px'; });
+}
+
+let webglOk = false;         // 资产就绪 = 矩形命中；未就绪 = 整窗命中
+let pressing = false, moved = false, downSX = 0, downSY = 0, lastDragSent = 0;
+let lastHitReport = null;
+let cursorNX = 0.5;
+// 动作引擎状态
+const POOLS = {
+  idle: ['d1', 'd2', 'd3', 'd4'],
+  click: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p10', 'p11', 'p13'],
+  hover: ['z1', 'z2', 'z3'],
+  drag: ['t1'],              // 网易语义修正（2026-10-15 小M）：t1=拖拽动作，拖拽期间循环播放
+  react: ['heart1'],
+};
+let current = '';            // 当前动作名
+let state = 'idle';          // idle | action
+let lastIdle = '';
+let hoverCooldownUntil = 0;
+let cursorOnModel = false;
+
+function pick(arr, avoid) {
+  const pool = arr.filter(function (n) { return n !== avoid; });
+  return pool[Math.floor(Math.random() * pool.length)] || arr[0];
+}
+
+// 动作库 blob 预载（本地 fs，14MB，<1s）
+const BLOBS = {};
+function preloadBlobs() {
+  const all = [].concat(POOLS.idle, POOLS.click, POOLS.hover, POOLS.drag, POOLS.react);
+  let ok = 0;
+  for (const name of all) {
+    try {
+      BLOBS[name] = URL.createObjectURL(window.__petReadMove(name));
+      ok++;
+    } catch (err) {
+      ipcRenderer.send('pet:diag', 'blob 预载失败 ' + name + ': ' + (err && err.message));
+    }
+  }
+  ipcRenderer.send('pet:diag', '动作库预载 ' + ok + '/' + all.length);
+  return ok === all.length;
+}
+
+function play(name, loop) {
+  if (!BLOBS[name]) return;
+  current = name;
+  // 双缓冲交叉淡入（2026-10-20 小M：鼠标进入闪烁 = 单 video 换 src 的白屏帧）
+  const incoming = backV;
+  incoming.loop = !!loop;
+  incoming.src = BLOBS[name];
+  const swap = function () {
+    incoming.style.opacity = '1';
+    frontV.style.opacity = '0';
+    if (frontV === video) { frontV = video2; backV = video; }
+    else { frontV = video; backV = video2; }
+  };
+  if (incoming.readyState >= 2) { swap(); incoming.play().catch(function () {}); }
+  else {
+    const onld = function () { incoming.removeEventListener('loadeddata', onld); swap(); incoming.play().catch(function () {}); };
+    incoming.addEventListener('loadeddata', onld);
+  }
+}
+
+function playIdle(now) {
+  state = 'idle';
+  const pickName = pick(POOLS.idle, lastIdle);
+  lastIdle = pickName;
+  play(pickName, true);
+}
+function playAction(poolName, backToIdle) {
+  state = 'action';
+  const pickName = pick(POOLS[poolName]);
+  play(pickName, false);
+  // ended 由统一 ended 监听回 idle；backToIdle 预留
+}
+function triggerReact() {
+  state = 'action';
+  nextIdleAt = performance.now() + 4200;
+  if (mode === 'webm') playAction('react');
+}
+let nextIdleAt = 0;
+
+// ==================== 主帧循环（行为调度） ====================
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (mode !== 'webm') return;
+  // 待机轮播：每 8-16s 换一个待机动作（d1-d4 轮着来，不重复上一个）
+  if (state === 'idle' && now >= nextIdleAt) {
+    lastIdle = current;
+    playIdle(now);
+    nextIdleAt = now + 8000 + Math.random() * 8000;
+  }
+  // 拖拽挣扎微摆
+  if (moved) {
+    eachV(function (v) { v.style.transform =
+      'translateX(calc(-50% + ' + ((cursorNX - 0.5) * 8).toFixed(1) + 'px)) rotate(' + (Math.sin(t(now) * 8) * 3).toFixed(2) + 'deg)'; });
+  } else if (!ctxOpen) {
+    eachV(function (v) { if (v.style.transform !== 'translateX(-50%)') v.style.transform = 'translateX(-50%)'; });
+  }
+}
+function t(now) { return now / 1000; }
+requestAnimationFrame(tick);
+
+// ==================== 命中检测（video 矩形；未就绪整窗） ====================
+function cursorHit(x, y) {
+  if (!webglOk) return true;
+  const r = frontV.getBoundingClientRect();
+  const vw = frontV.videoWidth, vh = frontV.videoHeight;
+  if (!vw || !vh) return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  // 命中区收缩（2026-10-20 小M：透明 WebM 全矩形命中 → 周围空白也能拖动）：
+  // 视频实际显示宽 = 显示高 × 自然宽高比；底中锚定（CSS bottom:0; left:50%）
+  const dispH = r.height;
+  const dispW = dispH * (vw / vh);
+  const cx = r.left + r.width / 2;
+  const bottom = r.bottom;
+  return x >= cx - dispW / 2 && x <= cx + dispW / 2 && y >= bottom - dispH && y <= bottom;
+}
+function reportHit(x, y) {
+  const hit = cursorHit(x, y);
+  if (hit === lastHitReport) return;
+  lastHitReport = hit;
+  // 悬停触发（网易 onMouseEvent hover 语义）：进入模型瞬间 + 冷却 7s + 仅待机态
+  const now = performance.now();
+  if (hit && !cursorOnModel && state === 'idle' && now >= hoverCooldownUntil) {
+    hoverCooldownUntil = now + 7000;
+    playAction('hover');
+  }
+  if (!hit && cursorOnModel) {
+    hoverCooldownUntil = Math.max(hoverCooldownUntil, now + 3000); // 离开冷却：防边界进出反复触发
+  }
+  cursorOnModel = hit;
+  ipcRenderer.send('pet:cursor-hit', hit);
+}
+
+// ==================== 指针交互（协议不变） ====================
+window.addEventListener('mousemove', function (e) {
+  cursorNX = e.clientX / window.innerWidth;
+  reportHit(e.clientX, e.clientY);
+  if (pressing && !moved) {
+    const dx = e.screenX - downSX, dy = e.screenY - downSY;
+    if (Math.abs(dx) + Math.abs(dy) > 10) {
+      moved = true;
+      state = 'action';
+      ipcRenderer.send('pet:drag-start', e.screenX, e.screenY);
+      play('t1', true); // 拖拽期间 t1 循环（松手回待机）
+    }
+  }
+  if (moved) {
+    const now = performance.now();
+    if (now - lastDragSent > 33) {
+      lastDragSent = now;
+      ipcRenderer.send('pet:drag-move', e.screenX, e.screenY);
+    }
+  }
+});
+window.addEventListener('mousedown', function (e) {
+  if (e.button !== 0) return;
+  if (!cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20 小M）：透明区不再拖拽
+  pressing = true; moved = false; downSX = e.screenX; downSY = e.screenY;
+});
+// 滚轮缩放（2026-10-15 修复：v4 重构时监听器丢失导致滚轮失效）——
+// 悬停猫身才拦截，菜单打开期间交由菜单叶处理不拦截
+window.addEventListener('wheel', function (e) {
+  if (ctxOpen || cursorHit(e.clientX, e.clientY)) { // 弃用 +/- 按钮后滚轮直调（菜单打开时也生效，窗口沿固定边同步生长）
+    e.preventDefault();
+    ipcRenderer.send('pet:scale-wheel', e.deltaY);
+  }
+}, { passive: false });
+
+window.addEventListener('mouseup', function (e) {
+  if (e.button !== 0) return;
+  // Bug2 修复（2026-10-14）：菜单打开时落在菜单区域的 mouseup 不算点击猫（否则点二级菜单会弹主面板）
+  if (ctxOpen && ctxMenu.contains(e.target)) { pressing = false; return; }
+  const wasClick = pressing && !moved;
+  pressing = false;
+  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); playIdle(performance.now()); }
+  else if (wasClick) { triggerReact(); ipcRenderer.send('pet:summon'); }
+});
+['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
+  window.addEventListener(evtName, function (e) {
+    try { ipcRenderer.send('pet:diag', '[input] ' + evtName + ' btn=' + e.button + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
+  }, true); // capture：最先记录
+});
+window.addEventListener('contextmenu', function (e) {
+  try { ipcRenderer.send('pet:diag', 'contextmenu fired ' + e.clientX + ',' + e.clientY + ' mode=' + mode + ' ctxOpen=' + ctxOpen); } catch (_) {}
+  e.preventDefault();
+  if (!cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20）：透明区右键不弹菜单
+  // 去 resize 化（2026-10-20）：窗口恒定菜单全尺寸，右键纯渲染层展开（主进程零窗口操作）→ 无 resize 闪烁、无瞬移
+  if (ctxOpen) { ipcRenderer.send('pet:open-ctx'); return; } // 已开：仅续期失焦轮询
+  dirH = 'l'; dirV = 'u';           // 常量：窗口恒定后菜单展开方向不再需要动态
+  savedVideoOffsets = captureVideoOffsets();
+  applyDirection();
+    ipcRenderer.send('pet:open-ctx'); // HTML 右键菜单（失去鼠标焦点自动关闭）
+});
+
+
+// 动作播完 → 回待机（非 loop 动作的统一出口）
+function onEndedCommon() { if (mode === 'webm' && state === 'action') playIdle(performance.now()); }
+video.addEventListener('ended', onEndedCommon);
+video2.addEventListener('ended', onEndedCommon);
+// 大小可调：主进程推送缩放系数 → 动态高度
+ipcRenderer.on('pet:react', function () { triggerReact(); });
+// 大小可调（2026-10-14）：主进程确认后推送缩放系数 → 动态适配 video 高度
+ipcRenderer.on('pet:scale', function (_e, s, pos) {
+  applyScale(Number(s) || 1);
+  // 绝对差值补偿（2026-10-15 重构：增量累计在钳制截断后脱节 → 漂移反复复发）。
+  // transform = -(window.ipcRenderer.on('pet:scale', function (_e, s) {
+  applyScale(Number(s) || 1);
+
+});
+
+// ==================== 右键菜单 v4 · 环形扇形（布局引擎驱动，2026-10-15 架构重构） ====================
+// 几何计算全部收敛到 pet-menu-layout.ts（纯函数 + 19 项单测回归锁）；
+// 本文件只做「拿坐标 → 设 style」。方向由主进程按桌宠屏幕象限决定（pet:ctx-show 下发）。
+const ctxMenu = document.getElementById('ctxMenu');
+const cmHint = document.getElementById('cmHint');
+const cmConfirm = document.getElementById('cmConfirm');
+const cmQ = document.getElementById('cmQ');
+const layoutEngine = require('./pet-menu-layout');
+let ctxOpen = false;
+let ctxLevel = 'main';       // main | mode
+let petMode = 'pet';
+let petScaleV = 1.0;
+let activeHints = {};
+// 菜单会话冻结布局输入（2026-10-15 小M：点 +/- 档位按钮位置一直动 → 冻结钉死）：
+// 打开瞬间锚定猫位与目标窗尺寸，会话内 applyLayout 全用冻结值；窗口生长由绝对差值补偿抵消
+let frozenCat = null;
+let frozenWin = null;
+let originBase = null; // 菜单会话窗口原点基线（首个 pet:scale pos 事件确立）
+let pendingConfirm = null; // 待确认动作（2026-10-20 方案a：'quit' | 'hide'）
+
+// BUG1 修复（2026-10-15）：猫静止时距窗口四边的距离——菜单打开后按「主进程固定边」恢复
+let savedVideoOffsets = null;
+function captureVideoOffsets() {
+  const r = video.getBoundingClientRect();
+  return {
+    fromLeft: r.left,
+    fromRight: window.innerWidth - r.right,
+    fromTop: r.top,
+    fromBottom: window.innerHeight - r.bottom,
+  };
+}
+function catAnchor() {
+  return {
+    catX: video.offsetLeft + video.offsetWidth / 2,
+    catY: video.offsetTop + video.offsetHeight / 2,
+  };
+}
+
+function applyLayout() {
+  const lay = layoutEngine.computeLayout({
+    winW: (frozenWin ? frozenWin.w : (pendingWin ? pendingWin.w : window.innerWidth)),
+    winH: (frozenWin ? frozenWin.h : (pendingWin ? pendingWin.h : window.innerHeight)),
+    dirH: dirH,
+    dirV: dirV,
+    level: ctxLevel,
+    mode: petMode,
+    scale: petScaleV,
+    catX: (frozenCat ? frozenCat.catX : catAnchor().catX),
+    catY: (frozenCat ? frozenCat.catY : catAnchor().catY),
+  });
+  activeHints = {};
+  ctxMenu.querySelectorAll('.leaf').forEach(function (el) { el.remove(); });
+  lay.leaves.forEach(function (l) {
+    activeHints[l.key] = l.hint;
+    const el = document.createElement('div');
+    el.className = 'leaf' + (l.selected ? ' selected' : '') + (l.size < 40 ? ' leaf-sub' : '');
+    el.dataset.leaf = l.key;
+    el.dataset.opt = l.key;
+    el.textContent = l.icon;
+    el.style.left = l.x + 'px';
+    el.style.top = l.y + 'px';
+    el.style.width = l.size + 'px';
+    el.style.height = l.size + 'px';
+    ctxMenu.appendChild(el);
+  });
+  // size 二级：扇心显示当前系数
+  if (ctxLevel === 'size') {
+    cmHint.textContent = petScaleV.toFixed(1) + '\u00d7';
+    cmHint.style.display = 'block';
+    cmHint.style.left = Math.round(lay.cx - 20) + 'px';
+    cmHint.style.top = Math.round(lay.cy - 12) + 'px';
+  } else {
+    cmHint.style.display = 'none';
+  }
+  try {
+    ipcRenderer.send('pet:diag', '[leaf] v4 level=' + ctxLevel + ' dir=' + dirH + dirV
+      + ' leaves=' + lay.leaves.map(function (l) { return l.key + '@' + l.x + ',' + l.y; }).join(' '));
+  } catch (_) {}
+}
+function renderMainFan() { ctxLevel = 'main'; applyLayout(); }
+function renderModeSub() { ctxLevel = 'mode'; applyLayout(); }
+// 方向感知（2026-10-15 小M 四问）：主进程按桌宠屏幕象限决定展开方向
+let dirH = 'l';              // l=向左展开（猫靠右缘）| r=向右展开
+let dirV = 'u';              // u=主扇向上 | d=向下
+function applyDirection() {
+  // 去 resize 化（2026-10-20）：猫常驻居中锚定，永不切换（预判/视差/冻结补丁全退役）
+  eachV(function (v) { v.style.left = '50%' });
+  eachV(function (v) { v.style.right = 'auto' });
+  eachV(function (v) { v.style.transform = 'translateX(-50%)' });
+  eachV(function (v) { v.style.bottom = '0' });
+  eachV(function (v) { v.style.top = 'auto' });
+}
+function openCtx(st) {
+  ctxOpen = true;
+  ctxLevel = 'main';
+  petMode = st.mode;
+  petScaleV = Number(st.scale) || 1;
+  ctxMenu.classList.add('show');
+  applyDirection();
+  applyScale(petScaleV);
+  // 冻结布局输入：锚定与缩放就位后捕获（会话内叶位置钉死，窗口生长由绝对差值补偿抵消）
+  frozenCat = catAnchor();
+  frozenWin = { w: st.winW || window.innerWidth, h: st.winH || window.innerHeight };
+  originBase = { x: window.screenX, y: window.screenY };
+  ctxMenu.style.transform = '';
+  renderMainFan();
+  // DOM 顺序兜底（2026-10-15 四问 #1）：叶为动态创建，追加在 hint/confirm 之后会盖住 tooltip——
+  // 每次打开把 hint/confirm 重排到末尾（与 z-index 双保险）
+  ctxMenu.appendChild(cmHint);
+  ctxMenu.appendChild(cmConfirm);
+  // 自检取证（2026-10-14 菜单显示异常排查）：几何数据落盘
+  setTimeout(function () {
+    try {
+      const leaves = [];
+      ctxMenu.querySelectorAll('.leaf').forEach(function (el) {
+        const r = el.getBoundingClientRect();
+        leaves.push({ k: el.dataset.leaf || el.dataset.opt || '?', x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), vis: r.width > 0 });
+      });
+      const vr = video.getBoundingClientRect();
+      ipcRenderer.send('pet:diag', 'ctx自检 win=' + window.innerWidth + 'x' + window.innerHeight
+        + ' video=' + Math.round(vr.x) + ',' + Math.round(vr.y) + ' ' + Math.round(vr.width) + 'x' + Math.round(vr.height)
+        + ' absX=' + Math.round(window.screenX + vr.left) + ' absY=' + Math.round(window.screenY + vr.top)
+        + ' leaves=' + JSON.stringify(leaves));
+    } catch (err) {
+      ipcRenderer.send('pet:diag', 'ctx自检失败: ' + (err && err.message));
+    }
+  }, 400);
+}
+function closeCtx(notify, reason) {
+  if (!ctxOpen) return;
+  ctxOpen = false;
+  try { ipcRenderer.send('pet:diag', '[ctx-close] reason=' + (reason || 'unspecified')); } catch (_) {}
+  ctxLevel = 'main';
+  ctxMenu.classList.remove('show');
+  cmHint.style.display = 'none';
+  cmConfirm.style.display = 'none';
+  savedVideoOffsets = null;
+  frozenCat = null;
+  frozenWin = null;
+  originBase = null;
+  ctxMenu.style.transform = '';
+  video.style.left = '50%';
+  video.style.right = 'auto';
+  video.style.top = 'auto';
+  video.style.bottom = '0';
+  // notify=false：主进程光标轮询触发（pet:ctx-hide），主进程已自行还原窗口
+  if (notify !== false) ipcRenderer.send('pet:close-ctx');
+}
+
+ipcRenderer.on('pet:ctx-show', function (_e, st) {
+  dirH = st.dirH || 'l';
+  dirV = st.dirV || 'u';
+  // 时序竞争修复（2026-10-15）：主进程 setBounds 异步生效——若早于窗口实际变尺寸收到
+  // ctx-show，innerWidth/innerHeight 还是旧值，布局引擎会把叶全钳进窄窗（重叠根因）。
+  // 用主进程下发的目标尺寸计算布局，resize 事件随后触发自然重排兜底。
+  // 窗口恒定 220x220：innerWidth/Height 即布局输入，无时序竞争
+  openCtx(st);
+});
+let pendingWin = null;
+// 失焦自动关闭双通道：DOM mouseleave 快路径 + 主进程 OS 光标轮询权威（pet:ctx-hide）
+window.addEventListener('mouseleave', function () { if (ctxOpen) closeCtx(true, 'dom-mouseleave'); });
+ipcRenderer.on('pet:ctx-hide', function () { closeCtx(false, 'os-poll'); });
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && ctxOpen) { closeCtx(true, 'esc'); e.stopPropagation(); }
+});
+window.addEventListener('mousedown', function (e) {
+  if (!ctxOpen) return;
+  if (!ctxMenu.contains(e.target)) {
+    closeCtx(true, 'outside-click');
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }
+}, true);
+
+// 叶交互（事件委托：二级叶为动态创建）
+ctxMenu.addEventListener('click', function (e) {
+  const leaf = e.target.closest('.leaf');
+  if (!leaf) return;
+  e.stopPropagation();
+  if (ctxLevel === 'main') {
+    const k = leaf.dataset.leaf;
+    if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon'); }
+    else if (k === 'mode') renderModeSub();
+    else if (k === 'react') triggerReact();
+    else if (k === 'quit') {
+      pendingConfirm = 'quit';
+      cmQ.textContent = '确定退出桌宠？';
+      cmYes.textContent = '退出';
+      cmConfirm.style.display = 'block';
+      const br = leaf.getBoundingClientRect();
+      const base = ctxMenu.getBoundingClientRect();
+      cmConfirm.style.left = Math.max(6, br.left - base.left - 40) + 'px';
+      cmConfirm.style.top = Math.max(6, br.top - base.top - 34) + 'px';
+      setTimeout(function () { if (pendingConfirm === 'quit') { pendingConfirm = null; cmConfirm.style.display = 'none'; } }, 4000);
+    }
+  } else if (leaf.dataset.opt === 'back') {
+    ctxLevel = 'main';
+    applyLayout();
+  } else if (ctxLevel === 'mode') {
+    const opt = leaf.dataset.opt;
+    if (!opt) return;
+    if (opt === 'hidden') {
+      // 方案a（2026-10-20 小M）：纯隐藏前弹确认气泡，注明恢复方式（托盘 / Alt+V）
+      pendingConfirm = 'hide';
+      cmQ.textContent = '隐藏后经托盘或 Alt+V 恢复';
+      cmYes.textContent = '隐藏';
+      cmConfirm.style.display = 'block';
+      const br = leaf.getBoundingClientRect();
+      const base = ctxMenu.getBoundingClientRect();
+      cmConfirm.style.left = Math.max(6, br.left - base.left - 40) + 'px';
+      cmConfirm.style.top = Math.max(6, br.top - base.top - 34) + 'px';
+      setTimeout(function () { if (pendingConfirm === 'hide') { pendingConfirm = null; cmConfirm.style.display = 'none'; } }, 6000);
+      return;
+    }
+    petMode = opt;
+    ipcRenderer.send('pet:set-hide-mode', petMode);
+    renderModeSub();
+  } else if (ctxLevel === 'size') {
+    const opt = leaf.dataset.opt;
+    if (opt === 'minus') petScaleV = Math.max(0.5, petScaleV - 0.15);
+    else if (opt === 'plus') petScaleV = Math.min(2.2, petScaleV + 0.15);
+    else if (opt === 'reset') petScaleV = 1;
+    else return;
+    ipcRenderer.send('pet:set-scale', petScaleV);
+    applyScale(petScaleV);
+    renderSizeSub();
+  }
+});
+// 确认气泡按钮（2026-10-20 方案a；同时修复既有缺陷：cmYes/cmNo 此前无监听，退出叶点确认无响应）
+ctxMenu.addEventListener('click', function (e) {
+  const yes = e.target.closest('.cm-yes');
+  if (yes) {
+    const act = pendingConfirm;
+    pendingConfirm = null;
+    cmConfirm.style.display = 'none';
+    if (act === 'quit') { closeCtx(); ipcRenderer.send('pet:quit'); }
+    else if (act === 'hide') { closeCtx(); ipcRenderer.send('pet:set-hide-mode', 'hidden'); }
+    return;
+  }
+  const no = e.target.closest('.cm-no');
+  if (no) {
+    pendingConfirm = null;
+    cmConfirm.style.display = 'none';
+  }
+});
+// hover 提示（叶语义）
+ctxMenu.addEventListener('mouseover', function (e) {
+  const leaf = e.target.closest('.leaf');
+  if (!leaf) { cmHint.style.display = 'none'; return; }
+  const txt = activeHints[leaf.dataset.leaf || leaf.dataset.opt];
+  if (!txt) { cmHint.style.display = 'none'; return; }
+  cmHint.textContent = txt;
+  cmHint.style.display = 'block';
+  const r = leaf.getBoundingClientRect();
+  const base = ctxMenu.getBoundingClientRect();
+  cmHint.style.left = Math.max(4, r.left - base.left - 26) + 'px';
+  cmHint.style.top = Math.max(4, r.top - base.top - 26) + 'px';
+});
+
+
+// ==================== 2D 精灵兜底 ====================
+function enterSpriteMode(reason) {
+  if (mode === 'sprite') return;
+  setMode('sprite');
+  if (reason) ipcRenderer.send('pet:diag', reason);
+  try {
+    video.style.display = 'none';
+    spriteEl.style.display = 'block';
+  } catch (_) {}
+  lastT0 = performance.now();
+  requestAnimationFrame(spriteTick);
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () { ipcRenderer.send('pet-paint-ready'); });
+  });
+}
+let lastT0 = 0;
+function spriteTick(now) {
+  requestAnimationFrame(spriteTick);
+  const t = now / 1000;
+  const bx = 1 + 0.012 * Math.sin(t * 2.1);
+  const by = 1 - 0.012 * Math.sin(t * 2.1);
+  spriteEl.style.transform =
+    'translate(calc(-50% + ' + ((cursorNX - 0.5) * 8).toFixed(1) + 'px), 0) ' +
+    'rotate(' + ((cursorNX - 0.5) * 5).toFixed(2) + 'deg) scale(' + bx.toFixed(3) + ', ' + by.toFixed(3) + ')';
+}
+
+// ==================== 启动链 ====================
+(function start() {
+  if (!window.__petReadMove) {
+    enterSpriteMode('fs 桥不可用，降级 2D 精灵');
+    return;
+  }
+  const ok = preloadBlobs();
+  if (!ok) {
+    enterSpriteMode('动作库预载不完整，降级 2D 精灵');
+    return;
+  }
+  setMode('webm');
+  webglOk = true;
+  video.loop = true;
+  playIdle(performance.now());
+  nextIdleAt = performance.now() + 9000;
+  video.addEventListener('loadeddata', function () {
+    lastT0 = performance.now();
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { ipcRenderer.send('pet-paint-ready'); });
+    });
+  }, { once: true });
+  // canvas 自检（3s 后客观验证渲染内容）
+  setTimeout(function () {
+    try {
+      ipcRenderer.send('pet:diag', '动作引擎运行中 current=' + current + ' state=' + state);
+    } catch (_) {}
+  }, 3000);
+  // 首个 loadeddata 若 3s 未触发（异常），paint-ready 由主进程 1200ms 兜底
+})();
+</script>
+</body>
+</html>
