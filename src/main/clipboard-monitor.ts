@@ -135,6 +135,12 @@ class ClipboardMonitor {
   _lastHash: string | null;
   _seenHashes: Set<string>;
   _suppressUntil: number;
+  /** 图片快速指纹缓存（2026-10-22：避免每 tick 全量 toDataURL+toPNG 双编码阻塞主进程） */
+  _lastImageDigest: { hash: string; cached: ClipboardReadResult } | null = null;
+  /** Win32 剪贴板序号（2026-10-22）：koffi 惰性绑定；null/失败 = 退回全读路径 */
+  _clipSeqFn: (() => number) | null = null;
+  _clipSeqInit = false;
+  _lastClipSeq = -1;
   intervalId: NodeJS.Timeout | null;
   storage: MonitorStorageLike | null;
   _tagOptions: TagOptionsLike | null;
@@ -143,7 +149,8 @@ class ClipboardMonitor {
 
   constructor(options: ClipboardMonitorOptions = {}) {
     /** 轮询间隔 ms */
-    this.intervalMs = options.intervalMs || 600;
+    // 轮询间隔 600→120ms（2026-10-22 小M：复制响应延迟 ~1s 的主因是轮询间隔）
+    this.intervalMs = options.intervalMs || 120;
     /** 最大历史条数 */
     this.maxHistory = options.maxHistory || 100;
     /** 历史记录数组（新→旧） */
@@ -176,6 +183,22 @@ class ClipboardMonitor {
    *
    * 探测优先级：图片 > 文件 > 纯文本 > 富文本
    */
+  /** Win32 GetClipboardSequenceNumber 惰性绑定（非 win32/失败 → null，退回全读路径） */
+  _getClipboardSeq(): number | null {
+    if (!this._clipSeqInit) {
+      this._clipSeqInit = true;
+      try {
+        if (process.platform === 'win32') {
+          const koffi = require('koffi');
+          const user32 = koffi.load('user32.dll');
+          const fn = user32.func('int __stdcall GetClipboardSequenceNumber()');
+          this._clipSeqFn = () => fn();
+        }
+      } catch (_) { this._clipSeqFn = null; }
+    }
+    return this._clipSeqFn ? this._clipSeqFn() : null;
+  }
+
   _readClipboard(): ClipboardReadResult {
     try {
       const formats = clipboard.availableFormats();
@@ -190,13 +213,26 @@ class ClipboardMonitor {
         const img = clipboard.readImage();
         if (img && !img.isEmpty()) {
           const size = img.getSize();
-          return {
+    // 快速指纹（2026-10-22 小M 性能修复）：尺寸+PNG 长度做轻量指纹，
+    // 命中则零编码复用上次结果（旧逻辑每 tick 两次全量 PNG 编码阻塞主进程 =
+    // 面板弹出卡顿的共因）。指纹仅由 PNG 长度+尺寸构成，重复复制同一图
+    // 仍走 _lastHash 正常 bump 置顶（语义不变）。
+    const pngBuf = img.toPNG ? img.toPNG() : Buffer.alloc(0);
+    const digest = crypto.createHash('md5').update(pngBuf).digest('hex');
+    if (this._lastImageDigest && this._lastImageDigest.hash === digest) {
+      return this._lastImageDigest.cached; // 精确命中：零编码复用（bump 语义不变）
+    }
+
+          const dataUrl = img.toDataURL();
+          const cachedResult: ClipboardReadResult = {
             kind: 'image',
-            dataUrl: img.toDataURL(),
-            size: img.toPNG ? img.toPNG().length : 0,
+            dataUrl,
+            size: pngBuf.length,
             width: size.width,
             height: size.height,
           };
+          this._lastImageDigest = { hash: digest, cached: cachedResult };
+          return cachedResult;
         }
       }
 
@@ -358,6 +394,14 @@ class ClipboardMonitor {
    * @returns {{changed: boolean, item: Object|null}}
    */
   tick(allowBump = true): TickResult {
+    // Win32 序号快速路径（2026-10-22 小M 性能修复）：序号未变 = 内容必未变，
+    // 120ms 轮询成本从「每拍全量读+双编码」降为「每拍一次整数调用」。
+    // 抑制窗口挂起期间不启用（否则基线重建被跳过，回写去重失效）。
+    const seq = this._getClipboardSeq();
+    if (seq !== null && this._suppressUntil === 0 && seq === this._lastClipSeq) {
+      return { changed: false, item: null };
+    }
+    if (seq !== null && Date.now() >= this._suppressUntil) this._lastClipSeq = seq;
     // 回写抑制窗口内：跳过归档（我们自己写的剪贴板内容不算用户复制）
     if (Date.now() < this._suppressUntil) return { changed: false, item: null };
     // 抑制刚结束的第一帧：重建基线 hash 为当前剪贴板内容（抑制期间的内容已被 consume），
