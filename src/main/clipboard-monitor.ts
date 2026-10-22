@@ -78,6 +78,8 @@ interface MonitorHistoryItem {
   links?: string[] | null;
   tags?: string[] | null;
   dataUrl?: string;
+  /** 缩略图 dataUrl（2026-10-22 IPC 载荷瘦身：渲染层列表只收缩略图，全图留主进程） */
+  thumbnail?: string;
   mimeType?: string;
   size?: number;
   width?: number;
@@ -558,10 +560,19 @@ class ClipboardMonitor {
         };
       }
       case 'image': {
+        // 缩略图（2026-10-22 IPC 载荷瘦身）：nativeImage resize 到高 96px（@2x 列表显示），
+        // IPC 只传缩略图 dataUrl——全尺寸 dataUrl 留在主进程（storage/copy-item 专用）
+        let thumbnail: string | undefined;
+        try {
+          const img = require('electron').nativeImage.createFromDataURL(result.dataUrl);
+          const th = img.resize({ height: 96 });
+          thumbnail = th.toDataURL();
+        } catch (_) { thumbnail = result.dataUrl; }
         return {
           ...base,
           type: 'image',
           dataUrl: result.dataUrl,
+          thumbnail,
           mimeType: this._mimeFromDataUrl(result.dataUrl),
           size: result.size,
           width: result.width,

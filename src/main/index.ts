@@ -984,7 +984,10 @@ class ClipboardSpikeApp {
   setupIPC() {
     // 渲染进程拉取历史
     ipcMain.handle('get-history', () => {
-      return this.monitor.getHistory();
+      // IPC 载荷瘦身（2026-10-22）：同 pushHistory——图片只送 thumbnail
+      return this.monitor.getHistory().map((it) =>
+        it.type === 'image' && it.thumbnail ? { ...it, dataUrl: it.thumbnail } : it
+      );
     });
 
     // 用默认浏览器打开 URL（协议白名单：仅 http/https）
@@ -1538,7 +1541,12 @@ class ClipboardSpikeApp {
   // 把当前历史推送给渲染进程
   pushHistory() {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send('history-updated', this.monitor.getHistory());
+      // IPC 载荷瘦身（2026-10-22 小M 面板卡顿）：图片条目只送 thumbnail（高 96px），
+      // 全尺寸 dataUrl 不出主进程（渲染层列表只显示缩略图；复制走 copy-item 主进程链路）
+      const slim = this.monitor.getHistory().map((it) =>
+        it.type === 'image' && it.thumbnail ? { ...it, dataUrl: it.thumbnail } : it
+      );
+      this.mainWindow.webContents.send('history-updated', slim);
     }
   }
 
