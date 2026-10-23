@@ -156,6 +156,7 @@ let petScale = 1.0;
 function applyScale(s) {
   petScale = Number(s) || 1;
   eachV(function (v) { v.style.height = Math.round(210 * petScale) + 'px'; });
+  reportBodyRect();
 }
 
 let webglOk = false;         // 资产就绪 = 矩形命中；未就绪 = 整窗命中
@@ -272,8 +273,33 @@ function cursorHit(x, y) {
   const bottom = r.bottom;
   return x >= cx - dispW / 2 && x <= cx + dispW / 2 && y >= bottom - dispH && y <= bottom;
 }
+let lastEchoSentAt = 0; // echo-alive 节流（2026-10-22 动态穿透心跳）
+function reportBodyRect() {
+  // 命中穿透 v2（2026-10-23）：本体矩形上报（窗口相对 DIP）——主进程 150ms 轮询
+  // 用它判定光标是否在本体上，驱动整窗交互/穿透切换（无 forward 依赖）。
+  // 几何与 cursorHit 同模型：自然宽高比 + 底中锚定。
+  const r = frontV.getBoundingClientRect();
+  const vw = frontV.videoWidth, vh = frontV.videoHeight;
+  let x, y, w, h;
+  if (vw && vh) {
+    h = r.height;
+    w = h * (vw / vh);
+    x = r.left + r.width / 2 - w / 2;
+    y = r.bottom - h;
+  } else {
+    x = r.left; y = r.top; w = r.width; h = r.height;
+  }
+  ipcRenderer.send('pet:body-rect', { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
+}
 function reportHit(x, y) {
   const hit = cursorHit(x, y);
+  // echo-alive（2026-10-22 动态穿透心跳）：主进程 500ms 看门狗以「窗口内移动是否有回声」
+  // 判定转发链路活性——移动时节流回报（250ms），状态变化仍立即上报
+  const nowE = performance.now();
+  if (hit !== lastHitReport || nowE - lastEchoSentAt > 250) {
+    lastEchoSentAt = nowE;
+    ipcRenderer.send('pet:cursor-hit', hit);
+  }
   if (hit === lastHitReport) return;
   lastHitReport = hit;
   // 悬停触发（网易 onMouseEvent hover 语义）：进入模型瞬间 + 冷却 7s + 仅待机态
@@ -286,7 +312,6 @@ function reportHit(x, y) {
     hoverCooldownUntil = Math.max(hoverCooldownUntil, now + 3000); // 离开冷却：防边界进出反复触发
   }
   cursorOnModel = hit;
-  ipcRenderer.send('pet:cursor-hit', hit);
 }
 
 // ==================== 指针交互（协议不变） ====================
@@ -352,6 +377,7 @@ window.addEventListener('contextmenu', function (e) {
 
 
 // 动作播完 → 回待机（非 loop 动作的统一出口）
+eachV(function (v) { v.addEventListener('loadeddata', reportBodyRect); });
 function onEndedCommon() { if (mode === 'webm' && state === 'action') playIdle(performance.now()); }
 video.addEventListener('ended', onEndedCommon);
 video2.addEventListener('ended', onEndedCommon);
@@ -457,6 +483,7 @@ function applyDirection() {
   eachV(function (v) { v.style.transform = 'translateX(-50%)' });
   eachV(function (v) { v.style.bottom = '0' });
   eachV(function (v) { v.style.top = 'auto' });
+  reportBodyRect();
 }
 function openCtx(st) {
   ctxOpen = true;

@@ -86,6 +86,7 @@ interface PetStageWindow {
   hide: () => void;
   showInactive: () => void;
   setAlwaysOnTop: (flag: boolean, level?: 'screen-saver') => void;
+  isAlwaysOnTop: () => boolean;
   getNativeWindowHandle: () => Buffer;
   getBounds: () => { x: number; y: number; width: number; height: number };
   setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
@@ -266,7 +267,11 @@ class ClipboardSpikeApp {
   _petPaintReady: boolean = false; // 渲染层双 rAF 首帧确认（paint-verified show，09-17 模式继承）
   _petShowFallback: ReturnType<typeof setTimeout> | null = null; // 确认链异常兑底直显定时器
   _petDragOffset: { dx: number; dy: number } | null = null;
-  _petAltActive: boolean = false;   // Alt 穿透态（edge-detector 边沿回调写入）
+  _petAltActive: boolean = false;
+  _petLastIgnoreApplied: boolean | null = null;
+  /** 宠物本体矩形（渲染层上报，窗口相对 DIP；2026-10-23 命中穿透 v2） */
+  _petBodyRect: { x: number; y: number; w: number; h: number } | null = null;
+  _petHitPollId: ReturnType<typeof setInterval> | null = null;   // Alt 穿透态（edge-detector 边沿回调写入）
   _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
   _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
   _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
@@ -700,19 +705,58 @@ class ClipboardSpikeApp {
    * mousemove 镜像），面板 v1 的「forward 镜像致视觉反应」教训不适用于此窗口。
    */
   _applyPetIgnore(): void {
-    // 可靠性定案（2026-10-14 实机两轮复现）：桌宠窗恒可交互，唯一例外 = Alt 按住穿透。
-    // 原「点击穿透 + forward mousemove 转发 + 渲染层命中回报」链路在 Windows 上不可靠
-    //（GPU 进程崩溃后转发静默失效 → cursor-hit 零回报 → 右键/悬停/点击全部穿透，实机复现）；
-    // 窗口本身小且贴角落，全窗交互的可用性代价可接受。轮廓命中/cursor-hit 链路退役。
+    // 命中穿透 v2（2026-10-23 小M 复测：forward 转发两次实测失活→看门狗回退整窗，
+    // 220x220 透明区重新挡鼠标 ~250px）。v2 主进程自持轮询驱动（无 forward 依赖）：
+    // 光标 vs 本体矩形 → 命中=整窗交互 / 未命中=整窗穿透（透明区让行下层）。
+    // hover 链路：命中沿变化时 sendInputEvent 合成 mousemove（不经 OS 转发，
+    // 免疫 GPU 崩溃场景的静默失效）。附带置顶自愈。
     const win = this.petStage;
     if (!win || win.isDestroyed()) return;
+    const ignore = this._petAltActive ? true : !(this._petCtxOpen || this._petCursorOnModel);
     try {
-      win.setIgnoreMouseEvents(this._petAltActive);
+      if (ignore !== this._petLastIgnoreApplied) {
+        this._petLastIgnoreApplied = ignore;
+        _modDiag('[Pet] 穿透模式 → ' + (ignore ? '穿透（透明区让行）' : '交互（宠物本体命中）'));
+      }
+      win.setIgnoreMouseEvents(ignore); // 无 forward：hover 由主进程合成 mousemove 驱动
     } catch (_) { /* 销毁竞态静默 */ }
+    this._ensurePetHitPoll();
+  }
+
+  /** 命中穿透轮询（150ms，惰性启动）：光标 vs 本体矩形 + 置顶自愈（2026-10-23） */
+  _ensurePetHitPoll(): void {
+    if (this._petHitPollId) return;
+    this._petHitPollId = setInterval(() => {
+      const win = this.petStage;
+      if (!win || win.isDestroyed()) return;
+      // 置顶自愈：模式切换/hide→show 周期可能掉出 topmost 带，150ms 内补回
+      if (!win.isAlwaysOnTop()) {
+        win.setAlwaysOnTop(true, 'screen-saver');
+      }
+      if (this._petCtxOpen || this._petAltActive) return; // 交互/Alt 态由既有逻辑管
+      const r = this._petBodyRect;
+      if (!r) return;
+      const cur = screen.getCursorScreenPoint();
+      const b = win.getBounds();
+      const hit = cur.x >= b.x + r.x && cur.x <= b.x + r.x + r.w
+        && cur.y >= b.y + r.y && cur.y <= b.y + r.y + r.h;
+      if (hit !== this._petCursorOnModel) {
+        this._petCursorOnModel = hit;
+        this._applyPetIgnore();
+        _modDiag('[Pet] poll hit=' + hit + ' cur=(' + cur.x + ',' + cur.y + ') win=(' + b.x + ',' + b.y + ' ' + b.width + 'x' + b.height + ') body=' + JSON.stringify(r));
+        // hover 链路：命中沿变化合成 mousemove（渲染层 reportHit 触发进入/离开语义）
+        try {
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cur.x - b.x), y: Math.round(cur.y - b.y) });
+        } catch (_) { /* 竞态静默 */ }
+      }
+    }, 150);
   }
 
   /** 销毁桌宠舞台（切回贴边/纯隐藏时；拖拽中间态一并清） */
   _destroyPetStage(): void {
+    if (this._petHitPollId) { clearInterval(this._petHitPollId); this._petHitPollId = null; }
+    this._petBodyRect = null;
+    this._petDragOffset = null;
     this._petDragOffset = null;
     if (this._petShowFallback) { clearTimeout(this._petShowFallback); this._petShowFallback = null; }
     if (this.petStage && !this.petStage.isDestroyed()) this.petStage.destroy();
@@ -1313,8 +1357,14 @@ class ClipboardSpikeApp {
       this._showPetWindow();
     });
     // 轮廓命中上报：驱动 ignore 语义切换（forward 转发保 hover 链路）
-    ipcMain.on('pet:cursor-hit', () => {
-      // 退役（2026-10-14）：桌宠窗恒可交互，命中回报不再驱动穿透切换
+    ipcMain.on('pet:cursor-hit', (_event: unknown, hit: boolean) => {
+      // 渲染层命中回报（交互态）：与主进程轮询双驱动（一致收敛）
+      this._petCursorOnModel = !!hit;
+      this._applyPetIgnore();
+    });
+    ipcMain.on('pet:body-rect', (_event: unknown, rect: { x: number; y: number; w: number; h: number }) => {
+      // 宠物本体矩形（渲染层按视频宽高比计算上报；2026-10-23 命中穿透 v2）
+      if (rect && typeof rect.x === 'number') this._petBodyRect = rect;
     });
     // 渲染层诊断上报（2026-10-13 实机返工）：装配/WebGL 失败落盘取证
     ipcMain.on('pet:diag', (_event: unknown, msg: unknown) => {
