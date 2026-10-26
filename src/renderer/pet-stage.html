@@ -265,9 +265,9 @@ requestAnimationFrame(tick);
 function cursorHit(x, y) {
   if (!webglOk) return true;
   if (mode === 'vrm') {
-    // VRM 命中矩形（2026-10-23）：宠物居中偏下（Canvas 220x220 中央 96px 宽）
+    // Shiba 四足站姿命中区（2026-10-26）：居中 130px 宽 × 下 62% 高（横体型）
     const W = window.innerWidth, H = window.innerHeight;
-    return x >= W / 2 - 48 && x <= W / 2 + 48 && y >= H * 0.22 && y <= H;
+    return x >= W / 2 - 65 && x <= W / 2 + 65 && y >= H * 0.38 && y <= H;
   }
   const r = frontV.getBoundingClientRect();
   const vw = frontV.videoWidth, vh = frontV.videoHeight;
@@ -289,8 +289,9 @@ function reportBodyRect() {
   // 主进程拿到垃圾矩形 → 穿透/交互错乱 → 拖拽失效（小M 实测）。
   if (mode === 'vrm') {
     const W = window.innerWidth, H = window.innerHeight;
+    // Shiba 四足站姿命中区（2026-10-26 模型切换）：居中 130px 宽 × 下 62% 高
     ipcRenderer.send('pet:body-rect', {
-      x: Math.round(W / 2 - 48), y: Math.round(H * 0.22), w: 96, h: Math.round(H * 0.78),
+      x: Math.round(W / 2 - 65), y: Math.round(H * 0.38), w: 130, h: Math.round(H * 0.62),
     });
     return;
   }
@@ -788,12 +789,9 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
-    const buf = await (await fetch('./pet-model.vrm')).arrayBuffer();
+    const buf = await (await fetch('./pet-shiba.glb')).arrayBuffer();
     const gltf = await loader.parseAsync(buf, '');
-    const vrm = gltf.userData.vrm;
-    VRMUtils.removeUnnecessaryVertices(gltf.scene);
-    VRMUtils.combineSkeletons(gltf.scene);
-    const root = vrm.scene;
+    const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
     const size = box.getSize(new THREE.Vector3());
     const baseScale = 1.1 / Math.max(0.0001, size.y);
@@ -824,31 +822,47 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
       mat.needsUpdate = true;
     });
     try { ipcRenderer.send('pet:diag', '[vrm] material census: ' + JSON.stringify({ mtoon: mtoonCount, firstMatType: mat0type })); } catch (_) {}
-    // ---- 弹簧骨骼激活（CatMoth 有 1 组 6 根 springBone）：头部朝向变化时
-    // 毛发/饰品物理摆动——「活物感」提升最大的单项。update(delta) 已在帧循环里。
-    try {
-      const springBoneManager = (vrm.springBoneManager) || null;
-      const jointCount = springBoneManager ? springBoneManager.joints.length : 0;
-      // 初始扰动：给弹簧骨骼一点初始速度，加载即有自然垂坠
-      root.position.y += 0.02;
-    } catch (_) {}
+    // GLB 动物模型无 VRM 弹簧骨骼（Tail/腿骨由内置动画驱动）
     scene.add(root);
 
-    // lookAt 目标（视线跟随光标）
-    const lookTarget = new THREE.Object3D();
-    scene.add(lookTarget);
-    if (vrm.lookAt) vrm.lookAt.target = lookTarget;
+    // GLB 动物模型：无 lookAt/表情系统（em=null 走无表情分支）
+    const lookTarget = null;
+    const em = null;
 
-    const em = vrm.expressionManager;
+    // 内置 8 个骨骼动画（AnimationMixer）：Idle/Idle_Eating/Jump_*/Run/Walk/Headbutt/Death
+    const mixer = new THREE.AnimationMixer(gltf.scene);
+    const clips = {};
+    for (const clip of gltf.animations) {
+      const short = clip.name.split('|').pop(); // 兼容 'AnimalArmature|...|Idle' 与裸名 'Idle'
+      if (!clips[short]) clips[short] = clip; // 首个优先（Shiba 有 Idle/Idle_2/Idle_2_HeadLow 变体）
+    }
+    let currentClip = null;
+    function playClip(name, loop = true) {
+      const clip = clips[name];
+      if (!clip) return;
+      const next = mixer.clipAction(clip);
+      next.reset();
+      next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+      next.clampWhenFinished = !loop;
+      if (currentClip && currentClip !== next) {
+        currentClip.fadeOut(0.25);
+      }
+      next.fadeIn(0.25);
+      next.play();
+      currentClip = next;
+    }
+    window.__glbClips = clips;
+    window.__glbPlay = playClip;
     let action = null;              // { name, t0, dur }
     let blinkPhase = 0, blinkNext = 2 + Math.random() * 3;
 
     window.__vrmAPI = {
       action(name) {
-        if (name === 'hover') action = { name, t0: performance.now(), dur: 1400 };
-        else if (name === 'react') action = { name, t0: performance.now(), dur: 1700 };
-        else if (name === 'drag') action = { name, t0: performance.now(), dur: 1e9 };
-        else if (name === 'idle') action = null;
+        // Shiba Inu 12 动画映射（2026-10-26）：状态机动作 → 内置骨骼动画
+        if (name === 'idle') { playClip('Idle'); action = null; }
+        else if (name === 'hover') { playClip('Idle_2_HeadLow', false); action = null; }
+        else if (name === 'react') { playClip('Jump_ToIdle', false); action = null; }
+        else if (name === 'drag') { playClip('Gallop'); action = null; }
       },
     };
 
@@ -856,7 +870,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
     function frame() {
       requestAnimationFrame(frame);
       const delta = Math.min(clock.getDelta(), 0.1);
-      vrm.update(delta); // 含 springBone 物理步进（joints 在 loader 内自动接管）
+      if (mixer) mixer.update(delta); // GLB 内置动画步进（Idle/Jump/Run…）
       const now = performance.now();
       const t = now / 1000;
       // 呼吸 + 轻摆（常驻）
@@ -866,7 +880,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
       // 视线跟随光标（主进程/经典脚本写入 window.__petCursorNX/NY）
       const nx = (window.__petCursorNX !== undefined) ? window.__petCursorNX : 0.5;
       const ny = (window.__petCursorNY !== undefined) ? window.__petCursorNY : 0.5;
-      lookTarget.position.set((nx - 0.5) * 2.4, 0.6 + (0.5 - ny) * 1.4, 2.9);
+      // GLB 模型无 lookAt 系统（视线跟随退役，2026-10-26 模型切换）
       // 轻微朝向光标（Y 轴 ±0.35rad）：MToon 分档阴影下转身立体感显著
       root.rotation.y = (nx - 0.5) * 0.7;
       // 表情基线
@@ -906,6 +920,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
       }
       renderer.render(scene, camera);
     }
+    playClip('Idle');
     frame();
     window.__vrmAccept({});
   } catch (err) {
