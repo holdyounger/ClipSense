@@ -807,19 +807,23 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
     // three-vrm 的 VRM 1.0 加载器已把 unlit 映射为 MToon，这里做的是调参增强：
     // ① 描边开箱即用（outlineWidthMode）；② shadeColorFactor 压暗为暖灰
     // （anime 感分档）；③ rimLight 假边缘光（材质层菲涅尔近似）。
-    let mtoonCount = 0;
+    let mtoonCount = 0, mat0type = 'none';
     root.traverse((obj) => {
+      if (obj.material && mat0type === 'none') mat0type = obj.material.type;
       const mat = obj.material;
       if (!mat || mat.isMToonMaterial !== true) return;
       mtoonCount++;
-      // 描边：世界单位 0.004（220px 视口下约 1px 细描边）
+      // 描边：0.012（220px 视口下约 3px，肉眼可辨）；色加深
       if ('outlineWidthMode' in mat) mat.outlineWidthMode = 'world';
-      if ('outlineWidthFactor' in mat) mat.outlineWidthFactor = 0.004;
-      if ('outlineColorFactor' in mat) mat.outlineColorFactor.setRGB(0.22, 0.20, 0.28);
-      // 阴影分档色：暖灰（不是纯黑，anime 柔和感）
-      if ('shadeColorFactor' in mat) mat.shadeColorFactor.setRGB(0.55, 0.52, 0.60);
+      if ('outlineWidthFactor' in mat) mat.outlineWidthFactor = 0.012;
+      if ('outlineColorFactor' in mat) mat.outlineColorFactor.setRGB(0.10, 0.09, 0.14);
+      // 阴影分档：明显灰紫（对比不足则 MToon 无感）
+      if ('shadeColorFactor' in mat) mat.shadeColorFactor.setRGB(0.38, 0.35, 0.45);
+      // 主光增强：分档阴影需要强光对比才可见
+      if ('shadeToonyFactor' in mat) mat.shadeToonyFactor = 0.9;
       mat.needsUpdate = true;
     });
+    try { ipcRenderer.send('pet:diag', '[vrm] material census: ' + JSON.stringify({ mtoon: mtoonCount, firstMatType: mat0type })); } catch (_) {}
     // ---- 弹簧骨骼激活（CatMoth 有 1 组 6 根 springBone）：头部朝向变化时
     // 毛发/饰品物理摆动——「活物感」提升最大的单项。update(delta) 已在帧循环里。
     try {
