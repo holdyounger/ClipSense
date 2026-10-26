@@ -31,3 +31,4 @@ src/renderer/pet-model.glb
 src/renderer/pet-model.vrm
 # 渲染探针日志（空文件）
 pet-render-log.txt
+src/renderer/pet-hunyuan-opt.glb
