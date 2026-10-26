@@ -719,19 +719,12 @@ function spriteTick(now) {
   playIdle(performance.now());
   nextIdleAt = performance.now() + 9000;
   var vrmFallbackTimer = setTimeout(function () { if (window.__vrmFail) window.__vrmFail('load timeout'); }, 6000);
+  // 2026-10-26 网易架构回归：混元模型经离线渲染（三点灯光配置）产出高质量
+  // WebM（idle 363KB / react 113KB，亮度层次 112/166/199）已部署——
+  // 质量锁定在制作期，运行时只播视频（网易方案核心）。vrm 模块保留代码不接管。
   window.__vrmAccept = function (api) {
     clearTimeout(vrmFallbackTimer);
-    setMode('vrm');
-    webglOk = true;
-    // 修复（2026-10-26 小M 实测拖拽失效）：不覆盖 __vrmAPI——模块在调用本回调前
-    // 已挂载带 action 方法的完整 API；此前 accept({}) 的空入参把它覆盖成 {}，
-    // 'action is not a function'（L238 实锤）→ 拖拽/点击反应/悬停全失效
-    try {
-      document.getElementById('vrmCanvas').style.display = 'block';
-      eachV(function (v) { v.style.display = 'none'; });
-    } catch (_) {}
-    reportBodyRect();
-    ipcRenderer.send('pet:diag', '[mode] vrm accepted (three.js 渲染)');
+    ipcRenderer.send('pet:diag', '[mode] vrm module loaded but webm kept (NetEase pipeline: Hunyuan offline render)');
   };
   window.__vrmFail = function (reason) {
     clearTimeout(vrmFallbackTimer);
@@ -763,6 +756,7 @@ function spriteTick(now) {
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
 (async () => {
@@ -776,8 +770,8 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 50);
-    camera.position.set(0, 0.75, 2.9);
-    camera.lookAt(0, 0.6, 0);
+    camera.position.set(0, 0.85, 3.2);
+    camera.lookAt(0, 0.62, 0);
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.25));
     const key = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -788,8 +782,12 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
     scene.add(fill);
 
     const loader = new GLTFLoader();
+    // Draco 解码（2026-10-26 混元模型切换：网格经 KHR_draco_mesh_compression 压缩）
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('./libs/draco/gltf/');
+    loader.setDRACOLoader(dracoLoader);
     loader.register((parser) => new VRMLoaderPlugin(parser));
-    const buf = await (await fetch('./pet-shiba.glb')).arrayBuffer();
+    const buf = await (await fetch('./pet-hunyuan-opt.glb')).arrayBuffer();
     const gltf = await loader.parseAsync(buf, '');
     const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
@@ -829,40 +827,18 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
     const lookTarget = null;
     const em = null;
 
-    // 内置 8 个骨骼动画（AnimationMixer）：Idle/Idle_Eating/Jump_*/Run/Walk/Headbutt/Death
-    const mixer = new THREE.AnimationMixer(gltf.scene);
-    const clips = {};
-    for (const clip of gltf.animations) {
-      const short = clip.name.split('|').pop(); // 兼容 'AnimalArmature|...|Idle' 与裸名 'Idle'
-      if (!clips[short]) clips[short] = clip; // 首个优先（Shiba 有 Idle/Idle_2/Idle_2_HeadLow 变体）
-    }
-    let currentClip = null;
-    function playClip(name, loop = true) {
-      const clip = clips[name];
-      if (!clip) return;
-      const next = mixer.clipAction(clip);
-      next.reset();
-      next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
-      next.clampWhenFinished = !loop;
-      if (currentClip && currentClip !== next) {
-        currentClip.fadeOut(0.25);
-      }
-      next.fadeIn(0.25);
-      next.play();
-      currentClip = next;
-    }
-    window.__glbClips = clips;
-    window.__glbPlay = playClip;
-    let action = null;              // { name, t0, dur }
+    // 混元模型无内置动画 → 整体动作系统（呼吸/跳跃/摇摆由帧循环程序化驱动，
+    // action 状态机控制幅度与表情式反馈）
+    let action = null; // { name, t0, dur }
     let blinkPhase = 0, blinkNext = 2 + Math.random() * 3;
 
     window.__vrmAPI = {
       action(name) {
-        // Shiba Inu 12 动画映射（2026-10-26）：状态机动作 → 内置骨骼动画
-        if (name === 'idle') { playClip('Idle'); action = null; }
-        else if (name === 'hover') { playClip('Idle_2_HeadLow', false); action = null; }
-        else if (name === 'react') { playClip('Jump_ToIdle', false); action = null; }
-        else if (name === 'drag') { playClip('Gallop'); action = null; }
+        // 整体动作映射（2026-10-26 混元切换）：无骨骼动画，用整体变换语义
+        if (name === 'idle') { action = null; }
+        else if (name === 'hover') { action = { name: 'hover', t0: performance.now(), dur: 1600 }; }
+        else if (name === 'react') { action = { name: 'react', t0: performance.now(), dur: 1400 }; }
+        else if (name === 'drag') { action = { name: 'drag', t0: performance.now(), dur: 1e9 }; }
       },
     };
 
@@ -870,7 +846,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
     function frame() {
       requestAnimationFrame(frame);
       const delta = Math.min(clock.getDelta(), 0.1);
-      if (mixer) mixer.update(delta); // GLB 内置动画步进（Idle/Jump/Run…）
+      // 混元模型无内置动画（2026-10-26）：动作由下方整体变换驱动，无 mixer
       const now = performance.now();
       const t = now / 1000;
       // 呼吸 + 轻摆（常驻）
@@ -920,7 +896,6 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
       }
       renderer.render(scene, camera);
     }
-    playClip('Idle');
     frame();
     window.__vrmAccept({});
   } catch (err) {
