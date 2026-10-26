@@ -101,6 +101,7 @@
 
 <video id="petVideo" muted autoplay loop playsinline></video>
 <video id="petVideo2" muted autoplay playsinline></video>
+<canvas id="vrmCanvas" style="position:absolute;inset:0;width:100%;height:100%;display:none"></canvas>
 <div id="ctxMenu">
   <div class="cm-hint" id="cmHint"></div>
   <div class="cm-confirm" id="cmConfirm"><span class="cm-q" id="cmQ"></span><span class="cm-yes" id="cmYes">退出</span><span class="cm-no" id="cmNo">取消</span></div>
@@ -234,7 +235,8 @@ function playAction(poolName, backToIdle) {
 function triggerReact() {
   state = 'action';
   nextIdleAt = performance.now() + 4200;
-  if (mode === 'webm') playAction('react');
+  if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('react');
+  else if (mode === 'webm') playAction('react');
 }
 let nextIdleAt = 0;
 
@@ -262,6 +264,11 @@ requestAnimationFrame(tick);
 // ==================== 命中检测（video 矩形；未就绪整窗） ====================
 function cursorHit(x, y) {
   if (!webglOk) return true;
+  if (mode === 'vrm') {
+    // VRM 命中矩形（2026-10-23）：宠物居中偏下（Canvas 220x220 中央 96px 宽）
+    const W = window.innerWidth, H = window.innerHeight;
+    return x >= W / 2 - 48 && x <= W / 2 + 48 && y >= H * 0.22 && y <= H;
+  }
   const r = frontV.getBoundingClientRect();
   const vw = frontV.videoWidth, vh = frontV.videoHeight;
   if (!vw || !vh) return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
@@ -277,7 +284,16 @@ let lastEchoSentAt = 0; // echo-alive 节流（2026-10-22 动态穿透心跳）
 function reportBodyRect() {
   // 命中穿透 v2（2026-10-23）：本体矩形上报（窗口相对 DIP）——主进程 150ms 轮询
   // 用它判定光标是否在本体上，驱动整窗交互/穿透切换（无 forward 依赖）。
-  // 几何与 cursorHit 同模型：自然宽高比 + 底中锚定。
+  // vrm 分支（2026-10-26）：与 cursorHit 的 vrm 矩形同模型（居中 96px 宽 × 下 78% 高）。
+  // 修复：vrm 模式下 video 是 display:none，getBoundingClientRect 返回 0 →
+  // 主进程拿到垃圾矩形 → 穿透/交互错乱 → 拖拽失效（小M 实测）。
+  if (mode === 'vrm') {
+    const W = window.innerWidth, H = window.innerHeight;
+    ipcRenderer.send('pet:body-rect', {
+      x: Math.round(W / 2 - 48), y: Math.round(H * 0.22), w: 96, h: Math.round(H * 0.78),
+    });
+    return;
+  }
   const r = frontV.getBoundingClientRect();
   const vw = frontV.videoWidth, vh = frontV.videoHeight;
   let x, y, w, h;
@@ -306,7 +322,8 @@ function reportHit(x, y) {
   const now = performance.now();
   if (hit && !cursorOnModel && state === 'idle' && now >= hoverCooldownUntil) {
     hoverCooldownUntil = now + 7000;
-    playAction('hover');
+    if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('hover');
+    else playAction('hover');
   }
   if (!hit && cursorOnModel) {
     hoverCooldownUntil = Math.max(hoverCooldownUntil, now + 3000); // 离开冷却：防边界进出反复触发
@@ -317,6 +334,8 @@ function reportHit(x, y) {
 // ==================== 指针交互（协议不变） ====================
 window.addEventListener('mousemove', function (e) {
   cursorNX = e.clientX / window.innerWidth;
+  window.__petCursorNX = cursorNX;
+  window.__petCursorNY = e.clientY / window.innerHeight;
   reportHit(e.clientX, e.clientY);
   if (pressing && !moved) {
     const dx = e.screenX - downSX, dy = e.screenY - downSY;
@@ -324,7 +343,8 @@ window.addEventListener('mousemove', function (e) {
       moved = true;
       state = 'action';
       ipcRenderer.send('pet:drag-start', e.screenX, e.screenY);
-      play('t1', true); // 拖拽期间 t1 循环（松手回待机）
+      if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('drag');
+      else play('t1', true); // 拖拽期间 t1 循环（松手回待机）
     }
   }
   if (moved) {
@@ -355,7 +375,7 @@ window.addEventListener('mouseup', function (e) {
   if (ctxOpen && ctxMenu.contains(e.target)) { pressing = false; return; }
   const wasClick = pressing && !moved;
   pressing = false;
-  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); playIdle(performance.now()); }
+  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
   else if (wasClick) { triggerReact(); ipcRenderer.send('pet:summon'); }
 });
 ['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
@@ -690,11 +710,33 @@ function spriteTick(now) {
     enterSpriteMode('动作库预载不完整，降级 2D 精灵');
     return;
   }
+  // vrm 优先（2026-10-23 three.js 接入）：模块加载成功 → __vrmAccept 切 vrm；
+  // 失败/超时 → __vrmFail 回退 webm（下述 webm 启动逻辑原样保留为回退路径）
   setMode('webm');
   webglOk = true;
   video.loop = true;
   playIdle(performance.now());
   nextIdleAt = performance.now() + 9000;
+  var vrmFallbackTimer = setTimeout(function () { if (window.__vrmFail) window.__vrmFail('load timeout'); }, 6000);
+  window.__vrmAccept = function (api) {
+    clearTimeout(vrmFallbackTimer);
+    setMode('vrm');
+    webglOk = true;
+    // 修复（2026-10-26 小M 实测拖拽失效）：不覆盖 __vrmAPI——模块在调用本回调前
+    // 已挂载带 action 方法的完整 API；此前 accept({}) 的空入参把它覆盖成 {}，
+    // 'action is not a function'（L238 实锤）→ 拖拽/点击反应/悬停全失效
+    try {
+      document.getElementById('vrmCanvas').style.display = 'block';
+      eachV(function (v) { v.style.display = 'none'; });
+    } catch (_) {}
+    reportBodyRect();
+    ipcRenderer.send('pet:diag', '[mode] vrm accepted (three.js 渲染)');
+  };
+  window.__vrmFail = function (reason) {
+    clearTimeout(vrmFallbackTimer);
+    if (mode === 'vrm') return;
+    ipcRenderer.send('pet:diag', '[mode] vrm fail → webm: ' + reason);
+  };
   video.addEventListener('loadeddata', function () {
     lastT0 = performance.now();
     requestAnimationFrame(function () {
@@ -708,6 +750,163 @@ function spriteTick(now) {
     } catch (_) {}
   }, 3000);
   // 首个 loadeddata 若 3s 未触发（异常），paint-ready 由主进程 1200ms 兜底
+})();
+</script>
+<script type="importmap">
+{"imports":{
+  "three":"../../node_modules/three/build/three.module.js",
+  "three/addons/":"../../node_modules/three/examples/jsm/",
+  "@pixiv/three-vrm":"../../node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+(async () => {
+  try {
+    if (!window.__vrmAccept) throw new Error('classic bridge missing');
+    const canvas = document.getElementById('vrmCanvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setSize(220, 220, false);
+    renderer.setClearColor(0x000000, 0);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 50);
+    camera.position.set(0, 0.75, 2.9);
+    camera.lookAt(0, 0.6, 0);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 1.25));
+    const key = new THREE.DirectionalLight(0xffffff, 1.5);
+    key.position.set(1.2, 2.2, 2.4);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xdfe8ff, 0.6);
+    fill.position.set(-1.5, 1.0, 1.5);
+    scene.add(fill);
+
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMLoaderPlugin(parser));
+    const buf = await (await fetch('./pet-model.vrm')).arrayBuffer();
+    const gltf = await loader.parseAsync(buf, '');
+    const vrm = gltf.userData.vrm;
+    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    VRMUtils.combineSkeletons(gltf.scene);
+    const root = vrm.scene;
+    const box = new THREE.Box3().setFromObject(root);
+    const size = box.getSize(new THREE.Vector3());
+    const baseScale = 1.1 / Math.max(0.0001, size.y);
+    root.scale.setScalar(baseScale);
+    const b2 = new THREE.Box3().setFromObject(root);
+    const c2 = b2.getCenter(new THREE.Vector3());
+    root.position.set(root.position.x - c2.x, root.position.y - b2.min.y, root.position.z - c2.z);
+    const baseY = root.position.y;
+    // ---- MToon 卡通渲染升级（2026-10-26 小M「没有网易的好看」）：
+    // CatMoth 原生 unlit 平涂材质 → 换 MToonMaterial（赛璐璐分档阴影 + 描边）。
+    // three-vrm 的 VRM 1.0 加载器已把 unlit 映射为 MToon，这里做的是调参增强：
+    // ① 描边开箱即用（outlineWidthMode）；② shadeColorFactor 压暗为暖灰
+    // （anime 感分档）；③ rimLight 假边缘光（材质层菲涅尔近似）。
+    let mtoonCount = 0;
+    root.traverse((obj) => {
+      const mat = obj.material;
+      if (!mat || mat.isMToonMaterial !== true) return;
+      mtoonCount++;
+      // 描边：世界单位 0.004（220px 视口下约 1px 细描边）
+      if ('outlineWidthMode' in mat) mat.outlineWidthMode = 'world';
+      if ('outlineWidthFactor' in mat) mat.outlineWidthFactor = 0.004;
+      if ('outlineColorFactor' in mat) mat.outlineColorFactor.setRGB(0.22, 0.20, 0.28);
+      // 阴影分档色：暖灰（不是纯黑，anime 柔和感）
+      if ('shadeColorFactor' in mat) mat.shadeColorFactor.setRGB(0.55, 0.52, 0.60);
+      mat.needsUpdate = true;
+    });
+    // ---- 弹簧骨骼激活（CatMoth 有 1 组 6 根 springBone）：头部朝向变化时
+    // 毛发/饰品物理摆动——「活物感」提升最大的单项。update(delta) 已在帧循环里。
+    try {
+      const springBoneManager = (vrm.springBoneManager) || null;
+      const jointCount = springBoneManager ? springBoneManager.joints.length : 0;
+      // 初始扰动：给弹簧骨骼一点初始速度，加载即有自然垂坠
+      root.position.y += 0.02;
+    } catch (_) {}
+    scene.add(root);
+
+    // lookAt 目标（视线跟随光标）
+    const lookTarget = new THREE.Object3D();
+    scene.add(lookTarget);
+    if (vrm.lookAt) vrm.lookAt.target = lookTarget;
+
+    const em = vrm.expressionManager;
+    let action = null;              // { name, t0, dur }
+    let blinkPhase = 0, blinkNext = 2 + Math.random() * 3;
+
+    window.__vrmAPI = {
+      action(name) {
+        if (name === 'hover') action = { name, t0: performance.now(), dur: 1400 };
+        else if (name === 'react') action = { name, t0: performance.now(), dur: 1700 };
+        else if (name === 'drag') action = { name, t0: performance.now(), dur: 1e9 };
+        else if (name === 'idle') action = null;
+      },
+    };
+
+    const clock = new THREE.Clock();
+    function frame() {
+      requestAnimationFrame(frame);
+      const delta = Math.min(clock.getDelta(), 0.1);
+      vrm.update(delta); // 含 springBone 物理步进（joints 在 loader 内自动接管）
+      const now = performance.now();
+      const t = now / 1000;
+      // 呼吸 + 轻摆（常驻）
+      const br = Math.sin(t * 2.1);
+      root.scale.set(baseScale * (1 - 0.004 * br), baseScale * (1 + 0.008 * br), baseScale * (1 - 0.004 * br));
+      root.rotation.z = Math.sin(t * 0.7) * 0.03;
+      // 视线跟随光标（主进程/经典脚本写入 window.__petCursorNX/NY）
+      const nx = (window.__petCursorNX !== undefined) ? window.__petCursorNX : 0.5;
+      const ny = (window.__petCursorNY !== undefined) ? window.__petCursorNY : 0.5;
+      lookTarget.position.set((nx - 0.5) * 2.4, 0.6 + (0.5 - ny) * 1.4, 2.9);
+      // 轻微朝向光标（Y 轴 ±0.35rad）：MToon 分档阴影下转身立体感显著
+      root.rotation.y = (nx - 0.5) * 0.7;
+      // 表情基线
+      let joy = 0, fun = 0;
+      let rootY = baseY;
+      if (action) {
+        const t01 = Math.min(1, (now - action.t0) / action.dur);
+        if (action.name === 'hover') {
+          fun = Math.sin(t01 * Math.PI);
+          root.rotation.x = -0.1 * Math.sin(t01 * Math.PI * 2);
+          if (t01 >= 1) action = null;
+        } else if (action.name === 'react') {
+          joy = 1;
+          rootY = baseY + Math.abs(Math.sin(t01 * Math.PI * 2)) * 0.14;
+          root.rotation.z += Math.sin(t01 * Math.PI * 6) * 0.06;
+          if (t01 >= 1) action = null;
+        } else if (action.name === 'drag') {
+          root.rotation.z += Math.sin(t * 8) * 0.07;
+          root.rotation.x = 0.06;
+        }
+      } else {
+        rootY = baseY;
+      }
+      root.position.y = rootY;
+      if (em) {
+        em.setValue('joy', joy);
+        em.setValue('fun', fun);
+        // 眨眼
+        blinkNext -= delta;
+        if (blinkNext <= 0 && blinkPhase <= 0) { blinkPhase = 0.22; blinkNext = 2.5 + Math.random() * 3.5; }
+        if (blinkPhase > 0) {
+          blinkPhase -= delta;
+          em.setValue('blink', Math.sin(Math.max(0, blinkPhase) / 0.22 * Math.PI));
+        } else {
+          em.setValue('blink', 0);
+        }
+      }
+      renderer.render(scene, camera);
+    }
+    frame();
+    window.__vrmAccept({});
+  } catch (err) {
+    if (window.__vrmFail) window.__vrmFail((err && err.message) || String(err));
+  }
 })();
 </script>
 </body>
