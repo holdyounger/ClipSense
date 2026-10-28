@@ -1,7 +1,9 @@
 <!doctype html>
-<!-- pet-render/index.html - 离线渲染页 v3（2026-10-14）：混元 3D 比熊（静态模型）
-     idle = 360° 转身 + 呼吸（8s/96帧，首尾无缝）；react = 弹跳两连（3s/36帧）
-     归一化一次锁定 baseScale，动画只乘净系数（不再逐帧 Box3 循环依赖） -->
+<!-- pet-render/index.html v3 - 个性化动作库离线渲染（2026-10-28）
+     模型：混元照片级比熊（890k 顶点原始精度，离线渲染不在乎体积）
+     输出：temp/pet-frames-hunyuan24/<动作名>/frame_XXXX.png（24fps）
+     动作表：14 个个性化动作，覆盖运行时全部状态机池（idle/click/hover/drag/react）
+     所有循环动作首尾无缝（周期函数整数频率）；单发动作首尾回中性站姿 -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -19,8 +21,8 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-const OUT_ROOT = path.join(__dirname, '..', '..', 'temp', 'pet-frames-hunyuan');
-const W = 300, H = 380, FPS = 24; // 2026-10-28：12→24fps（流畅度对齐网易，逐帧感根治）
+const OUT_ROOT = path.join(__dirname, '..', '..', 'temp', 'pet-frames-hunyuan24');
+const W = 300, H = 380, FPS = 24; // 2026-10-28：24fps 流畅度对齐网易
 const progress = (line) => ipcRenderer.send('render-progress', line);
 
 const canvas = document.getElementById('c');
@@ -48,61 +50,143 @@ progress('GLB size=' + Math.round(buf.length / 1024 / 1024) + 'MB');
 
 loader.parse(arrayBuffer, '', (gltf) => {
   const root = gltf.scene;
-  // 归一化一次：目标高 1.2、足底贴地、水平居中；锁定 baseScale
   const box = new THREE.Box3().setFromObject(root);
   const size = box.getSize(new THREE.Vector3());
-  const baseScale = 1.2 / Math.max(0.0001, size.y);
-  progress('raw ' + size.x.toFixed(2) + 'x' + size.y.toFixed(2) + 'x' + size.z.toFixed(2) + ' baseScale=' + baseScale.toFixed(4));
-  root.scale.setScalar(baseScale);
+  const S = 1.2 / Math.max(0.0001, size.y);
+  progress('raw ' + size.x.toFixed(2) + 'x' + size.y.toFixed(2) + 'x' + size.z.toFixed(2) + ' S=' + S.toFixed(4));
+  root.scale.setScalar(S);
   const b2 = new THREE.Box3().setFromObject(root);
   const c2 = b2.getCenter(new THREE.Vector3());
   root.position.set(root.position.x - c2.x, root.position.y - b2.min.y, root.position.z - c2.z);
-  const baseY = root.position.y;
+  const BASE_Y = root.position.y;
   scene.add(root);
 
-  async function renderFrames(name, frames, poseFn) {
-    const outDir = path.join(OUT_ROOT, name);
-    fs.mkdirSync(outDir, { recursive: true });
-    for (let f = 0; f < frames; f++) {
-      poseFn(f);
-      renderer.render(scene, camera);
-      const url = canvas.toDataURL('image/png');
-      fs.writeFileSync(path.join(outDir, 'frame_' + String(f).padStart(4, '0') + '.png'),
-        Buffer.from(url.split(',')[1], 'base64'));
-      if (f % 12 === 0) progress(name + ' ' + f + '/' + frames);
-      await new Promise((r) => setTimeout(r, 0));
-    }
-    return frames;
+  // 每帧渲染前重置到中性站姿，再由 pose 函数施加动作位移——杜绝跨帧污染
+  function reset() {
+    root.rotation.set(0, 0, 0);
+    root.scale.setScalar(S);
+    root.position.set(0, BASE_Y, 0);
   }
+
+  // ==================== 个性化动作表（2026-10-28 小M：动作也要个性化） ====================
+  // 全部为整体刚体变换（模型无骨骼）；循环动作用整数频率保证首尾无缝
+  const ACTIONS = [
+    // ---- idle 池（8s 循环 ×4 性格变体） ----
+    { name: 'd1', frames: 192, pose: (f, N) => { // 优雅转身：360° 展示 + 呼吸
+        const t = f / N, br = Math.sin(t * Math.PI * 2 * 1.75);
+        root.rotation.y = t * Math.PI * 2;
+        root.scale.set(S * (1 - 0.008 * br), S * (1 + 0.014 * br), S * (1 - 0.008 * br));
+      } },
+    { name: 'd2', frames: 192, pose: (f, N) => { // 好奇张望：左右回望 + 轻微倾斜
+        const t = f / N, br = Math.sin(t * Math.PI * 2 * 1.75);
+        root.rotation.y = Math.sin(t * Math.PI * 2) * 0.55;
+        root.rotation.z = Math.sin(t * Math.PI * 4) * 0.04;
+        root.scale.set(S * (1 - 0.008 * br), S * (1 + 0.014 * br), S * (1 - 0.008 * br));
+      } },
+    { name: 'd3', frames: 144, pose: (f, N) => { // 活泼三连跳：小跳 + 落地挤压
+        const t = f / N, hop = Math.abs(Math.sin(t * Math.PI * 3));
+        root.position.y = BASE_Y + hop * 0.12;
+        root.rotation.z = Math.sin(t * Math.PI * 6) * 0.06;
+        const sq = Math.max(0, Math.sin(t * Math.PI * 6));
+        root.scale.set(S * (1 - 0.03 * sq), S * (1 + 0.04 * sq), S * (1 - 0.03 * sq));
+      } },
+    { name: 'd4', frames: 192, pose: (f, N) => { // 蹲坐打盹：站→蹲（深呼吸×3）→起，首尾站立无缝
+        const t = f / N;
+        let c = t < 0.15 ? t / 0.15 : (t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25);
+        c = c * c * (3 - 2 * c);
+        const br = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 3);
+        root.position.y = BASE_Y - c * 0.16;
+        root.rotation.x = c * 0.10;
+        root.rotation.z = c * Math.sin(t * Math.PI * 4) * 0.05;
+        root.scale.set(S * (1 + 0.02 * c), S * (1 - 0.10 * c + 0.012 * br * c), S * (1 + 0.02 * c));
+      } },
+    // ---- click 池（单发 1-2s ×5） ----
+    { name: 'p1', frames: 36, pose: (f, N) => { // 弹跳两连
+        const t = f / N, hop = Math.abs(Math.sin(t * Math.PI * 2));
+        root.position.y = BASE_Y + hop * 0.14;
+        root.rotation.z = Math.sin(t * Math.PI * 4) * 0.06;
+        const sq = Math.sin(t * Math.PI * 4);
+        root.scale.set(S * (1 - 0.02 * sq), S * (1 + 0.025 * sq), S * (1 - 0.02 * sq));
+      } },
+    { name: 'p2', frames: 48, pose: (f, N) => { // 开心转圈：快转 + 小跳
+        const t = f / N;
+        root.rotation.y = t * Math.PI * 2;
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.10;
+        root.scale.set(S * (1 + 0.02 * Math.abs(Math.sin(t * Math.PI * 4))), S * (1 + 0.02 * Math.abs(Math.sin(t * Math.PI * 4))), S);
+      } },
+    { name: 'p3', frames: 30, pose: (f, N) => { // 扑向屏幕：前扑放大（ interact 感）
+        const t = f / N, lunge = Math.sin(t * Math.PI);
+        root.position.z = lunge * 0.55;
+        root.scale.setScalar(S * (1 + 0.10 * lunge));
+        root.rotation.x = -0.08 * lunge;
+      } },
+    { name: 'p4', frames: 36, pose: (f, N) => { // 快速摇摆：开心到扭起来
+        const t = f / N;
+        root.rotation.z = Math.sin(t * Math.PI * 4) * 0.14;
+        root.rotation.y = Math.sin(t * Math.PI * 4 + 1) * 0.12;
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 4)) * 0.04;
+      } },
+    { name: 'p5', frames: 36, pose: (f, N) => { // 好奇前倾：凑近看 + 左右看
+        const t = f / N, l = Math.sin(t * Math.PI);
+        root.rotation.x = -0.22 * l;
+        root.position.z = l * 0.30;
+        root.rotation.y = Math.sin(t * Math.PI * 2) * 0.15 * l;
+      } },
+    // ---- hover 池（单发 1-1.25s ×3） ----
+    { name: 'z1', frames: 30, pose: (f, N) => { // 低头嗅探 ×2
+        const t = f / N, dip = Math.abs(Math.sin(t * Math.PI * 2));
+        root.position.y = BASE_Y - dip * 0.06;
+        root.rotation.x = dip * 0.10;
+        root.position.z = dip * 0.12;
+      } },
+    { name: 'z2', frames: 24, pose: (f, N) => { // 点头 ×3
+        const t = f / N, nod = Math.abs(Math.sin(t * Math.PI * 3));
+        root.position.y = BASE_Y - nod * 0.05;
+        root.rotation.x = nod * 0.08;
+      } },
+    { name: 'z3', frames: 24, pose: (f, N) => { // 惊喜小跳：单跳 + 落地挤压
+        const t = f / N, hop = Math.sin(t * Math.PI);
+        root.position.y = BASE_Y + hop * 0.10;
+        const land = 1 - hop;
+        root.scale.set(S * (1 + 0.03 * land), S * (1 - 0.04 * land), S * (1 + 0.03 * land));
+      } },
+    // ---- drag 池（循环 1.5s） ----
+    { name: 't1', frames: 36, pose: (f, N) => { // 挣扎：扭动抗议（无缝循环）
+        const t = f / N;
+        root.rotation.z = Math.sin(t * Math.PI * 2) * 0.15;
+        root.rotation.x = Math.sin(t * Math.PI * 4) * 0.06;
+        root.rotation.y = Math.sin(t * Math.PI * 2 + 0.8) * 0.18;
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.03;
+      } },
+    // ---- react 池（单发 2.5s） ----
+    { name: 'heart1', frames: 60, pose: (f, N) => { // 兴奋：连跳 + 360° 转圈（衰减）
+        const t = f / N, decay = 1 - t * 0.3;
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.16 * decay;
+        root.rotation.y = t * Math.PI * 2;
+        const sq = Math.abs(Math.sin(t * Math.PI * 6));
+        root.scale.set(S * (1 + 0.02 * sq), S * (1 + 0.02 * sq), S);
+      } },
+  ];
 
   (async () => {
     try {
-      // idle：360° 转身 + 呼吸（96 帧无缝循环）
-      const n1 = await renderFrames('idle', 192, (f) => {
-        const t = f / 192;
-        root.rotation.y = t * Math.PI * 2;
-        const br = Math.sin(t * Math.PI * 2 * 1.75);
-        root.scale.set(
-          baseScale * (1 - 0.008 * br),
-          baseScale * (1 + 0.014 * br),
-          baseScale * (1 - 0.008 * br)
-        );
-        root.position.y = baseY;
-      });
-      // react：弹跳两连 + 快速摇摆（36 帧）
-      const n2 = await renderFrames('react', 72, (f) => {
-        const t = f / 72;
-        root.rotation.y = Math.sin(t * Math.PI * 4) * 0.25;
-        const hop = Math.abs(Math.sin(t * Math.PI * 2)) * 0.14;
-        root.position.y = baseY + hop;
-        const sq = Math.sin(t * Math.PI * 2);
-        root.scale.set(
-          baseScale * (1 - 0.04 * sq),
-          baseScale * (1 + 0.05 * sq),
-          baseScale * (1 - 0.04 * sq)
-        );
-      });
-      ipcRenderer.send('render-done', 'hunyuan idle=' + n1 + ' react=' + n2);
+      let total = 0;
+      for (const act of ACTIONS) {
+        const outDir = path.join(OUT_ROOT, act.name);
+        fs.mkdirSync(outDir, { recursive: true });
+        for (let f = 0; f < act.frames; f++) {
+          reset();
+          act.pose(f, act.frames);
+          renderer.render(scene, camera);
+          const url = canvas.toDataURL('image/png');
+          fs.writeFileSync(path.join(outDir, 'frame_' + String(f).padStart(4, '0') + '.png'),
+            Buffer.from(url.split(',')[1], 'base64'));
+          if (f % 24 === 0) progress(act.name + ' ' + f + '/' + act.frames);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        total += act.frames;
+      }
+      ipcRenderer.send('render-done', 'personalized actions=' + ACTIONS.length + ' frames=' + total);
     } catch (err) {
       progress('渲染失败: ' + (err && err.message));
       ipcRenderer.send('render-done', 'FAILED');
