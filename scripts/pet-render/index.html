@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 
 const OUT_ROOT = path.join(__dirname, '..', '..', 'temp', 'pet-frames-hunyuan');
-const W = 300, H = 380, FPS = 12;
+const W = 300, H = 380, FPS = 24; // 2026-10-28：12→24fps（流畅度对齐网易，逐帧感根治）
 const progress = (line) => ipcRenderer.send('render-progress', line);
 
 const canvas = document.getElementById('c');
@@ -78,8 +78,8 @@ loader.parse(arrayBuffer, '', (gltf) => {
   (async () => {
     try {
       // idle：360° 转身 + 呼吸（96 帧无缝循环）
-      const n1 = await renderFrames('idle', 96, (f) => {
-        const t = f / 96;
+      const n1 = await renderFrames('idle', 192, (f) => {
+        const t = f / 192;
         root.rotation.y = t * Math.PI * 2;
         const br = Math.sin(t * Math.PI * 2 * 1.75);
         root.scale.set(
@@ -90,8 +90,8 @@ loader.parse(arrayBuffer, '', (gltf) => {
         root.position.y = baseY;
       });
       // react：弹跳两连 + 快速摇摆（36 帧）
-      const n2 = await renderFrames('react', 36, (f) => {
-        const t = f / 36;
+      const n2 = await renderFrames('react', 72, (f) => {
+        const t = f / 72;
         root.rotation.y = Math.sin(t * Math.PI * 4) * 0.25;
         const hop = Math.abs(Math.sin(t * Math.PI * 2)) * 0.14;
         root.position.y = baseY + hop;
