@@ -73,7 +73,8 @@ interface IndexMainWindow {
   loadURL: (url: string) => unknown;
   destroy: () => void;
   webContents: IndexWebContents;
-}
+  /** 原生 HWND（Z 序回退抓粘贴目标用，win x64 为 8 字节指针 Buffer） */
+  getNativeWindowHandle: () => Buffer;}
 
 /** 触发条舞台窗口（主窗口面 + 贴边标记动态写入） */
 interface IndexTriggerWindow extends IndexMainWindow {
@@ -573,6 +574,9 @@ class ClipboardSpikeApp {
     if (mode === 'pet') {
       if (!wasPet) {
         // 收面板 + 收贴边条：桌宠接管隐藏态（轮询不停，穿透探针继续 tick）
+        // 状态对账（2026-10-29 单击失效修复）：直接 hide 绕过了 edge-detector，
+        // isWindowVisible 残留 true → 下次 pet:summon 被「已可见」守卫早退
+        ed.notifyExternalHide();
         if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
         if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
       }
@@ -585,6 +589,7 @@ class ClipboardSpikeApp {
         ed.forceShow();
       } else {
         // 纯隐藏：全收，仅 Alt+V/托盘 toggle 显式唤出
+        ed.notifyExternalHide(); // 同上状态对账
         if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
         if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
       }
@@ -610,6 +615,9 @@ class ClipboardSpikeApp {
       show: false,
       focusable: false, // 全程不夺焦（focus-tracker 链路安全）
       webPreferences: {
+        // 卡顿修复（2026-10-29）：永不夺焦窗口在部分场景被判后台 → rAF/定时器节流；
+        // 与离线渲染探针同款关闭（探针 main.js 早已验证 backgroundThrottling 必要性）
+        backgroundThrottling: false,
         // petStage 需 require('three')（CJS 产物）+ ipcRenderer：直开 node 集成，
         // 舞台加载的是仓库内置页面，无远程内容（PRD §2.1 本地依赖策略）
         nodeIntegration: true,
@@ -738,8 +746,14 @@ class ClipboardSpikeApp {
       if (!r) return;
       const cur = screen.getCursorScreenPoint();
       const b = win.getBounds();
-      const hit = cur.x >= b.x + r.x && cur.x <= b.x + r.x + r.w
-        && cur.y >= b.y + r.y && cur.y <= b.y + r.y + r.h;
+      // 迟滞命中（2026-10-29 卡顿/交互抖动修复）：150ms 轮询在矩形边缘高频翻转
+      // 穿透/交互（日志实锤 150ms 连续翻转，每翻一次 setIgnoreMouseEvents+合成事件）——
+      // 进入需深入 3px，离开需离界 6px，消除边界抖动
+      const inShrunk = cur.x >= b.x + r.x + 3 && cur.x <= b.x + r.x + r.w - 3
+        && cur.y >= b.y + r.y + 3 && cur.y <= b.y + r.y + r.h - 3;
+      const inExpanded = cur.x >= b.x + r.x - 6 && cur.x <= b.x + r.x + r.w + 6
+        && cur.y >= b.y + r.y - 6 && cur.y <= b.y + r.y + r.h + 6;
+      const hit = this._petCursorOnModel ? inExpanded : inShrunk;
       if (hit !== this._petCursorOnModel) {
         this._petCursorOnModel = hit;
         this._applyPetIgnore();
@@ -1193,6 +1207,7 @@ class ClipboardSpikeApp {
       const trackedHwnd = this.focusTracker ? this.focusTracker.getHwnd() : 0;
       const restoreHwnd = fgNow > 0 ? fgNow : trackedHwnd;
       console.log(`[Spike] paste target: fgNow=${fgNow} tracked=${trackedHwnd} -> use=${restoreHwnd}`);
+      _modDiag(`[Paste] target fgNow=${fgNow} tracked=${trackedHwnd} use=${restoreHwnd}`);
 
       // ① 先粘贴（面板 NOACTIVATE 不抢焦点，目标窗口仍在前台）
       // 初始化顺序保证调用时已创建（早调用与 .js 同点 TypeError）；! 为类型收窄
@@ -1210,8 +1225,10 @@ class ClipboardSpikeApp {
       if (!result.ok) {
         // 粘贴失败时面板保持显示：用户可直接重试或改用单击复制，不打断操作流
         console.warn(`[Spike] 选中条目粘贴失败: ${result.error}`);
+        _modDiag(`[Paste] FAILED error=${result.error} restored=${result.restored || ''}`);
       } else {
         console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview} (restored=${result.restored})`);
+        _modDiag(`[Paste] OK restored=${result.restored}`);
         // 粘贴成功后抑制轮询归档+重建基线：否则 600ms 轮询把刚粘贴的内容当新复制
         // 处理 → pushHistory → 渲染层全量重建 → 连续双击的 DOM 元素被销毁，
         // 第二击事件丢失（16:50「只有第一条成功」根因）
@@ -1647,10 +1664,23 @@ class ClipboardSpikeApp {
     const r: IndexCaptureVerbose = this.pasteBridge ? this.pasteBridge.captureForegroundVerbose() : { hwnd: 0, reason: 'no-bridge' };
     // 诊断直写 focusTracker 私有字段（既有债务，类型面经 FocusTrackerDiagnostics 收口）
     const ft = this.focusTracker!;
+    _modDiag(`[Paste] capture hwnd=${r.hwnd} reason=${r.reason || 'ok'} cls=${r.cls || ''}`);
     if (r.hwnd > 0) {
       ft._targetHwnd = r.hwnd;
       ft._trackedAt = Date.now();
     } else {
+      // Z 序回退（2026-10-29 双击粘贴修复第二幕）：唤出时前台是任务栏/桌面
+      //（Shell_TrayWnd 等被过滤 → tracked=0）时，面板正下方压着的顶层窗口
+      // 就是用户刚才在用的应用——Ditto 同款 GW_HWNDPREV 下探补抓
+      let fb = 0;
+      try {
+        if (this.mainWindow && !this.mainWindow.isDestroyed() && this.pasteBridge) {
+          const hb = this.mainWindow.getNativeWindowHandle();
+          const panelHwnd = Number(hb.readBigUInt64LE(0));
+          fb = this.pasteBridge.captureBelow(panelHwnd);
+        }
+      } catch { /* 回退失败保持 0 */ }
+      if (fb > 0) _modDiag(`[Paste] capture z-fallback hwnd=${fb}`);
       ft._targetHwnd = 0;
       ft._trackedAt = 0;
     }

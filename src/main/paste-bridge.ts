@@ -71,6 +71,7 @@ interface KoffiFuncInt {
 interface User32Funcs {
   SendInput: KoffiFunc;
   GetForegroundWindow: KoffiFunc;
+  GetWindow: KoffiFunc;
   SetForegroundWindow: KoffiFunc;
   ShowWindow: KoffiFunc;
   IsWindow: KoffiFunc;
@@ -123,6 +124,7 @@ function _bindUser32(): void {
   _user32 = {
     SendInput: user32.func('uint32 __stdcall SendInput(uint32 nInputs, void *pInputs, int cbSize)'),
     GetForegroundWindow: user32.func('intptr_t __stdcall GetForegroundWindow()'),
+    GetWindow: user32.func('intptr_t __stdcall GetWindow(intptr_t hWnd, uint32 nCmd)'),
     SetForegroundWindow: user32.func('bool __stdcall SetForegroundWindow(intptr_t hWnd)'),
     ShowWindow: user32.func('bool __stdcall ShowWindow(intptr_t hWnd, int nCmdShow)'),
     IsWindow: user32.func('bool __stdcall IsWindow(intptr_t hWnd)'),
@@ -135,6 +137,13 @@ function _bindUser32(): void {
     GetClassNameW: user32.func('int __stdcall GetClassNameW(intptr_t hWnd, uint16 *lpClassName, int nMaxCount)') as unknown as KoffiFuncInt,
   };
 }
+
+/** Shell/瞬态窗口类名（前台抓取过滤，verbose 与 captureForeground 共享；2026-10-29 双击粘贴修复） */
+const TRANSIENT_CLASSES = new Set([
+  'Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd',
+  '#32768', 'tooltips_class32',
+  'MSCTFIME UI', 'Default IME', 'IME', 'CyberHelper',
+]);
 
 /** captureForegroundVerbose 返回（带判定原因，供诊断与过滤） */
 interface CaptureVerboseResult {
@@ -238,12 +247,7 @@ class PasteBridge {
       if (winPid === _kernel32.GetCurrentProcessId()) {
         return fail('self-process', { pid: winPid, cls });
       }
-      const TRANSIENT = new Set([
-        'Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd',
-        '#32768', 'tooltips_class32',
-        'MSCTFIME UI', 'Default IME', 'IME', 'CyberHelper',
-      ]);
-      if (TRANSIENT.has(cls)) {
+      if (TRANSIENT_CLASSES.has(cls)) {
         return fail('shell-or-transient', { pid: winPid, cls });
       }
       console.log(`[PasteBridge] captureForeground: 记录 hwnd=${hwnd} pid=${winPid} class=${cls}`);
@@ -269,6 +273,16 @@ class PasteBridge {
       if (!_user32 || !_kernel32) return 0;
       const hwnd = Number(_user32.GetForegroundWindow());
       if (!hwnd) return 0;
+      // 过滤实现补齐（2026-10-29 双击粘贴修复）：文档一直声称排除自身/Shell，
+      // 实现却裸返回——面板获得焦点后 refresh() 把自己记成目标 → target-is-self。
+      // 现与 captureForegroundVerbose 同规则：自身进程 / Shell 瞬态类 → 0（调用方保留旧记录）。
+      const pidBuf = Buffer.alloc(4);
+      _user32.GetWindowThreadProcessId(hwnd, pidBuf);
+      if (pidBuf.readUInt32LE(0) === _kernel32.GetCurrentProcessId()) return 0;
+      const nb = Buffer.alloc(512);
+      const cn = _user32.GetClassNameW(hwnd, nb, 256);
+      const clsName = cn > 0 ? nb.toString('utf16le', 0, cn * 2) : '?';
+      if (TRANSIENT_CLASSES.has(clsName)) return 0;
       return hwnd;
     } catch (err) {
       console.warn('[PasteBridge] captureForeground 失败:', (err as Error).message);
@@ -276,6 +290,35 @@ class PasteBridge {
     }
   }
 
+  /**
+   * Z 序回退抓目标（2026-10-29 双击粘贴修复第二幕）：
+   * 唤出面板时前台可能是任务栏/桌面（无有效粘贴目标，tracked=0）。
+   * Ditto 同款思路：面板正下方压着的顶层窗口就是用户刚才在用的应用——
+   * 从 panelHwnd 沿 Z 序下探（GW_HWNDPREV），跳过自身/Shell 瞬态，取第一个合法者。
+   */
+  captureBelow(panelHwnd: number): number {
+    if (process.platform !== 'win32') return 0;
+    try {
+      this._ensure();
+      if (!_user32 || !_kernel32) return 0;
+      let cur = panelHwnd;
+      for (let depth = 0; depth < 8; depth++) {
+        cur = Number(_user32.GetWindow(cur, 4 /* GW_HWNDPREV */));
+        if (!cur) return 0;
+        const pidBuf = Buffer.alloc(4);
+        _user32.GetWindowThreadProcessId(cur, pidBuf);
+        if (pidBuf.readUInt32LE(0) === _kernel32.GetCurrentProcessId()) continue;
+        const nb = Buffer.alloc(512);
+        const cn = _user32.GetClassNameW(cur, nb, 256);
+        const cls = cn > 0 ? nb.toString('utf16le', 0, cn * 2) : '?';
+        if (TRANSIENT_CLASSES.has(cls)) continue;
+        return cur;
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
   /**
    * 目标句柄是否仍然有效（可见的顶层窗口）
    */

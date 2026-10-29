@@ -29,6 +29,9 @@ interface EdgeScreenApi {
   getDisplayNearestPoint: (point: EdgePoint) => EdgeDisplay;
 }
 
+// 弹出链路计时起点（2026-10-29 切换卡顿取证）：_showWindow 置位，_beginShowTransition 消费
+let __showT0 = 0;
+
 /** electron Display 子集（本模块消费 workArea/workAreaSize） */
 interface EdgeDisplay {
   workArea: EdgeRect;
@@ -114,6 +117,8 @@ class EdgeDetector {
   triggerHeight: number;
   hideDelay: number;
   checkInterval: number;
+  /** 桌宠唤出后面板未首次进入前挂起自动隐藏（2026-10-29 双击粘贴修复） */
+  _petAwaitPanelEnter: boolean;
   _lastIsOverPanel: boolean;
   _lastDraggedPos: { x: number; y: number } | null;
   _hiddenAtPos: { x: number; y: number } | null;
@@ -172,6 +177,7 @@ class EdgeDetector {
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
+    this._petAwaitPanelEnter = false;
     this._lastIsOverPanel = false;
     this._lastDraggedPos = null;
     this._hiddenAtPos = null;
@@ -407,8 +413,15 @@ class EdgeDetector {
         }
         if (this.isWindowVisible) {
           this._lastIsOverPanel = isOverPanel;
-          if (!isOverPanel) this.onMouseLeaveDebounced();
-          else this._cancelHideTimer();
+          if (!isOverPanel) {
+            // 桌宠唤出后面板未进入过：不启动隐藏计时（进入面板后恢复正常语义）
+            if (!this._petAwaitPanelEnter) this.onMouseLeaveDebounced();
+          } else {
+            this._petAwaitPanelEnter = false;
+            this._cancelHideTimer();
+          }
+
+
         }
       }
 
@@ -481,8 +494,14 @@ class EdgeDetector {
   }
 
   _showWindow(display?: EdgeDisplay): void {
+    __showT0 = performance.now(); // 切换卡顿取证
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-    if (this.isWindowVisible && !this._showAnimationId) return;
+    if (this.isWindowVisible && !this._showAnimationId) {
+      // 自愈对账（2026-10-29 单击失效修复）：标记可见但窗口实际隐藏 =
+      // 有外部 hide()（如切桌宠模式）绕过了本模块——复位标记继续弹出
+      if (!this.mainWindow.isVisible()) this.isWindowVisible = false;
+      else return;
+    }
 
     // 同步置可见标记：原先在异步 prepare 回调里才置 true，
     // 轮询的 100ms 空窗期内鼠标若静止在触发条热区上，会用 getBounds()（隐藏窗口也能取到）
@@ -622,11 +641,15 @@ class EdgeDetector {
    */
   _beginShowTransition(gen: number, edge: string): void {
     if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    console.log('[Perf] summon prepare→show ' + (performance.now() - __showT0).toFixed(1) + 'ms');
     this.mainWindow.showInactive();
     this._appliedOpacity = null; // 滑出期间透明度残值作废，按当前状态重设（首帧即正确）
     this._syncWindowOpacity();
     this._lastIsOverPanel = false;
-    // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
+// 桌宠唤出时鼠标在桌宠上：挂起自动隐藏直到首次进入面板，
+// 否则面板出生即带 3s 自毁，双击粘贴变成与隐藏计时赛跑（2026-10-29）
+    this._petAwaitPanelEnter = (this._mode === 'pet');
+        // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
     // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
     // （移出再移回才恢复）。合成 mousemove 已足够（1px 抖动已移除，勿恢复）。
     this._forceCursorHoverRefresh();
@@ -635,6 +658,7 @@ class EdgeDetector {
     // 隐藏态 rAF 未被节流（backgroundThrottling:false），双 rAF 等效 ~2 帧。
     const startIn = () => {
       if (gen !== this._showGeneration) return; // 锁已被 stop() 清除
+      console.log('[Perf] summon →slide-in ' + (performance.now() - __showT0).toFixed(1) + 'ms');
       this.mainWindow.webContents.executeJavaScript(
         `window.__clipSenseSlide && window.__clipSenseSlide('in','${edge}')`
       ).catch(() => {});
@@ -1028,6 +1052,21 @@ class EdgeDetector {
     // 的 isOverPanel 实时判定（它用 getBounds 算，不受快捷键路径影响）。
   }
 
+  /**
+   * 外部直接 hide 的状态对账（2026-10-29 切桌宠单击失效修复）：
+   * _applyHideMode 走 mainWindow.hide() 绕过 _hideWindow 动画链，
+   * isWindowVisible 残留 true → 下次 forceShow 被「已可见」守卫早退。
+   * 仅复位内存状态，零窗口操作零动画。
+   */
+  notifyExternalHide(): void {
+    this._cancelHideTimer();
+    this._cancelHideAnimation();
+    if (this._showAnimationId && this._showAnimationId !== 'pending') clearTimeout(this._showAnimationId);
+    this._showAnimationId = null;
+    this._showGeneration++; // 作废在途 prepare/show 链
+    this._isHiding = false;
+    this.isWindowVisible = false;
+  }
   forceShow(display: EdgeDisplay | null = null): void {
     this._cancelHideAnimation();
     if (!display) {

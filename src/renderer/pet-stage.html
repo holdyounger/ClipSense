@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- pet-stage.html - 桌宠舞台渲染层（v10·完整动作库 + 交互，2026-10-14）
-     网易素材全量接入：22 个动作视频（pet-moves/，已色键去底 alpha WebM）：
+     当前素材：14 个混元比熊动作（pet-moves/，VP9 alpha WebM，单一形象收口）；
+     p6-p8/p10/p11/p13/light 系仍是 0486b7d 旧参数化形象，未接线（待 AIGC 资产替换）：
        d1-d4   待机组（随机轮播，随机间隔切换——「拟真风格，4种动画」）
        p1-p13  互动组（左键点击随机播放一个，播完回待机）
        z1-z3 反馈组（鼠标悬停触发，7s 冷却）；t1 拖拽动作（拖拽期间循环）
@@ -99,8 +100,8 @@
 </head>
 <body>
 
-<video id="petVideo" muted autoplay loop playsinline></video>
-<video id="petVideo2" muted autoplay playsinline></video>
+<video id="petVideo" muted autoplay loop playsinline preload="auto"></video>
+<video id="petVideo2" muted autoplay playsinline preload="auto"></video>
 <canvas id="vrmCanvas" style="position:absolute;inset:0;width:100%;height:100%;display:none"></canvas>
 <div id="ctxMenu">
   <div class="cm-hint" id="cmHint"></div>
@@ -167,7 +168,9 @@ let cursorNX = 0.5;
 // 动作引擎状态
 const POOLS = {
   idle: ['d1', 'd2', 'd3', 'd4'],
-  click: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p10', 'p11', 'p13'],
+  // 单一形象收口（2026-10-28）：p6-p8/p10/p11/p13 仍是 0486b7d 旧参数化形象，
+  // 与混元比熊混播会「变身」——点击池收敛到 p1-p5 比熊五连，待 AIGC 资产替换后恢复全集
+  click: ['p1', 'p2', 'p3', 'p4', 'p5'],
   hover: ['z1', 'z2', 'z3'],
   drag: ['t1'],              // 网易语义修正（2026-10-15 小M）：t1=拖拽动作，拖拽期间循环播放
   react: ['heart1'],
@@ -200,24 +203,49 @@ function preloadBlobs() {
   return ok === all.length;
 }
 
+// 卡顿修复（2026-10-29）：
+// ① 复用后缓冲前先 pause 旧解码；交叉淡出（180ms）完成后暂停隐藏层——
+//    旧实现双 video 永续双解码，VP9 alpha 走软解路径时解码负载 ×2（持续掉帧主嫌疑）
+// ② 首帧对齐交换：requestVideoFrameCallback 等新片第一帧真正上屏才淡入——
+//    旧 loadeddata 交换在首帧未就绪时闪空白帧（动作切换 hitch）
+// ③ 修复 paint-ready 断链：首播实际落在 video2，旧监听却挂 video（无 src 永不触发），
+//    全靠主进程 1200ms 兜底显示——首帧交换时双 rAF 直发，恢复 paint-verified show
+let fadePauseTimer = null;
 function play(name, loop) {
   if (!BLOBS[name]) return;
   current = name;
-  // 双缓冲交叉淡入（2026-10-20 小M：鼠标进入闪烁 = 单 video 换 src 的白屏帧）
   const incoming = backV;
+  const outgoing = frontV;
+  incoming.pause();
   incoming.loop = !!loop;
-  incoming.src = BLOBS[name];
+  incoming.src = BLOBS[name]; // 换 src 自动回 0 位
   const swap = function () {
     incoming.style.opacity = '1';
-    frontV.style.opacity = '0';
-    if (frontV === video) { frontV = video2; backV = video; }
-    else { frontV = video; backV = video2; }
+    outgoing.style.opacity = '0';
+    frontV = incoming;
+    backV = outgoing;
+    if (fadePauseTimer) clearTimeout(fadePauseTimer);
+    fadePauseTimer = setTimeout(function () {
+      if (backV === outgoing && !outgoing.paused) outgoing.pause(); // 淡出后暂停隐藏层
+    }, 240);
+    reportBodyRect();
+    if (!window.__petPaintSent) {
+      window.__petPaintSent = true;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { ipcRenderer.send('pet-paint-ready'); });
+      });
+    }
   };
-  if (incoming.readyState >= 2) { swap(); incoming.play().catch(function () {}); }
-  else {
-    const onld = function () { incoming.removeEventListener('loadeddata', onld); swap(); incoming.play().catch(function () {}); };
+  incoming.play().then(function () {
+    if (typeof incoming.requestVideoFrameCallback === 'function') {
+      incoming.requestVideoFrameCallback(function () { swap(); });
+    } else {
+      swap();
+    }
+  }).catch(function () {
+    const onld = function () { incoming.removeEventListener('loadeddata', onld); swap(); };
     incoming.addEventListener('loadeddata', onld);
-  }
+  });
 }
 
 function playIdle(now) {
@@ -260,6 +288,13 @@ function tick(now) {
 }
 function t(now) { return now / 1000; }
 requestAnimationFrame(tick);
+// 卡顿取证（2026-10-29）：每 5s 上报解码掉帧/就绪态——区分「解码掉帧」与「切换 hitch/合成抖动」
+setInterval(function () {
+  if (mode !== 'webm' || !frontV.getVideoPlaybackQuality) return;
+  const q = frontV.getVideoPlaybackQuality();
+  ipcRenderer.send('pet:diag', '[perf] ' + current + ' dropped=' + q.droppedVideoFrames + '/' + q.totalVideoFrames
+    + ' ready=' + frontV.readyState + ' paused=' + frontV.paused + ' t=' + frontV.currentTime.toFixed(2));
+}, 5000);
 
 // ==================== 命中检测（video 矩形；未就绪整窗） ====================
 function cursorHit(x, y) {
@@ -377,7 +412,13 @@ window.addEventListener('mouseup', function (e) {
   const wasClick = pressing && !moved;
   pressing = false;
   if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
-  else if (wasClick) { triggerReact(); ipcRenderer.send('pet:summon'); }
+  else if (wasClick) {
+    // 切换卡顿优化（2026-10-29）：先唤出面板、延迟 420ms 再播反应动作——
+    // 旧时序 react 视频换源/解码/交叉淡入与面板 prepare+滑入同帧竞争 GPU/合成器，
+    // 是「桌宠切主界面卡顿」的渲染侧主因（面板动画本身是 transform+opacity，很轻）
+    ipcRenderer.send('pet:summon');
+    setTimeout(function () { triggerReact(); }, 420);
+  }
 });
 ['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
   window.addEventListener(evtName, function (e) {
