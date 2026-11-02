@@ -325,6 +325,12 @@ setInterval(function () {
 // ==================== 命中检测（video 矩形；未就绪整窗） ====================
 function cursorHit(x, y) {
   if (!webglOk) return true;
+  if (mode === 'sprite') {
+    // 精灵模式命中（2026-11-02 拖拽失效根因）：video 已 display:none，
+    // frontV 矩形全零导致判定恒 false → 拖拽/点击全失效。改用 sprite 元素矩形。
+    const sr = spriteEl.getBoundingClientRect();
+    return x >= sr.left && x <= sr.right && y >= sr.top && y <= sr.bottom;
+  }
   if (mode === 'vrm') {
     // Shiba 四足站姿命中区（2026-10-26）：居中 130px 宽 × 下 62% 高（横体型）
     const W = window.innerWidth, H = window.innerHeight;
@@ -343,6 +349,12 @@ function cursorHit(x, y) {
 }
 let lastEchoSentAt = 0; // echo-alive 节流（2026-10-22 动态穿透心跳）
 function reportBodyRect() {
+  if (mode === 'sprite') {
+    // 精灵模式：上报 sprite 元素矩形（2026-11-02 拖拽失效修复配套）
+    const sr = spriteEl.getBoundingClientRect();
+    ipcRenderer.send('pet:body-rect', { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) });
+    return;
+  }
   // 命中穿透 v2（2026-10-23）：本体矩形上报（窗口相对 DIP）——主进程 150ms 轮询
   // 用它判定光标是否在本体上，驱动整窗交互/穿透切换（无 forward 依赖）。
   // vrm 分支（2026-10-26）：与 cursorHit 的 vrm 矩形同模型（居中 96px 宽 × 下 78% 高）。
@@ -756,6 +768,8 @@ ctxMenu.addEventListener('mouseover', function (e) {
 function enterSpriteMode(reason) {
   if (mode === 'sprite') return;
   setMode('sprite');
+  webglOk = true; // 精灵模式也走矩形命中（2026-11-02：此前 webglOk=false 整窗命中与门槛冲突）
+  setTimeout(reportBodyRect, 60); // sprite 显示后上报矩形
   if (reason) ipcRenderer.send('pet:diag', reason);
   try {
     video.style.display = 'none';
