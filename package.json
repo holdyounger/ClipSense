@@ -9,6 +9,7 @@
     "prestart:dev": "npm run build:ts",
     "start:dev": "set NODE_ENV=development&& electron .",
     "build:ts": "tsc && node scripts/copy-assets.js",
+    "test": "node --test tests/*.test.js",
     "build": "npm run build:ts && electron-builder",
     "build:win": "npm run build:ts && electron-builder --win",
     "gen:icon": "node scripts/gen-icon.js"

@@ -98,4 +98,18 @@ function shouldAutoRespawn(petX: number, petY: number, panelBounds: { x: number;
   );
 }
 
-export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn };
+/** 恒交互决策（2026-10-30 终版，可测纯函数）：桌宠窗口 220x220 常驻可交互。
+ *  动态穿透四代方案（forward 转发/双驱动/迟滞轮询/交互区宽限）代代存在丢 mousedown
+ *  缝隙（实机日志：单击只剩 mouseup），根因是 scale 0.5 下透明区与命中 rect 缝隙
+ *  无法弥合。参数仅保留决策上下文位，当前恒 false（Alt 穿透语义已整体退出桌宠侧）。 */
+function computePetIgnore(_state: { altActive?: boolean; ctxOpen?: boolean; cursorOnModel?: boolean; interactive?: boolean }): boolean {
+  void _state;
+  return false;
+}
+
+/** 桌宠延迟登场判定（2026-10-30 可测纯函数）：桌宠模式且面板在场 → 不创建舞台，
+ *  待面板收起（setOnHidden）后再登场（启动优先展示主面板的需求语义）。 */
+function shouldDeferPetStage(opts: { petMode: boolean; panelVisible: boolean }): boolean {
+  return !!opts.petMode && !!opts.panelVisible;
+}
+export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage };

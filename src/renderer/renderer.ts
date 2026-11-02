@@ -543,6 +543,12 @@ function renderHistory(
 
     const div = document.createElement('div');
     div.className = 'item';
+    // 类型高亮条（2026-10-30 UI v3）：按首个内置标签着色，两侧常驻（CSS --bar-color/--bar-i）
+    const tagUtilsApi = (window as unknown as { __clipSenseTagUtils?: { pickBarTag?: (tags: string[]) => string | null } }).__clipSenseTagUtils;
+    const barTag = (tagUtilsApi && typeof tagUtilsApi.pickBarTag === 'function')
+      ? tagUtilsApi.pickBarTag(item.tags || [])
+      : ((item.tags || []).find((t) => t === 'link' || t === 'email' || t === 'otp' || t === 'snippet') || null);
+    if (barTag) div.classList.add('item--' + barTag);
     (div as HTMLElement & { _itemData?: ClipboardItem })._itemData = item;   // 事件委托用：重建后新元素仍带数据引用
 
     const meta = document.createElement('div');

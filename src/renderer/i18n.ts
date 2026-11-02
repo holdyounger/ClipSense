@@ -59,7 +59,7 @@ const I18N: Record<LangCode, I18nDict> = {
     backTop: '返回顶部',
     // Ctrl 按住透传（2026-10-13）：透传期间 hint 提示
     passthroughHint: '已按住 Alt：鼠标点击将穿透窗口，作用于下层应用',
-    searchPlaceholder: '搜索 内容或日期（date:昨天）...',
+    searchPlaceholder: '搜索历史内容... 支持 date:昨天 和 #标签',
     searchBtn: '搜索',
     statCount: (n: number) => `${n} 项` as string,
     statFiltered: (shown: number, total: number) => `${shown} / ${total} 项` as string,
@@ -131,7 +131,7 @@ const I18N: Record<LangCode, I18nDict> = {
     yesterday: 'Yesterday',
     backTop: 'Back to top',
     passthroughHint: 'Alt held: clicks pass through to the window below',
-    searchPlaceholder: 'Search text or date (date:yesterday)...',
+    searchPlaceholder: 'Search history... date:yesterday, #tag',
     searchBtn: 'Search',
     statCount: (n: number) => `${n} items` as string,
     statFiltered: (shown: number, total: number) => `${shown} / ${total} items` as string,

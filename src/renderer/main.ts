@@ -635,7 +635,7 @@ async function refresh(): Promise<void> {
 // 杜绝「列表被过滤但看不到搜索框」的隐形过滤不一致。不隐藏窗口。
 const headerEl = document.getElementById('header')!;
 const searchBtn = document.getElementById('searchBtn')!;
-let searchOpen = false; // header 搜索展开态
+let searchOpen = false; // 2026-10-30 v3.1：搜索迁出 header（Content 常驻），展开态状态机退役
 
 /** 光标移到输入框末尾（Ctrl+F 语义：已有词仅重新聚焦，不清词） */
 function setCursorToEnd(): void {
@@ -652,11 +652,7 @@ function setCursorToEnd(): void {
  *   false = 仅视觉展开（重显自洽规则），绝不抢焦点、不触发 setSearchActive。
  */
 async function openSearch({ focus = true }: { focus?: boolean } = {}): Promise<void> {
-  if (!searchOpen) {
-    searchOpen = true;
-    headerEl.classList.add('search-open');
-    syncHeaderExpanded(); // 搜索展开锁定展开高度（约束 4：hover 状态机让位）
-  }
+  // 常驻搜索（2026-10-30 v3.1）：无展开态，直达聚焦链路
   if (!focus) return;
   // 先等主进程 setFocusable(true)+focus() 完成，再做 DOM 聚焦（不夺焦架构的时序要求）
   try {
@@ -671,17 +667,13 @@ async function openSearch({ focus = true }: { focus?: boolean } = {}): Promise<v
  * blurSearch + setSearchActive(false) 恢复自动隐藏倒计时（与主进程双保险链路一致）。
  */
 function collapseSearch(): void {
-  if (!searchOpen && searchQuery === '') return; // 幂等短路（blur 重入不再重复走 IPC）
-  searchOpen = false;
+  // 常驻搜索语义（2026-10-30 UI v3）：只清词恢复未过滤列表，不收起不夺焦
+  if (searchQuery === '') return; // 幂等短路
   searchQuery = '';
-  headerEl.classList.remove('search-open');
   searchInput.value = '';
   refresh(); // 列表回到未过滤态（async，fire-and-forget）
-  // 输入框若仍持焦则主动失焦（真实 DOM：已失焦时 .blur() 不再派发 blur 事件，无重入）
-  searchInput.blur();
   window.clipboardAPI.blurSearch();
   window.clipboardAPI.setSearchActive(false);
-  syncHeaderExpanded(); // 搜索关闭后回归 hover 判定（约束 4）
 }
 
 /**
@@ -694,7 +686,7 @@ function handleSearchEscape(e: KeyboardEvent): void {
   // 回切后引爆）。keyCode 27 兼容旧派发路径。
   if (e.key !== 'Escape' && e.keyCode !== 27) return;
   if (e.isComposing) return;
-  if (!searchOpen) return;
+
   if (typeof e.preventDefault === 'function') e.preventDefault();
   collapseSearch();
 }
@@ -710,22 +702,14 @@ searchInput.addEventListener('focus', () => {
   window.clipboardAPI.setSearchActive(true);
 });
 
-// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
-// 例外：blur 落在搜索图标上（pointerdown preventDefault 失效时的兜底），
-// 由图标 click toggle 接管，避免「blur 先收起、click 再展开」竞态。
-// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
-// 例外一：blur 落在搜索图标上（pointerdown preventDefault 失效时的兑底）。
-// 例外二（2026-09-10 实机 BUG2「任意输入都收起」）：IME 组合、窗口失活、
-// setFocusable(true⇄false) 激活切换都会在输入框持焦期间派发 blur，但 DOM 焦点
-// 实际未转移（activeElement 仍是输入框或仍在 header 内）——这类「伪 blur」不收起，
-// 避免打字/输入法过程被误清词。真实焦点转移（activeElement 离开 header）才收起；
-// 鼠标点击 header 外的非焦点区由 document click-outside 处理器兑底收起。
+// 失焦（2026-10-30 UI v3 常驻搜索）：仅解除「输入中」挂起，词保留不清；
+// 清词只走 Esc / 图标两条路径（collapseSearch）。
 searchInput.addEventListener('blur', () => {
-  if (document.activeElement === searchBtn) return;
-  if (document.activeElement === searchInput) return;
-  if (document.activeElement && headerEl.contains(document.activeElement)) return;
-  collapseSearch();
+  // 常驻搜索（2026-10-30 UI v3）：失焦仅挂起解除，词保留（清词只走 Esc/图标）
+  window.clipboardAPI.blurSearch();
+  window.clipboardAPI.setSearchActive(false);
 });
+
 
 searchInput.addEventListener('input', () => {
   searchQuery = searchInput.value;
@@ -759,12 +743,8 @@ searchBtn.addEventListener('pointerdown', (e) => {
 });
 
 searchBtn.addEventListener('click', (e) => {
-  e.stopPropagation(); // 不冒泡到「header 外点击收起」逻辑
-  if (searchOpen && document.activeElement === searchInput) {
-    collapseSearch();
-  } else {
-    openSearch();
-  }
+  e.stopPropagation(); // 不冒泡（旧 header 外点击收起已移除，保留防联动）
+  openSearch(); // 常驻搜索：图标即聚焦入口（2026-10-30 UI v3）
 });
 
 // 面板任意处按下 → 按需启用键盘焦点（2026-09-10 实机 BUG1「Ctrl+F 不响应」修复）：
@@ -777,13 +757,8 @@ document.addEventListener('pointerdown', () => {
   window.clipboardAPI.focusSearch();
 });
 
-// 点击 header 外区域收起（展开但未持焦态的主要收起路径；持焦态由 blur 先行收起，
-// 此处幂等）。header 内点击（含 pin/menu/输入框/图标本身）不在此收起。
-document.addEventListener('click', (e) => {
-  if (!searchOpen) return;
-  if (headerEl.contains(e.target as Node)) return;
-  collapseSearch();
-});
+// 常驻搜索（2026-10-30 UI v3）：点击外部不再收起（旧 click-outside 收起监听移除）
+
 
 // 实机 BUG（2026-09-17）：搜索结果条目无法点击展开/复制，点击后搜索框关闭。
 // 根因：点击条目 mousedown → 输入框 blur → collapseSearch 同步 refresh() 全量
@@ -1043,7 +1018,7 @@ const headerHoverUi = (typeof createHeaderHoverUi === 'function' &&
 function syncHeaderExpanded(): void {
   if (!headerHoverUi) return;
   // 2026-09-30：二级菜单已取消（功能迁托盘），菜单强制展开分支随之移除
-  const force = searchOpen;
+  const force = false; // 搜索迁出 header（2026-10-30 v3.1）：hover 状态机独立驱动
   headerHoverUi.applyHover(force || headerHoverFromMain);
 }
 

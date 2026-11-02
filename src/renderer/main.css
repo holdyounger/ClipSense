@@ -58,7 +58,7 @@ html, body {
   display: flex;
   flex-direction: column; /* 方案 A（2026-09-28）：纵向布局承载内容行 + 辅助行 */
   justify-content: center;
-  padding: 4px 12px; /* 公共基线 2026-09-29 缩减档：静止态 32px（内容行 24 + 上下 4） */
+  padding: 2px 12px; /* 2026-10-30 压缩：静止态 28px（内容行 24 + 上下 2） */
   /* 两段式透明度（2026-09-30）：渐变两色标 alpha 消费 --win-alpha（固定 60%/倒计时透视），
      header 与列表区域统一衰减；文字/按钮保持全不透明可读。 */
   background: linear-gradient(135deg,
@@ -98,7 +98,7 @@ html, body {
    FLIP transform 补偿（spring 240/22，只动 transform，性能红线零豁免）。
    搜索展开（.search-open）/菜单打开时渲染层强制挂 header--hover（锚点锁定）。 */
 .header--hover {
-  height: 60px;
+  height: 40px; /* 2026-10-30 压缩：搜索迁出 header 后 60→40 */
 }
 
 /* 辅助信息行（2026-09-30 小M 调整）：「共 N 条 · 上次复制时间」移入 header 行中部常驻显示
@@ -722,6 +722,15 @@ body.mod-pass .hint {
    绘制（卡片遮住身后透视底），保证可读性；其余条目维持窗口透明度。 */
 .item:hover {
   opacity: 1;
+  /* 物理直觉 hover（2026-10-30 UI v3.1）：上浮 2px + 投影加深（抬离桌面），
+     类型条保持身份标识，hover 走立体反馈而非边框高亮 */
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+}
+
+/* 按压回弹（物理反馈闭环）：点击瞬间轻微下沉缩合 */
+.item:active {
+
 }
 
 
@@ -735,14 +744,15 @@ body.mod-pass .hint {
   content: '';
   position: absolute;
   left: 0;
-  top: 50%;
+  top: 0;
   width: 3px;
-  height: 60%;
-  border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, var(--accent), #6c5ce7);
+  height: 100%;
+  border-radius: 8px 0 0 8px;
+  background: var(--bar-color, linear-gradient(180deg, var(--accent), #6c5ce7));
   box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
-  opacity: var(--dock-i, 0);
-  transform: translateY(-50%) scaleY(var(--dock-i, 0));
+  /* 类型常驻条（2026-10-30 UI v3）：--bar-i/--bar-color 由 .item--<tag> 注入；
+     强度 = max(磁吸辉光, 常驻)，opacity 由浏览器钳制到 [0,1] */
+  opacity: min(1, calc(var(--dock-i, 0) + var(--bar-i, 0)));
   transform-origin: center;
   pointer-events: none;
 }
@@ -752,14 +762,15 @@ body.mod-pass .hint {
   content: '';
   position: absolute;
   right: 0;
-  top: 50%;
+  top: 0;
   width: 3px;
-  height: 60%;
-  border-radius: 3px 0 0 3px;
-  background: linear-gradient(180deg, var(--accent), #6c5ce7);
+  height: 100%;
+  border-radius: 0 8px 8px 0;
+  background: var(--bar-color, linear-gradient(180deg, var(--accent), #6c5ce7));
   box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
-  opacity: var(--dock-i, 0);
-  transform: translateY(-50%) scaleY(var(--dock-i, 0));
+  /* 类型常驻条（2026-10-30 UI v3）：--bar-i/--bar-color 由 .item--<tag> 注入；
+     强度 = max(磁吸辉光, 常驻)，opacity 由浏览器钳制到 [0,1] */
+  opacity: min(1, calc(var(--dock-i, 0) + var(--bar-i, 0)));
   transform-origin: center;
   pointer-events: none;
   /* 强度由 JS 逐帧驱动，CSS 不加 transition（避免双轨插值打架） */
@@ -1018,6 +1029,81 @@ body.mod-pass .hint {
   background: var(--accent);
   border-color: var(--accent-hover);
 }
+/* 类型高亮条（2026-10-30 UI v3）：按首个内置标签着色，两侧常驻（::before/::after 消费） */
+.item--link    { --bar-color: #4a9eff; --bar-i: 1; }
+.item--email   { --bar-color: #a29bfe; --bar-i: 1; }
+.item--otp     { --bar-color: #2ecc71; --bar-i: 1; }
+.item--snippet { --bar-color: #f39c12; --bar-i: 1; }
+
+/* 内容顶部工具区（2026-10-30 UI v3）：搜索栏 + 标签筛选（移出 header/footer） */
+.content-top {
+  flex-shrink: 0;
+  padding: 6px 10px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  height: 30px;
+  background: rgba(40, 40, 48, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.search-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(162, 155, 254, 0.25);
+}
+
+.search-bar .search-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+}
+
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.search-bar input::placeholder {
+  color: var(--muted);
+}
+
+.content-top .search-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.content-top .search-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.content-top .tag-filter-chip {
+  padding: 1px 8px;
+  font-size: 10.5px;
+}
+
+.content-top .tag-filter {
+  flex-wrap: nowrap; /* 单行横向滚动（2026-10-30 压缩：多行 chips 吃掉半屏） */
+  min-height: 0;
+}
 
 .actions {
   display: flex;
@@ -1140,3 +1226,9 @@ body.mod-pass .hint {
 .rules-form input { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 4px 6px; font-size: 12px; }
 .rules-form-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .rules-form-row button { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 3px 10px; cursor: pointer; }
+
+/* hint 引导条隐藏（2026-10-30 UI v3）：与 content-top 叠加后裁切难看，
+   引导职责由欢迎页覆盖；元素保留（main.ts 引用兼容），仅视觉隐藏 */
+.hint {
+  display: none;
+}

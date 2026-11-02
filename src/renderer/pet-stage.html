@@ -422,6 +422,7 @@ window.addEventListener('mousedown', function (e) {
   try { ipcRenderer.send('pet:diag', '[ctx-mousedown] target=' + (e.target.id || e.target.tagName) + ' contains=' + ctxMenu.contains(e.target) + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
   if (e.button !== 0) return;
   const _hit = cursorHit(e.clientX, e.clientY);
+  if (_hit) { ipcRenderer.send('pet:cursor-hit', true); } // 点击期续锁（2026-11-02）
   const _vr = frontV.getBoundingClientRect();
   try { ipcRenderer.send('pet:diag', '[mdown-gate] hit=' + _hit + ' pt=' + e.clientX + ',' + e.clientY
     + ' vrect=' + Math.round(_vr.left) + ',' + Math.round(_vr.top) + ' ' + Math.round(_vr.width) + 'x' + Math.round(_vr.height)

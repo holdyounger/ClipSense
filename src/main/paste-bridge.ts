@@ -82,6 +82,7 @@ interface User32Funcs {
   GetAsyncKeyState: KoffiFuncInt;
   SystemParametersInfoW: KoffiFunc;
   GetClassNameW: KoffiFuncInt;
+  GetWindowTextW: KoffiFuncInt;
 }
 
 /** kernel32 函数集 */
@@ -135,6 +136,7 @@ function _bindUser32(): void {
     GetAsyncKeyState: user32.func('int16 __stdcall GetAsyncKeyState(int nVirtKey)') as unknown as KoffiFuncInt,
     SystemParametersInfoW: user32.func('bool __stdcall SystemParametersInfoW(uint32 uiAction, uint32 uiParam, void *pvParam, uint32 fWinIni)'),
     GetClassNameW: user32.func('int __stdcall GetClassNameW(intptr_t hWnd, uint16 *lpClassName, int nMaxCount)') as unknown as KoffiFuncInt,
+    GetWindowTextW: user32.func('int __stdcall GetWindowTextW(intptr_t hWnd, uint16 *lpString, int nMaxCount)') as unknown as KoffiFuncInt,
   };
 }
 
@@ -290,6 +292,16 @@ class PasteBridge {
     }
   }
 
+  /** 窗口标题（截断 80 字符，取证用：区分同类名 Electron 窗口归属） */
+  private _windowTitle(hwnd: number): string {
+    try {
+      if (!_user32 || !hwnd) return '?';
+      const buf = Buffer.alloc(256);
+      const n = _user32.GetWindowTextW(hwnd, buf, 128);
+      const t = n > 0 ? buf.toString('utf16le', 0, n * 2) : '';
+      return t.length > 80 ? t.slice(0, 80) + '…' : (t || '(空)');
+    } catch { return '?'; }
+  }
   /**
    * Z 序回退抓目标（2026-10-29 双击粘贴修复第二幕）：
    * 唤出面板时前台可能是任务栏/桌面（无有效粘贴目标，tracked=0）。
@@ -426,7 +438,7 @@ class PasteBridge {
             const fn = _user32.GetClassNameW(fgHwnd, fb, 256);
             if (fn > 0) fgCls = fb.toString('utf16le', 0, fn * 2);
           } catch { /* ignore */ }
-          console.log(`[PasteBridge] 需要切焦点: 目标=${hwnd} 当前前台=${fgHwnd}(${fgCls})`);
+          console.log('[PasteBridge] 需要切焦点: 目标=' + hwnd + '(' + this._windowTitle(hwnd) + ') 当前前台=' + fgHwnd + '(' + fgCls + ')');
 
           const fgTidVal = _user32.GetWindowThreadProcessId(fgHwnd, null);
           const tgtTidVal = _user32.GetWindowThreadProcessId(hwnd, null);
@@ -467,6 +479,10 @@ class PasteBridge {
           return { ok: false, restored, error: 'restore-denied' };
         }
 
+        // Electron 目标（VSCode 等 Chromium 系）激活后需要短暂稳定期：
+        // OS 前台已切换但内部 webview 焦点还在回置，立即注入的键会被吞
+        //（2026-10-29 VSCode 双击无内容取证修复）。'same' 路径无切换，不加延迟。
+        if (restored !== 'same') this._sleep(35);
         // --- 修饰键等待（CopyQ 模型，防 Alt+V 手指残留污染） ---
         const modsReleased = this._waitForModifiersReleased();
         if (!modsReleased) {
@@ -479,7 +495,7 @@ class PasteBridge {
           ? { mod: VK_LSHIFT, vk: VK_INSERT }
           : { mod: VK_LCONTROL, vk: VK_V };
         const sent = this._sendChord(chord.mod, chord.vk);
-        console.log(`[PasteBridge] pasteTo 完成: hwnd=${hwnd} restored=${restored} sent=${sent} key=${chord.vk === VK_V ? 'ctrl-v' : 'shift-insert'}`);
+        console.log('[PasteBridge] pasteTo 完成: hwnd=' + hwnd + '(' + this._windowTitle(hwnd) + ') restored=' + restored + ' sent=' + sent + ' key=' + (chord.vk === VK_V ? 'ctrl-v' : 'shift-insert'));
         if (!sent || sent < 4) {
           return { ok: false, restored, error: 'sendinput-failed' };
         }
@@ -534,4 +550,9 @@ class PasteBridge {
 }
 
 // CJS 单导出：require('./paste-bridge') 得到 { PasteBridge }（与 .js 原版形状一致）
-export = { PasteBridge };
+/** 双击粘贴目标决策（2026-10-30 可测纯函数）：前台抓取优先（自身/瞬态已被过滤为 0），
+ *  回退 tracked（唤出面板时记录的原前台）。双 0 = 无目标（调用方拒绝注入）。 */
+function resolvePasteTarget(fgNow: number, trackedHwnd: number): number {
+  return fgNow > 0 ? fgNow : trackedHwnd;
+}
+export = { PasteBridge, resolvePasteTarget };

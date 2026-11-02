@@ -278,7 +278,11 @@ _petModeOn: boolean = false;
   _petLastIgnoreApplied: boolean | null = null;
   /** 宠物本体矩形（渲染层上报，窗口相对 DIP；2026-10-23 命中穿透 v2） */
   _petBodyRect: { x: number; y: number; w: number; h: number } | null = null;
-  _petHitPollId: ReturnType<typeof setInterval> | null = null;   // Alt 穿透态（edge-detector 边沿回调写入）
+  _petHitPollId: ReturnType<typeof setInterval> | null = null;
+  /** 交互锁定（2026-11-02 拖拽失效根因）：命中后 600ms 内轮询不切穿透——
+   *  150ms 轮询周期与用户点击碰撞时，mousedown 落在穿透切换瞬间被 OS 吞掉
+   *  （日志实证：mouseup 全到达、mousedown 零到达）。锁定覆盖完整点击动作。 */
+  _petInteractLockUntil: number = 0;   // Alt 穿透态（edge-detector 边沿回调写入）
   _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
   _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
   _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
@@ -753,7 +757,10 @@ _petModeOn: boolean = false;
       // 根因是 220x220 内透明区与命中 rect 的缝隙在 scale 0.5 下无法弥合。
       // 改网易式小窗恒交互：仅 Alt 保留穿透。代价：窗口透明区挡下层点击（可接受）
       // 恒交互决策收敛至 pet-manager.computePetIgnore（2026-10-30 可测纯函数）
-      const ignore = computePetIgnore({ altActive: this._petAltActive, ctxOpen: this._petCtxOpen, cursorOnModel: this._petCursorOnModel, interactive: this._petInteractive });
+      // 交互锁定（2026-11-02 拖拽失效根因）：命中后 600ms 内轮询不切穿透——
+      // 150ms 轮询周期与用户点击碰撞时 mousedown 被吞（日志实证：mouseup 全到达、mousedown 零到达）
+      const locked = Date.now() < this._petInteractLockUntil;
+      const ignore = this._petAltActive ? true : locked ? false : computePetIgnore({ altActive: this._petAltActive, ctxOpen: this._petCtxOpen, cursorOnModel: this._petCursorOnModel, interactive: this._petInteractive });
     try {
       if (ignore !== this._petLastIgnoreApplied) {
         this._petLastIgnoreApplied = ignore;
@@ -790,6 +797,9 @@ _petModeOn: boolean = false;
       const inExpanded = cur.x >= b.x + r.x - 6 && cur.x <= b.x + r.x + r.w + 6
         && cur.y >= b.y + r.y - 6 && cur.y <= b.y + r.y + r.h + 6;
       const hit = this._petCursorOnModel ? inExpanded : inShrunk;
+      if (hit) {
+        this._petInteractLockUntil = Date.now() + 600; // 命中即锁定 600ms（覆盖完整点击）
+      }
       if (hit !== this._petCursorOnModel) {
         this._petCursorOnModel = hit;
         this._applyPetIgnore();
@@ -1516,7 +1526,9 @@ _petModeOn: boolean = false;
       if (!this.petStage || this.petStage.isDestroyed()) return;
       const pos = this.petStage.getPosition();
       this._petDragOffset = { dx: sx - pos[0], dy: sy - pos[1] };
-      try { this.petStage.setIgnoreMouseEvents(true); } catch (_) { /* 竞态静默 */ }
+      // 拖拽期保持交互（2026-11-02 拖拽失效根因）：旧实现 setIgnoreMouseEvents(true)
+      // 让窗口对鼠标透明 → 渲染层收不到 mousemove → drag-move 永远发不出 → 窗口不动。
+      // 窗口由 drag-move 跟随光标移动，光标始终在窗口内，保持交互即可。
     });
     ipcMain.on('pet:drag-move', (_event: unknown, sx: number, sy: number) => {
       if (!this.petStage || this.petStage.isDestroyed() || !this._petDragOffset) return;

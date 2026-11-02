@@ -303,31 +303,25 @@ describe('A. IPC 驱动接线：header:hover → .header--hover（补测：既�
     assert.strictEqual(h.listEl.style.transform, '');
   });
 
-  test('A3 强制展开·搜索（约束 4）：search-open 锁高，IPC false 不让位；Esc 收起后回归 hover 判定', async () => {
+  test('A3 常驻搜索（2026-10-30 v3.1）：图标 = 聚焦入口，不锁 header 高度；Esc 仅清词', async () => {
     const h = loadWiring();
     await h.settle();
     const btn = h.document.getElementById('searchBtn');
     btn.dispatch('click', { target: btn });
     await flushAsync();
-    drainQueue(h.rafQueue);
-    assert.ok(h.headerEl.classList.contains('search-open'), '搜索展开');
-    assert.ok(h.headerEl.classList.contains('header--hover'), '强制挂展开高度');
+    assert.ok(h.headerEl.classList.contains('search-open') === false, '常驻搜索无展开态 class');
+    assert.strictEqual(h.document.activeElement, h.document.getElementById('searchInput'), '输入框已聚焦');
     h.handlers.headerHover(false); // 主进程判定：光标已离开 header 带
     drainQueue(h.rafQueue);
-    assert.ok(h.headerEl.classList.contains('header--hover'), '搜索期间 hover 让位，锁定展开');
-    // Esc 收起（收起即清词链路）→ 回归 hover 判定（当前 false → 塌回静止）
-    const animsBeforeEsc = h.anims.length;
+    // Esc 清词：词清但焦点保持（常驻搜索不收起）
     const input = h.document.getElementById('searchInput');
+    input.value = 'alpha';
+    input.dispatch('input'); // 同步 searchQuery（真实链路）
     input.dispatch('keydown', { key: 'Escape' });
     await flushAsync();
-    drainQueue(h.rafQueue); // 收起 FLIP Play 执行
-    assert.ok(!h.headerEl.classList.contains('search-open'));
-    assert.ok(!h.headerEl.classList.contains('header--hover'), '搜索关闭后回归 hover 判定');
-    // 收起动画播完（WAAPI finish → onfinish 清理）后无残留
-    const closeAnim = h.anims[h.anims.length - 1];
-    assert.strictEqual(h.anims.length, animsBeforeEsc + 1, 'Esc 后恰有一次收起 FLIP 动画');
-    closeAnim.onfinish();
-    assert.strictEqual(h.listEl.style.transform, '', '无 FLIP 残留');
+    assert.strictEqual(input.value, '', 'Esc 清词');
+    assert.strictEqual(h.document.activeElement, input, '焦点保持');
+    // 常驻搜索（2026-10-30 v3.1）：无收起动画语义——Esc 只清词，焦点保持
   });
 
   test('A4 强制展开·搜索（约束 4 剩余面；菜单已取消迁托盘 2026-09-30）', async () => {
@@ -523,11 +517,11 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
     const css = readRoot('src/renderer/main.css');
     const headerBlock = css.match(/\.header\s*\{[^}]*\}/);
     assert.ok(headerBlock, '.header 块存在');
-    assert.ok(/height:\s*32px/.test(headerBlock[0]), '静止态常量 32px');
+    assert.ok(/28px/.test(headerBlock[0]) && /padding: 2px 12px/.test(headerBlock[0]), '静止态 28px（内容 24 + 上下 2×2，2026-10-30 压缩）');
     assert.ok(!/transition/.test(headerBlock[0]), 'header 本体无 transition（height 瞬切）');
     const hoverBlock = css.match(/\.header--hover\s*\{[^}]*\}/);
     assert.ok(hoverBlock, '.header--hover 块存在');
-    assert.ok(/height:\s*60px/.test(hoverBlock[0]), '展开态常量 60px');
+    assert.ok(/height:\s*40px/.test(hoverBlock[0]), '展开态常量 40px（2026-10-30 压缩）');
     assert.ok(!/transition/.test(hoverBlock[0]), '展开态块无 height transition');
   });
 
@@ -558,8 +552,7 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
     assert.ok(html.includes('<div class="header-meta" id="headerMeta">'), '辅助行容器');
     const iRow = html.indexOf('class="header-row"');
     const iMeta = html.indexOf('id="headerMeta"');
-    const iSearch = html.indexOf('class="header-search"');
-    assert.ok(iMeta > iRow && iMeta < iSearch, 'meta 位于 header-row 内、搜索框之前（2026-09-30 行中置）');
+    assert.ok(iMeta > iRow, 'meta 位于 header-row 内');
     const iUi = html.indexOf('header-hover-ui.js');
     const iMain = html.indexOf('src="main.js"');
     assert.ok(iUi >= 0 && iMain > iUi, 'header-hover-ui.js 必须先于 main.js（main 顶层引用其工厂）');
@@ -597,13 +590,13 @@ describe('D. 落盘静态断言（方案 A 参数与红线的文件级锚定）'
     assert.ok(/isWindowVisible && !this\._isHiding/.test(ed), '仅可见且非滑出中判定（收起瞬间悬挂防护）');
     const mj = readRoot('src/renderer/main.ts');
     assert.ok(mj.includes('window.__clipSenseHeaderSnap'), '渲染层 snap 桥落盘');
-    assert.ok(mj.includes('const force = searchOpen;'), '强制展开汇总：搜索（菜单已取消，单一来源）');
+    assert.ok(mj.includes('const force = false;'), '强制展开汇总：搜索迁出 header，hover 独立驱动（2026-10-30 v3.1）');
     // 2026-09-30 菜单取消：强制展开汇总仅剩搜索一路（菜单迁托盘）
     assert.ok(!mj.includes('dropdownMenu'), 'dropdownMenu 引用已清（迁托盘）');
     const marks = (mj.match(/markListRebuilt\(\)/g) || []).length;
     assert.ok(marks >= 3, `markListRebuilt 调用点 ${marks} ≥ 3（refresh/搜索收起/两处重建点）`);
     const syncs = (mj.match(/syncHeaderExpanded\(\)/g) || []).length;
-    assert.ok(syncs >= 6, `syncHeaderExpanded 调用点 ${syncs} ≥ 6（数据/搜索/菜单联动）`);
+    assert.ok(syncs >= 4, `syncHeaderExpanded 调用点 ${syncs} ≥ 4（数据/hover 联动；搜索迁出 header 后收敛，2026-10-30 v3.1）`);
   });
 });
 
