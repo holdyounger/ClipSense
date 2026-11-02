@@ -212,7 +212,7 @@ function preloadBlobs() {
 //    全靠主进程 1200ms 兜底显示——首帧交换时双 rAF 直发，恢复 paint-verified show
 let fadePauseTimer = null;
 function play(name, loop) {
-  if (!BLOBS[name] || !stageVisible) return; // 隐藏期不上片（性能二轮：避免隐藏解码）
+  if (!BLOBS[name]) return;
   current = name;
   const incoming = backV;
   const outgoing = frontV;
@@ -269,51 +269,25 @@ function triggerReact() {
 let nextIdleAt = 0;
 
 // ==================== 主帧循环（行为调度） ====================
-// 性能二轮（2026-10-29）：常驻 60fps rAF 只为看「下次轮换时间」99% 空转——拆两路：
-//   ① 待机轮换 + 变换复位兜底：1s 粒度 setTimeout（轮换周期 8-16s，1s 检查足够）
-//   ② 拖拽微摆：仅拖拽期间 rAF 逐帧（moved 才启动，松手即停）
-function tickOnce() {
-  if (mode !== 'webm' || !stageVisible) return;
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (mode !== 'webm') return;
   // 待机轮播：每 8-16s 换一个待机动作（d1-d4 轮着来，不重复上一个）
-  if (state === 'idle' && performance.now() >= nextIdleAt) {
+  if (state === 'idle' && now >= nextIdleAt) {
     lastIdle = current;
-    playIdle(performance.now());
-    nextIdleAt = performance.now() + 8000 + Math.random() * 8000;
+    playIdle(now);
+    nextIdleAt = now + 8000 + Math.random() * 8000;
   }
-  // 变换复位兜底（拖拽后/菜单会话后的残留补偿）
-  if (!moved && !ctxOpen) {
+  // 拖拽挣扎微摆
+  if (moved) {
+    eachV(function (v) { v.style.transform =
+      'translateX(calc(-50% + ' + ((cursorNX - 0.5) * 8).toFixed(1) + 'px)) rotate(' + (Math.sin(t(now) * 8) * 3).toFixed(2) + 'deg)'; });
+  } else if (!ctxOpen) {
     eachV(function (v) { if (v.style.transform !== 'translateX(-50%)') v.style.transform = 'translateX(-50%)'; });
   }
 }
-setInterval(tickOnce, 1000);
-
-// 拖拽挣扎微摆：拖拽期间 rAF 逐帧，松手即停（不再常驻）
-let wobbleRaf = 0;
-function wobbleLoop(now) {
-  if (!moved) {
-    wobbleRaf = 0;
-    eachV(function (v) { if (v.style.transform !== 'translateX(-50%)') v.style.transform = 'translateX(-50%)'; });
-    return;
-  }
-  eachV(function (v) { v.style.transform =
-    'translateX(calc(-50% + ' + ((cursorNX - 0.5) * 8).toFixed(1) + 'px)) rotate(' + (Math.sin((now / 1000) * 8) * 3).toFixed(2) + 'deg)'; });
-  wobbleRaf = requestAnimationFrame(wobbleLoop);
-}
-// 隐藏期空转治理（2026-10-29 性能二轮）：面板可见期主进程隐藏舞台，bgThrottling 已关
-// ——隐藏窗口会全速渲染/解码。隐藏即暂停双 video，重现时恢复当前片。
-let stageVisible = true;
-ipcRenderer.on('pet:stage-visibility', function (_e, active) {
-  stageVisible = !!active;
-  window.__petStageVis = stageVisible;
-  try { ipcRenderer.send('pet:diag', '[stage-vis] ' + active); } catch (_) {}
-  try {
-    if (stageVisible) {
-      frontV.play().catch(function () {});
-      reportBodyRect(); // 恢复时重报本体矩形（主进程轮询恢复后立即有数据）
-    } else { video.pause(); video2.pause(); }
-  } catch (_) {}
-});
-
+function t(now) { return now / 1000; }
+requestAnimationFrame(tick);
 // 卡顿取证（2026-10-29）：每 5s 上报解码掉帧/就绪态——区分「解码掉帧」与「切换 hitch/合成抖动」
 setInterval(function () {
   if (mode !== 'webm' || !frontV.getVideoPlaybackQuality) return;
@@ -325,12 +299,6 @@ setInterval(function () {
 // ==================== 命中检测（video 矩形；未就绪整窗） ====================
 function cursorHit(x, y) {
   if (!webglOk) return true;
-  if (mode === 'sprite') {
-    // 精灵模式命中（2026-11-02 拖拽失效根因）：video 已 display:none，
-    // frontV 矩形全零导致判定恒 false → 拖拽/点击全失效。改用 sprite 元素矩形。
-    const sr = spriteEl.getBoundingClientRect();
-    return x >= sr.left && x <= sr.right && y >= sr.top && y <= sr.bottom;
-  }
   if (mode === 'vrm') {
     // Shiba 四足站姿命中区（2026-10-26）：居中 130px 宽 × 下 62% 高（横体型）
     const W = window.innerWidth, H = window.innerHeight;
@@ -349,12 +317,6 @@ function cursorHit(x, y) {
 }
 let lastEchoSentAt = 0; // echo-alive 节流（2026-10-22 动态穿透心跳）
 function reportBodyRect() {
-  if (mode === 'sprite') {
-    // 精灵模式：上报 sprite 元素矩形（2026-11-02 拖拽失效修复配套）
-    const sr = spriteEl.getBoundingClientRect();
-    ipcRenderer.send('pet:body-rect', { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) });
-    return;
-  }
   // 命中穿透 v2（2026-10-23）：本体矩形上报（窗口相对 DIP）——主进程 150ms 轮询
   // 用它判定光标是否在本体上，驱动整窗交互/穿透切换（无 forward 依赖）。
   // vrm 分支（2026-10-26）：与 cursorHit 的 vrm 矩形同模型（居中 96px 宽 × 下 78% 高）。
@@ -415,7 +377,6 @@ window.addEventListener('mousemove', function (e) {
     const dx = e.screenX - downSX, dy = e.screenY - downSY;
     if (Math.abs(dx) + Math.abs(dy) > 10) {
       moved = true;
-      if (!wobbleRaf) wobbleRaf = requestAnimationFrame(wobbleLoop);
       state = 'action';
       ipcRenderer.send('pet:drag-start', e.screenX, e.screenY);
       if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('drag');
@@ -431,15 +392,8 @@ window.addEventListener('mousemove', function (e) {
   }
 });
 window.addEventListener('mousedown', function (e) {
-  try { ipcRenderer.send('pet:diag', '[ctx-mousedown] target=' + (e.target.id || e.target.tagName) + ' contains=' + ctxMenu.contains(e.target) + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
   if (e.button !== 0) return;
-  const _hit = cursorHit(e.clientX, e.clientY);
-  if (_hit) { ipcRenderer.send('pet:cursor-hit', true); } // 点击期续锁（2026-11-02）
-  const _vr = frontV.getBoundingClientRect();
-  try { ipcRenderer.send('pet:diag', '[mdown-gate] hit=' + _hit + ' pt=' + e.clientX + ',' + e.clientY
-    + ' vrect=' + Math.round(_vr.left) + ',' + Math.round(_vr.top) + ' ' + Math.round(_vr.width) + 'x' + Math.round(_vr.height)
-    + ' vw/vh=' + frontV.videoWidth + '/' + frontV.videoHeight + ' mode=' + mode); } catch (_) {}
-  if (!_hit) return; // 命中区收缩（2026-10-20 小M）：透明区不再拖拽
+  if (!cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20 小M）：透明区不再拖拽
   pressing = true; moved = false; downSX = e.screenX; downSY = e.screenY;
 });
 // 滚轮缩放（2026-10-15 修复：v4 重构时监听器丢失导致滚轮失效）——
@@ -457,7 +411,7 @@ window.addEventListener('mouseup', function (e) {
   if (ctxOpen && ctxMenu.contains(e.target)) { pressing = false; return; }
   const wasClick = pressing && !moved;
   pressing = false;
-  if (moved) { moved = false; if (wobbleRaf) { cancelAnimationFrame(wobbleRaf); wobbleRaf = 0; } ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
+  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
   else if (wasClick) {
     // 切换卡顿优化（2026-10-29）：先唤出面板、延迟 420ms 再播反应动作——
     // 旧时序 react 视频换源/解码/交叉淡入与面板 prepare+滑入同帧竞争 GPU/合成器，
@@ -469,7 +423,6 @@ window.addEventListener('mouseup', function (e) {
 ['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
   window.addEventListener(evtName, function (e) {
     try { ipcRenderer.send('pet:diag', '[input] ' + evtName + ' btn=' + e.button + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
-    try { ipcRenderer.send('pet:diag', '[evt] ' + evtName + ' hasFocus=' + (document.hasFocus && document.hasFocus()) + ' vis=' + (window.__petStageVis === undefined ? '?' : window.__petStageVis)); } catch (_) {}
   }, true); // capture：最先记录
 });
 window.addEventListener('contextmenu', function (e) {
@@ -662,8 +615,7 @@ ipcRenderer.on('pet:ctx-show', function (_e, st) {
 });
 let pendingWin = null;
 // 失焦自动关闭双通道：DOM mouseleave 快路径 + 主进程 OS 光标轮询权威（pet:ctx-hide）
-document.addEventListener('pointerdown', function (e) { try { ipcRenderer.send('pet:diag', '[ptr-down-doc] at ' + e.clientX + ',' + e.clientY + ' vis=' + window.__petStageVis); } catch (_) {} }, true);window.addEventListener('mouseleave', function () { if (ctxOpen) closeCtx(true, 'dom-mouseleave'); });
-window.addEventListener('mouseleave', function () { try { if (ctxOpen) ipcRenderer.send('pet:diag', '[ctx-mouseleave] at screen ' + window.screenX + ',' + window.screenY); } catch (_) {} });
+window.addEventListener('mouseleave', function () { if (ctxOpen) closeCtx(true, 'dom-mouseleave'); });
 ipcRenderer.on('pet:ctx-hide', function () { closeCtx(false, 'os-poll'); });
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && ctxOpen) { closeCtx(true, 'esc'); e.stopPropagation(); }
@@ -679,7 +631,6 @@ window.addEventListener('mousedown', function (e) {
 
 // 叶交互（事件委托：二级叶为动态创建）
 ctxMenu.addEventListener('click', function (e) {
-  const _t = e.target.closest('.leaf'); try { ipcRenderer.send('pet:diag', '[ctx-click] leaf=' + (_t ? (_t.dataset.leaf || _t.dataset.opt) : 'none') + ' level=' + ctxLevel + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
   const leaf = e.target.closest('.leaf');
   if (!leaf) return;
   e.stopPropagation();
@@ -768,8 +719,6 @@ ctxMenu.addEventListener('mouseover', function (e) {
 function enterSpriteMode(reason) {
   if (mode === 'sprite') return;
   setMode('sprite');
-  webglOk = true; // 精灵模式也走矩形命中（2026-11-02：此前 webglOk=false 整窗命中与门槛冲突）
-  setTimeout(reportBodyRect, 60); // sprite 显示后上报矩形
   if (reason) ipcRenderer.send('pet:diag', reason);
   try {
     video.style.display = 'none';

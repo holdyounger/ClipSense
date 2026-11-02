@@ -87,7 +87,6 @@ interface PetStageWindow {
   hide: () => void;
   showInactive: () => void;
   setAlwaysOnTop: (flag: boolean, level?: 'screen-saver') => void;
-  isVisible: () => boolean;
   isAlwaysOnTop: () => boolean;
   getNativeWindowHandle: () => Buffer;
   getBounds: () => { x: number; y: number; width: number; height: number };
@@ -192,13 +191,13 @@ const { fileURLToPath } = require('url');
 const ClipboardMonitor = require('./clipboard-monitor');
 const EdgeDetector = require('./edge-detector') as typeof import('./edge-detector');
 const HistoryStorage = require('./storage') as typeof import('./storage');
-const { PasteBridge, resolvePasteTarget } = require('./paste-bridge') as typeof import('./paste-bridge');
+const { PasteBridge } = require('./paste-bridge') as typeof import('./paste-bridge');
 const { buildTriggerScript, DRAWER } = require('./trigger-anim') as typeof import('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tracker');
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
-const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, shouldDeferPetStage } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition } = require('./pet-manager') as typeof import('./pet-manager');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
 // 面板 WS_EX_NOACTIVATE 不夺焦：用户按 Alt 时系统焦点在目标应用，渲染层收不到
@@ -265,12 +264,7 @@ class ClipboardSpikeApp {
   edgeDetector: EdgeDetectorInstance | null;
   // 桌宠（P0 spike，2026-10-13）：舞台窗口与模式状态（_applyHideMode 驱动，PRD-桌宠系统 V0.2）
   petStage: PetStageWindow | null = null;
-_petModeOn: boolean = false;
-  /** 交互区模型（2026-10-30 单击丢失修复）：窗口内即交互；出矩形 400ms 宽限后穿透 */
-  _petInteractive: boolean = false;
-  _petInsideRectAt: number = 0;
-  /** 桌宠延迟登场（2026-10-30：面板在场时切桌宠，收起面板后才创建舞台） */
-  _petStageDeferred: boolean = false;
+  _petModeOn: boolean = false;
   _petPaintReady: boolean = false; // 渲染层双 rAF 首帧确认（paint-verified show，09-17 模式继承）
   _petShowFallback: ReturnType<typeof setTimeout> | null = null; // 确认链异常兑底直显定时器
   _petDragOffset: { dx: number; dy: number } | null = null;
@@ -278,11 +272,7 @@ _petModeOn: boolean = false;
   _petLastIgnoreApplied: boolean | null = null;
   /** 宠物本体矩形（渲染层上报，窗口相对 DIP；2026-10-23 命中穿透 v2） */
   _petBodyRect: { x: number; y: number; w: number; h: number } | null = null;
-  _petHitPollId: ReturnType<typeof setInterval> | null = null;
-  /** 交互锁定（2026-11-02 拖拽失效根因）：命中后 600ms 内轮询不切穿透——
-   *  150ms 轮询周期与用户点击碰撞时，mousedown 落在穿透切换瞬间被 OS 吞掉
-   *  （日志实证：mouseup 全到达、mousedown 零到达）。锁定覆盖完整点击动作。 */
-  _petInteractLockUntil: number = 0;   // Alt 穿透态（edge-detector 边沿回调写入）
+  _petHitPollId: ReturnType<typeof setInterval> | null = null;   // Alt 穿透态（edge-detector 边沿回调写入）
   _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
   _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
   _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
@@ -587,27 +577,11 @@ _petModeOn: boolean = false;
         // 状态对账（2026-10-29 单击失效修复）：直接 hide 绕过了 edge-detector，
         // isWindowVisible 残留 true → 下次 pet:summon 被「已可见」守卫早退
         ed.notifyExternalHide();
-        // 2026-10-30 根因修复：forceShow 内部异步（prepare 链后才 showInactive），
-        // 同步 isVisible() 在此刻恒 false → 延迟登场永不触发。改用 edge-detector
-        // 的同步权威态 isWindowVisible（_showWindow 入口即置 true）+ isVisible 兜底
-        const panelVisible = ed.isWindowVisible
-          || (this.mainWindow && !this.mainWindow.isDestroyed() && this.mainWindow.isVisible());
-        if (panelVisible) {
-          // 面板在场（2026-10-30：启动优先展示/带面板切模式）——不藏面板，
-          // 桌宠延迟到面板收起后登场（setOnHidden → _createPetStage）
-          this._petStageDeferred = shouldDeferPetStage({ petMode: mode === 'pet', panelVisible });
-        } else {
-          if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
-          if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
-        }
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
+        if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
       }
-      if (this._petStageDeferred) {
-        // 等待面板收起（setOnHidden → _createPetStage），此刻不创建舞台
-      } else {
-        this._createPetStage();
-      }
+      this._createPetStage();
     } else {
-      this._petStageDeferred = false; // 切离桌宠：清除延迟登场标记
       this._destroyPetStage();
       if (mode === 'edge') {
         // 贴边回归：面板显式唤出一次 → 鼠标离开自动隐藏 → 隐藏动画恢复贴边条
@@ -727,14 +701,8 @@ _petModeOn: boolean = false;
     // 随后 _applyNoActivate 单次原子写 NOACTIVATE|TOPMOST（避免两处读改写互相覆盖掉 TOPMOST 位——
     // 2026-10-20 小M 实测：模式切换后 TOPMOST=False 桌宠被压到文档窗口下）
     win.setAlwaysOnTop(true, 'screen-saver');
-    // 恢复舞台活跃（2026-11-02 拖拽失效根因修复）：面板可见期 _setPetStageActive(false)
-    // 停了命中轮询 + 渲染层暂停解码，但恢复路径从未推 true——stage-vis 恒 false，
-    // 窗口停在穿透态 → 鼠标事件全穿透 = 无法拖拽。此处对偶恢复。
-    if (this._petModeOn) this._setPetStageActive(true);
-    // 2026-10-30：petStage 不再走 _applyNoActivate 的 koffi EXSTYLE 直写——
-    // 该直写与 Electron setIgnoreMouseEvents 的 EXSTYLE 管理存在竞态（读改写非原子），
-    // 疑似造成「Electron 认为可交互、OS 层仍穿透」的失同步（mousedown 丢失元凶候选）。
-    // NOACTIVATE 由 focusable:false 原生提供，无需补写。
+    this._applyNoActivate(win);
+    this._applyPetIgnore();
   }
 
   /**
@@ -752,20 +720,15 @@ _petModeOn: boolean = false;
     // 免疫 GPU 崩溃场景的静默失效）。附带置顶自愈。
     const win = this.petStage;
     if (!win || win.isDestroyed()) return;
-      // 恒交互（2026-10-30 终版决策）：动态穿透四代方案（forward 转发/双驱动/
-      // 迟滞轮询/交互区宽限）代代存在丢点击缝隙（日志实锤 mousedown 全丢失），
-      // 根因是 220x220 内透明区与命中 rect 的缝隙在 scale 0.5 下无法弥合。
-      // 改网易式小窗恒交互：仅 Alt 保留穿透。代价：窗口透明区挡下层点击（可接受）
-      // 恒交互决策收敛至 pet-manager.computePetIgnore（2026-10-30 可测纯函数）
-      // 交互锁定（2026-11-02 拖拽失效根因）：命中后 600ms 内轮询不切穿透——
-      // 150ms 轮询周期与用户点击碰撞时 mousedown 被吞（日志实证：mouseup 全到达、mousedown 零到达）
-      const locked = Date.now() < this._petInteractLockUntil;
-      const ignore = this._petAltActive ? true : locked ? false : computePetIgnore({ altActive: this._petAltActive, ctxOpen: this._petCtxOpen, cursorOnModel: this._petCursorOnModel, interactive: this._petInteractive });
+    // 恒交互终审（2026-11-02 拖拽失效根因闭环）：GetAsyncKeyState(VK_MENU) 探针在
+    // 鼠标事件期间假阳性（raw=0x8000，今日 10+ 次）→ petStage 跟随切穿透 →
+    // mousedown 被 OS 吞（全天 mousedown=1 合成/44 mouseup 真实）→ 拖拽失效。
+    // petStage 恒交互（ignore 恒 false）；Alt 穿透保留于主面板（edge-detector 不变）。
+    const ignore = false;
     try {
       if (ignore !== this._petLastIgnoreApplied) {
         this._petLastIgnoreApplied = ignore;
         _modDiag('[Pet] 穿透模式 → ' + (ignore ? '穿透（透明区让行）' : '交互（宠物本体命中）'));
-        try { const w2 = this.petStage; if (w2 && !w2.isDestroyed()) _modDiag('[Pet] 窗口态 vis=' + w2.isVisible() + ' top=' + w2.isAlwaysOnTop()); } catch (_) {}
       }
       win.setIgnoreMouseEvents(ignore); // 无 forward：hover 由主进程合成 mousemove 驱动
     } catch (_) { /* 销毁竞态静默 */ }
@@ -790,16 +753,11 @@ _petModeOn: boolean = false;
       // 迟滞命中（2026-10-29 卡顿/交互抖动修复）：150ms 轮询在矩形边缘高频翻转
       // 穿透/交互（日志实锤 150ms 连续翻转，每翻一次 setIgnoreMouseEvents+合成事件）——
       // 进入需深入 3px，离开需离界 6px，消除边界抖动
-      // 本体命中（hover 语义）：迟滞判定 + 合成 mousemove。交互不再由轮询驱动——
-      // 2026-10-30 终版恒交互，轮询仅剩 hover 反馈 + 置顶自愈
       const inShrunk = cur.x >= b.x + r.x + 3 && cur.x <= b.x + r.x + r.w - 3
         && cur.y >= b.y + r.y + 3 && cur.y <= b.y + r.y + r.h - 3;
       const inExpanded = cur.x >= b.x + r.x - 6 && cur.x <= b.x + r.x + r.w + 6
         && cur.y >= b.y + r.y - 6 && cur.y <= b.y + r.y + r.h + 6;
       const hit = this._petCursorOnModel ? inExpanded : inShrunk;
-      if (hit) {
-        this._petInteractLockUntil = Date.now() + 600; // 命中即锁定 600ms（覆盖完整点击）
-      }
       if (hit !== this._petCursorOnModel) {
         this._petCursorOnModel = hit;
         this._applyPetIgnore();
@@ -808,32 +766,10 @@ _petModeOn: boolean = false;
         try {
           win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cur.x - b.x), y: Math.round(cur.y - b.y) });
         } catch (_) { /* 竞态静默 */ }
-      }    }, 150);
+      }
+    }, 150);
   }
 
-  /** 停命中穿透轮询（性能二轮：舞台隐藏期不再空转；恢复时 _ensurePetHitPoll 惰性重启） */
-  _stopPetHitPoll(): void {
-    if (this._petHitPollId) { clearInterval(this._petHitPollId); this._petHitPollId = null; }
-    this._petLastIgnoreApplied = null; // 复位：下次 _applyPetIgnore 重申穿透语义
-  }
-
-  /**
-   * 舞台活跃开关（2026-10-29 性能二轮）：面板可见期 petStage.hide() 后，
-   * bgThrottling=false 使隐藏窗口全速渲染/解码——通知渲染层暂停双 video +
-   * 停命中轮询；重现（_showPetWindow）时对偶恢复。
-   */
-  _setPetStageActive(active: boolean): void {
-    const win = this.petStage;
-    if (!win || win.isDestroyed()) return;
-    if (!active) this._stopPetHitPoll(); else this._ensurePetHitPoll();
-    try { win.webContents.send('pet:stage-visibility', active); } catch (_) { /* 销毁竞态 */ }
-    if (active) {
-      // 恢复时重申穿透语义（2026-11-02 拖拽失效根因）：_stopPetHitPoll 把窗口
-      // 留在停止前的穿透态，恢复只重启轮询不够——150ms 内鼠标事件仍在穿透，
-      // 且 _petCursorOnModel 冻结值可能为 false → 立即按当前光标重判并应用。
-      this._applyPetIgnore();
-    }
-  }
   /** 销毁桌宠舞台（切回贴边/纯隐藏时；拖拽中间态一并清） */
   _destroyPetStage(): void {
     if (this._petHitPollId) { clearInterval(this._petHitPollId); this._petHitPollId = null; }
@@ -1273,7 +1209,7 @@ _petModeOn: boolean = false;
       // fgNow=0 是窗口切换真空态（合法瞬态），用 captureForegroundRetry 忙等重试。
       const fgNow = this.pasteBridge ? this.pasteBridge.captureForegroundRetry() : 0;
       const trackedHwnd = this.focusTracker ? this.focusTracker.getHwnd() : 0;
-      const restoreHwnd = resolvePasteTarget(fgNow, trackedHwnd);
+      const restoreHwnd = fgNow > 0 ? fgNow : trackedHwnd;
       console.log(`[Spike] paste target: fgNow=${fgNow} tracked=${trackedHwnd} -> use=${restoreHwnd}`);
       _modDiag(`[Paste] target fgNow=${fgNow} tracked=${trackedHwnd} use=${restoreHwnd}`);
 
@@ -1493,7 +1429,6 @@ _petModeOn: boolean = false;
           if (saved2) w2.setBounds(saved2);
           this._applyPetIgnore();
           try { w2.webContents.send('pet:ctx-hide'); } catch (_) { /* 销毁竞态 */ }
-        _modDiag('[Pet] ctx出界关闭 cur=' + JSON.stringify(cur) + ' win=' + JSON.stringify(bb));
           console.log('[Pet] 菜单随光标出界自动关闭');
         }
       }, 120);
@@ -1526,9 +1461,7 @@ _petModeOn: boolean = false;
       if (!this.petStage || this.petStage.isDestroyed()) return;
       const pos = this.petStage.getPosition();
       this._petDragOffset = { dx: sx - pos[0], dy: sy - pos[1] };
-      // 拖拽期保持交互（2026-11-02 拖拽失效根因）：旧实现 setIgnoreMouseEvents(true)
-      // 让窗口对鼠标透明 → 渲染层收不到 mousemove → drag-move 永远发不出 → 窗口不动。
-      // 窗口由 drag-move 跟随光标移动，光标始终在窗口内，保持交互即可。
+      try { this.petStage.setIgnoreMouseEvents(true); } catch (_) { /* 竞态静默 */ }
     });
     ipcMain.on('pet:drag-move', (_event: unknown, sx: number, sy: number) => {
       if (!this.petStage || this.petStage.isDestroyed() || !this._petDragOffset) return;
@@ -1780,17 +1713,16 @@ _petModeOn: boolean = false;
       // 桌宠模式：面板可见期隐藏舞台（alwaysOnTop 会盖住面板），收起时再召回
       if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
         this.petStage.hide();
-        this._setPetStageActive(false); // 性能二轮：隐藏即暂停解码 + 停命中轮询
       }
     });
     this.edgeDetector.setOnHidden(() => {
-      this.focusTracker!.clear();
-      if (this._petModeOn) {
-        // 面板收起：延迟登场的桌宠此刻创建（2026-10-30 启动不同步显示桌宠）
-        if (this._petStageDeferred) { this._petStageDeferred = false; this._createPetStage(); }
-        else if (this.petStage && !this.petStage.isDestroyed()) {
-          this._showPetWindow();
-        }
+      // 面板收起后句柄生命周期结束：下次唤出时重新 capture。
+      // （双击不收面板，同一显示周期内句柄持续有效，支持连续粘贴多条目）
+      this.focusTracker!.clear(); // 回调触发时 init 已完成创建（运行时恒非空）
+      // 桌宠模式：面板收起 → 舞台回归。改走 _showPetWindow（show 后重申置顶）：
+      // hide→show 周期是掉 topmost 带的高频路径——置顶丢失的主要场景
+      if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
+        this._showPetWindow();
       }
     });
     // Ditto/CopyQ 模型：面板显示前记录原前台窗口，双击粘贴时由 PasteBridge 原子恢复+注入。
@@ -1838,13 +1770,6 @@ _petModeOn: boolean = false;
     }, 5000);
     // 大小可调（2026-10-14）：启动时应用持久化缩放系数（默认 1）
     this._petScale = this._getPetScale();
-    // 构建标记（2026-10-30）：启动即落盘——任何「修复无效」的验证，先 grep 本行确认加载的是新构建
-    _modDiag('[Build] v3.1-20261030-1813 恒交互+延迟登场+粘贴决策纯函数化（若缺此行=旧构建）');
-    this._applyHideMode();
-
-    // 启动顺序（2026-10-30 修订）：先展示面板（纯隐藏除外），再应用模式——
-    // 桌宠模式下面板在场 → 舞台延迟登场（_petStageDeferred，面板收起后创建）
-    if (this._getHideMode() !== 'hidden') this.edgeDetector?.forceShow();
     this._applyHideMode();
 
     // 异常快照接线（2026-10-11）：渲染进程/子进程异常落盘；原生崩溃的 .dmp 由 Crashpad 接管
