@@ -98,13 +98,17 @@ function shouldAutoRespawn(petX: number, petY: number, panelBounds: { x: number;
   );
 }
 
-/** 恒交互决策（2026-10-30 终版，可测纯函数）：桌宠窗口 220x220 常驻可交互。
- *  动态穿透四代方案（forward 转发/双驱动/迟滞轮询/交互区宽限）代代存在丢 mousedown
- *  缝隙（实机日志：单击只剩 mouseup），根因是 scale 0.5 下透明区与命中 rect 缝隙
- *  无法弥合。参数仅保留决策上下文位，当前恒 false（Alt 穿透语义已整体退出桌宠侧）。 */
-function computePetIgnore(_state: { altActive?: boolean; ctxOpen?: boolean; cursorOnModel?: boolean; interactive?: boolean }): boolean {
-  void _state;
-  return false;
+/** 命中穿透决策 v3（2026-11-03 B2，小M 批准推翻 34b9fe4 恒交互，可测纯函数）：
+ *  本体命中/菜单打开/拖拽中 → 交互（false）；透明区 → 穿透放行（true，修 81% 占位）。
+ *  Alt 恒不参与（34b9fe4 真正根因——假阳性探针——由「桌宠永不跟 Alt」保留，与穿透决策解耦）。
+ *  dragging 一票交互：拖拽是用户手势，150ms 轮询不得在手势中翻转穿透（丢 mousedown 缝隙的唯一
+ *  现役场景即「轮询在手势中途切穿透」；2026-10-23 v2 无此守卫，本次补上）。
+ *  ctxOpen 一票交互：菜单渲染层命中判定以菜单 DOM 为准，穿透会让菜单点击落空。 */
+function computePetIgnore(state: { altActive?: boolean; ctxOpen?: boolean; cursorOnModel?: boolean; dragging?: boolean }): boolean {
+  const s = state ?? {};
+  if (s.dragging) return false;   // 拖拽手势：恒交互（最高优先）
+  if (s.ctxOpen) return false;    // 菜单打开：恒交互
+  return !s.cursorOnModel;        // 本体=交互 / 透明区=穿透
 }
 
 /** 桌宠延迟登场判定（2026-10-30 可测纯函数）：桌宠模式且面板在场 → 不创建舞台，

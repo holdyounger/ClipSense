@@ -422,7 +422,16 @@ window.addEventListener('mouseup', function (e) {
 });
 ['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
   window.addEventListener(evtName, function (e) {
-    try { ipcRenderer.send('pet:diag', '[input] ' + evtName + ' btn=' + e.button + ' at ' + e.clientX + ',' + e.clientY); } catch (_) {}
+    // B1（2026-11-03）：补 pressing/ctxOpen/ignore 状态——区分「down 未达」（吞 mousedown）
+    // 与「down 达但判定错」；up 带 down 时序差（孤儿 up 诊断关键）。
+    var hit = (typeof cursorHit === 'function') ? cursorHit(e.clientX, e.clientY) : '-';
+    try { ipcRenderer.send('pet:diag', '[input] ' + evtName + ' btn=' + e.button + ' at ' + e.clientX + ',' + e.clientY
+      + ' pressing=' + pressing + ' ctx=' + ctxOpen + ' hit=' + hit); } catch (_) {}
+    // B1b：孤儿左 up（up 到达而 down 未达）→ 通知主进程当场 dump EXSTYLE。
+    // 右键 up 不判孤儿（右键不设 pressing）；hit 一并上报（区分几何误判 vs 真吞 down）。
+    if (evtName === 'mouseup' && e.button === 0 && !pressing) {
+      try { ipcRenderer.send('pet:orphan-up', { x: e.clientX, y: e.clientY, hit: hit === '-' ? false : !!hit, ctx: ctxOpen }); } catch (_) {}
+    }
   }, true); // capture：最先记录
 });
 window.addEventListener('contextmenu', function (e) {

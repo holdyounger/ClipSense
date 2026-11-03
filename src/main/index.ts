@@ -86,6 +86,8 @@ interface PetStageWindow {
   isDestroyed: () => boolean;
   hide: () => void;
   showInactive: () => void;
+  isVisible: () => boolean;
+  moveTop: () => void;
   setAlwaysOnTop: (flag: boolean, level?: 'screen-saver') => void;
   isAlwaysOnTop: () => boolean;
   getNativeWindowHandle: () => Buffer;
@@ -197,7 +199,7 @@ const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tr
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
-const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore } = require('./pet-manager') as typeof import('./pet-manager');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
 // 面板 WS_EX_NOACTIVATE 不夺焦：用户按 Alt 时系统焦点在目标应用，渲染层收不到
@@ -494,6 +496,10 @@ class ClipboardSpikeApp {
         submenu: this._buildHideDelaySubmenu(),
       },
       {
+        label: '穿透透明度',
+        submenu: this._buildPassthroughOpacitySubmenu(),
+      },
+      {
         label: '历史上限',
         submenu: this._buildMaxHistorySubmenu(),
       },
@@ -695,6 +701,7 @@ class ClipboardSpikeApp {
     if (this._petShowFallback) { clearTimeout(this._petShowFallback); this._petShowFallback = null; }
     const win = this.petStage;
     if (!win || win.isDestroyed()) return;
+    _modDiag('[Pet] _showPetWindow entered visibleBefore=' + (win.isVisible() ? 'Y' : 'N')); // B1b：路径证实
     win.showInactive();
     // show 后重申置顶（2026-10-14 置顶修复；2026-10-20 二次修复）：hide→show 周期不保证保留
     // topmost 带成员资格。'screen-saver' 等级强制 SetWindowPos(HWND_TOPMOST) 重新入带；
@@ -702,7 +709,46 @@ class ClipboardSpikeApp {
     // 2026-10-20 小M 实测：模式切换后 TOPMOST=False 桌宠被压到文档窗口下）
     win.setAlwaysOnTop(true, 'screen-saver');
     this._applyNoActivate(win);
+    this._diagExStyle(win, 'after _showPetWindow'); // B1 取证：hide→show 后 NOACTIVATE/TRANSPARENT 残留检查
+    // 输入面失同步预防（2026-11-03 定性：EXSTYLE 正常仍吞 down = Chromium 层问题）：
+    // showInactive 后立即 setBounds 自碰（零几何变化）强制输入面重评估。
+    // 上游通行 workaround；这是「第二次点击无响应」的直接预防点。
+    try {
+      const wb = win.getBounds();
+      win.setBounds({ x: wb.x, y: wb.y, width: wb.width, height: wb.height });
+      win.moveTop();
+      _modDiag('[Pet] _showPetWindow input-surface nudge applied');
+    } catch (_) { /* 竞态静默 */ }
     this._applyPetIgnore();
+  }
+
+  /**
+   * B1 诊断（2026-11-03，零行为变更）：读回窗口 EXSTYLE 落盘。目标：Bug1（二次唤出后
+   * 桌宠吞 mousedown）的两大候选机制鉴别——(a) NOACTIVATE 位在 hide→show 后丢失（点击被
+   * 激活逻辑吞噬）；(b) WS_EX_TRANSPARENT=0x20 残留（OS 级穿透吞 down 不吞 up）。
+   * 读数落 modifier-passthrough-diag.log，与 [input] mousedown 序列对时轴即定根因。
+   */
+  _diagExStyle(win: { getNativeWindowHandle: () => Buffer; isDestroyed?: () => boolean }, tag: string): void {
+    if (process.platform !== 'win32') return;
+    if (win.isDestroyed && win.isDestroyed()) return;
+    try {
+      const koffi = require('koffi');
+      const user32 = koffi.load('user32.dll');
+      const GetWindowLongPtrW = user32.func('intptr_t __stdcall GetWindowLongPtrW(intptr_t hWnd, int nIndex)');
+      const GWL_EXSTYLE = -20;
+      const WS_EX_NOACTIVATE = 0x08000000;
+      const WS_EX_TRANSPARENT = 0x00000020;
+      const WS_EX_TOPMOST = 0x00000008;
+      const hwnd = win.getNativeWindowHandle().readBigInt64LE(0);
+      const stRaw = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      // koffi intptr_t 本机实测返回 number（非 BigInt）—— number & BigInt 抛 TypeError
+      // （2026-11-03 首轮探针静默翻车根因；顺带坐实 _applyNoActivate 同款写法恐同病）
+      const st = typeof stRaw === 'bigint' ? stRaw : BigInt(stRaw);
+      _modDiag('[Pet] EXSTYLE(' + tag + ') typeof=' + typeof stRaw + ' 0x' + st.toString(16)
+        + ' NOACTIVATE=' + ((st & BigInt(WS_EX_NOACTIVATE)) !== 0n)
+        + ' TRANSPARENT=' + ((st & BigInt(WS_EX_TRANSPARENT)) !== 0n)
+        + ' TOPMOST=' + ((st & BigInt(WS_EX_TOPMOST)) !== 0n));
+    } catch (err) { _modDiag('[Pet] EXSTYLE probe failed(' + tag + '): ' + (err as Error).message); }
   }
 
   /**
@@ -724,11 +770,24 @@ class ClipboardSpikeApp {
     // 鼠标事件期间假阳性（raw=0x8000，今日 10+ 次）→ petStage 跟随切穿透 →
     // mousedown 被 OS 吞（全天 mousedown=1 合成/44 mouseup 真实）→ 拖拽失效。
     // petStage 恒交互（ignore 恒 false）；Alt 穿透保留于主面板（edge-detector 不变）。
-    const ignore = false;
+    // 命中穿透 v3（2026-11-03 B2，小M 批准推翻 34b9fe4 恒交互——透明区 81% 占位修复）：
+    // 决策收敛到 pet-manager.computePetIgnore 纯函数（可测）。三重守卫防丢 mousedown：
+    // ① dragging 一票交互（新增，v2 缺失即 34b9fe4 消防的根因）；
+    // ② ctxOpen 一票交互（菜单点击不被穿透吞）；
+    // ③ Alt 恒不参与（34b9fe4 真正根因=探针假阳性，由「永不跟 Alt」结构性保留，
+    //    与主面板 Alt 穿透完全解耦——edge-detector 不变）。
+    const ignore = computePetIgnore({
+      altActive: this._petAltActive,
+      ctxOpen: this._petCtxOpen,
+      cursorOnModel: this._petCursorOnModel,
+      dragging: this._petDragOffset != null,
+    });
     try {
       if (ignore !== this._petLastIgnoreApplied) {
         this._petLastIgnoreApplied = ignore;
-        _modDiag('[Pet] 穿透模式 → ' + (ignore ? '穿透（透明区让行）' : '交互（宠物本体命中）'));
+        _modDiag('[Pet] 穿透模式 → ' + (ignore ? '穿透（透明区让行）' : '交互（宠物本体命中）')
+          + ' [onModel=' + this._petCursorOnModel + ' ctx=' + this._petCtxOpen + ' drag=' + (this._petDragOffset != null) + ']');
+        this._diagExStyle(win, 'flip→' + (ignore ? '透' : '互')); // B1b：翻转时刻的 Win32 风格实证
       }
       win.setIgnoreMouseEvents(ignore); // 无 forward：hover 由主进程合成 mousemove 驱动
     } catch (_) { /* 销毁竞态静默 */ }
@@ -746,6 +805,7 @@ class ClipboardSpikeApp {
         win.setAlwaysOnTop(true, 'screen-saver');
       }
       if (this._petCtxOpen || this._petAltActive) return; // 交互/Alt 态由既有逻辑管
+      if (this._petDragOffset) return; // B2 守卫：拖拽手势中轮询不翻转穿透（150ms 翻转吞 mousedown 即 v2 缺陷）
       const r = this._petBodyRect;
       if (!r) return;
       const cur = screen.getCursorScreenPoint();
@@ -877,6 +937,41 @@ class ClipboardSpikeApp {
   /**
    * 构建「自动隐藏倒计时」子菜单
    */
+  /**
+   * 构建「穿透透明度」子菜单（2026-11-02，小M 提出）：Alt 穿透激活时面板降到的
+   * 透明度档位。持久化 storage config.passthroughOpacity（null=默认 0.5，菜单显示「默认」单选）。
+   * 档位设计：0.7（浅，仅轻微提示）/ 0.5（默认）/ 0.35（深，近似倒计时透视档）。
+   * 文案沿托盘既有惯例硬编码中文。
+   */
+  _getPassthroughOpacity(): number | null {
+    try {
+      const v = this.storage._readConfig().passthroughOpacity;
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1) return v;
+    } catch (_) { /* 读取失败回落默认 */ }
+    return null;
+  }
+
+  _setPassthroughOpacity(v: number | null): void {
+    try { this.storage._writeConfig({ passthroughOpacity: v }); } catch (_) { /* 持久化失败不阻断 */ }
+    if (this.edgeDetector) this.edgeDetector.setPassthroughOpacity(v);
+    this.initTray(); // 重建单选态（幂等守卫已内置）
+  }
+
+  _buildPassthroughOpacitySubmenu() {
+    const options = [
+      { label: '浅（70%）', value: 0.7 },
+      { label: '默认（50%）', value: 0.5 },
+      { label: '深（35%）', value: 0.35 },
+    ];
+    const current = this._getPassthroughOpacity();
+    return options.map(opt => ({
+      label: opt.label,
+      type: 'radio' as const,
+      checked: current === null ? opt.value === 0.5 : Math.abs(current - opt.value) < 0.01,
+      click: () => this._setPassthroughOpacity(opt.value === 0.5 ? null : opt.value),
+    }));
+  }
+
   _buildHideDelaySubmenu() {
     const options = [
       { label: '3 秒', value: 3000 },
@@ -1391,6 +1486,29 @@ class ClipboardSpikeApp {
     ipcMain.on('pet:diag', (_event: unknown, msg: unknown) => {
       _modDiag(`[PetStage] ${String(msg).split('\n').join(' | ')}`);
     });
+    // B1b（2026-11-03）：孤儿 mouseup 采样——渲染层收到左 up 而无 down（Bug1 失败签名）时，
+    // 当场 dump EXSTYLE + 穿透状态机快照。失败时刻的 Win32 风格实证，三选一定性：
+    // TRANSPARENT 残留（样式失同步）/ NOACTIVATE 丢失（激活路径吞 down）/ 两者皆正常（Electron 输入面失活）。
+    ipcMain.on('pet:orphan-up', (_event: unknown, p: { x?: number; y?: number; hit?: boolean; ctx?: boolean }) => {
+      const w = this.petStage;
+      if (!w || w.isDestroyed()) return;
+      const q = (p && typeof p === 'object') ? p : ({} as { x?: number; y?: number; hit?: boolean; ctx?: boolean });
+      _modDiag('[Pet] orphan-up x=' + q.x + ' y=' + q.y + ' hit=' + q.hit + ' ctx=' + q.ctx
+        + ' lastApplied=' + this._petLastIgnoreApplied + ' onModel=' + this._petCursorOnModel);
+      this._diagExStyle(w, 'orphan-up');
+      // 自愈 v2（2026-11-03 终版）：EXSTYLE 取证已排除 OS 样式失同步（失败期
+      // NOACTIVATE/TOPMOST/TRANSPARENT 全正常），透→互往返亦未治愈且其 150ms 穿透窗
+      // 反噬下一次真点击——撤。改上游通行 workaround：setBounds 自碰强制 Chromium
+      // 重评估透明窗口输入面（hide→showInactive 后 down 被吞 = 输入面失同步，
+      // electron upstream 已知问题类）+ moveTop 重申命中带。零几何变化，无副作用。
+      try {
+        const bb = w.getBounds();
+        w.setBounds({ x: bb.x, y: bb.y, width: bb.width, height: bb.height });
+        w.moveTop();
+        this._diagExStyle(w, 'after-nudge');
+        _modDiag('[Pet] orphan-up healed: setBounds self-nudge applied');
+      } catch (_) { /* 销毁竞态静默 */ }
+    });
     // 左键点击：唤出面板（等价贴边热区；Alt+V 同链路）
     ipcMain.on('pet:summon', () => {
       if (this.edgeDetector) this.edgeDetector.forceShow();
@@ -1461,7 +1579,9 @@ class ClipboardSpikeApp {
       if (!this.petStage || this.petStage.isDestroyed()) return;
       const pos = this.petStage.getPosition();
       this._petDragOffset = { dx: sx - pos[0], dy: sy - pos[1] };
-      try { this.petStage.setIgnoreMouseEvents(true); } catch (_) { /* 竞态静默 */ }
+      // B2：拖拽起点整窗穿透（手势必需，鼠标可出窗）；drag-end 经 _applyPetIgnore 恢复。
+      // 手势期间 _ensurePetHitPoll 的 dragging 守卫保证轮询不中途翻转。
+      try { this.petStage.setIgnoreMouseEvents(true); this._petLastIgnoreApplied = true; } catch (_) { /* 竞态静默 */ }
     });
     ipcMain.on('pet:drag-move', (_event: unknown, sx: number, sy: number) => {
       if (!this.petStage || this.petStage.isDestroyed() || !this._petDragOffset) return;
@@ -1483,6 +1603,7 @@ class ClipboardSpikeApp {
       this.petStage.setBounds({ x: c.x, y: c.y, width: 220, height: 220 });
       this.storage.setPetPosition({ x: c.x, y: c.y });
       this._petDragOffset = null;
+      this._petLastIgnoreApplied = null; // B2：强制下次同步实际生效值（拖拽中已置 true）
       this._applyPetIgnore(); // 恢复命中语义
     });
 
@@ -1704,6 +1825,8 @@ class ClipboardSpikeApp {
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
     // createWindow() 已同步创建两窗口；! 为类型收窄（运行时恒非空）
     this.edgeDetector = new EdgeDetector(this.mainWindow!, this.triggerWindow!);
+    // 穿透透明度持久化（2026-11-02 托盘菜单）：启动应用 config.passthroughOpacity（null=默认 0.5）
+    this.edgeDetector.setPassthroughOpacity(this._getPassthroughOpacity());
     // 修饰键（Alt）按住穿透（2026-10-13）：注入全局键态探针（koffi 惰性绑定，非 win32 恒 false）+
     // 取证日志句柄（§5-③：落盘 userData，逐站编号定位链路断点）
     this.edgeDetector.setModifierProbe(() => _isAltPhysicallyDown(), _modDiag);

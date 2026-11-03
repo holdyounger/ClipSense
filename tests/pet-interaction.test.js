@@ -12,21 +12,32 @@ const pm = require(path.join(__dirname, '..', 'dist', 'main', 'pet-manager.js'))
 const pb = require(path.join(__dirname, '..', 'dist', 'main', 'paste-bridge.js'));
 const tu = require(path.join(__dirname, '..', 'dist', 'common', 'tag-utils.js'));
 
-describe('computePetIgnore 恒交互决策（2026-10-30 单击丢失回归锁）', () => {
-  test('任何状态组合（Alt/菜单/本体命中/宽限）都不得穿透', () => {
-    for (const altActive of [false, true]) {
-      for (const ctxOpen of [false, true]) {
-        for (const cursorOnModel of [false, true]) {
-          for (const interactive of [false, true]) {
-            assert.strictEqual(
-              pm.computePetIgnore({ altActive, ctxOpen, cursorOnModel, interactive }),
-              false,
-              `alt=${altActive} ctx=${ctxOpen} onModel=${cursorOnModel} inter=${interactive} 必须恒交互`
-            );
-          }
-        }
-      }
-    }
+describe('computePetIgnore 命中穿透决策（2026-11-03 B2：透明区占位修复）', () => {
+  // 语义（小M 2026-11-03 批准推翻 34b9fe4 恒交互）：本体命中/菜单打开/拖拽中 → 交互；
+  // 透明区 → 穿透放行；Alt 恒不参与（34b9fe4 真正根因修复保留：桌宠绝不跟 Alt）。
+  // dragging 是新增守卫位——拖拽中一律交互，杜绝 150ms 轮询翻转吞 mousedown。
+  test('本体命中 → 交互；透明区 → 穿透', () => {
+    assert.strictEqual(pm.computePetIgnore({ cursorOnModel: true }), false);
+    assert.strictEqual(pm.computePetIgnore({ cursorOnModel: false }), true);
+  });
+
+  test('菜单打开 → 恒交互（无论光标在哪）', () => {
+    assert.strictEqual(pm.computePetIgnore({ ctxOpen: true, cursorOnModel: false }), false);
+    assert.strictEqual(pm.computePetIgnore({ ctxOpen: true, cursorOnModel: true }), false);
+  });
+
+  test('拖拽中 → 恒交互（B2 新守卫：拖拽路径绝不翻转穿透）', () => {
+    assert.strictEqual(pm.computePetIgnore({ dragging: true, cursorOnModel: false }), false);
+    assert.strictEqual(pm.computePetIgnore({ dragging: true, cursorOnModel: true }), false);
+  });
+
+  test('Alt 恒不参与穿透决策（34b9fe4 根因修复保留：假阳性探针不再影响桌宠）', () => {
+    assert.strictEqual(pm.computePetIgnore({ altActive: true, cursorOnModel: false }), true);
+    assert.strictEqual(pm.computePetIgnore({ altActive: true, cursorOnModel: true }), false);
+  });
+
+  test('透明区 + Alt/宽限叠加 → 仍穿透（除 dragging/ctx 外无一票交互）', () => {
+    assert.strictEqual(pm.computePetIgnore({ altActive: true, cursorOnModel: false }), true);
   });
 });
 
