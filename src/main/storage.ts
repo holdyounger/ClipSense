@@ -125,18 +125,44 @@ class HistoryStorage {
   }
 
   /**
-   * 加密一个字符串 → hex 字符串存储（便于 JSON 序列化）
+   * 密文编码（2026-11-03 静态纯函数，node:test 直测）：Buffer → 'b64:'+base64。
+   * safeStorage 是 electron 运行时 API 不可直测，编解码层抽出即为可测缝。
    */
-  encryptString(plain: string): string {
-    const buf = safeStorage.encryptString(plain);
-    return buf.toString('hex');
+  static encodeCipher(buf: Buffer): string {
+    return 'b64:' + buf.toString('base64');
   }
 
   /**
-   * 解密 hex 密文 → 原始字符串
+   * 密文解码（三态）：① 'b64:' 前缀 → base64；② 无前缀纯偶长 hex → 存量格式
+   * 兼容（2026-11-03 前磁盘数据）；③ 其余（明文 JSON 等）→ 抛 unrecognized，
+   * 调用方（load）既有 catch 走明文兜底——行为与改造前一致。
    */
-  decryptString(hex: string): string {
-    const buf = Buffer.from(hex, 'hex');
+  static decodeCipher(s: string): Buffer {
+    if (s.startsWith('b64:')) {
+      return Buffer.from(s.slice(4), 'base64');
+    }
+    if (s.length > 0 && s.length % 2 === 0 && /^[0-9a-f]+$/i.test(s)) {
+      return Buffer.from(s, 'hex');
+    }
+    throw new Error(`unrecognized cipher encoding (len=${s.length})`);
+  }
+
+  /**
+   * 加密一个字符串 → 带编码标记的密文字符串（2026-11-03 hex→base64：
+   * hex 每字节膨胀 2 字符=100%，base64 仅 ~33%；实测主历史文件 2.38MB
+   * 真实数据 ~1.2MB。`b64:` 前缀区分新格式，存量 hex 经 decodeCipher 兼容读取，
+   * 首次 save 全量重写自然迁移。）
+   */
+  encryptString(plain: string): string {
+    const buf = safeStorage.encryptString(plain);
+    return HistoryStorage.encodeCipher(buf);
+  }
+
+  /**
+   * 解密封文字符串 → 原始字符串（编码识别见 decodeCipher；三态：b64:/存量 hex/抛错）
+   */
+  decryptString(cipher: string): string {
+    const buf = HistoryStorage.decodeCipher(cipher);
     return safeStorage.decryptString(buf);
   }
 
