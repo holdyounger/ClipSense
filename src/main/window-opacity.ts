@@ -26,13 +26,20 @@ export const OPACITY_PINNED = 0.6;
 export const OPACITY_GHOST = 0.4;
 /** 完全不透明 */
 export const OPAQUE = 1;
+/** Alt 穿透档（2026-11-02 快速通道）：窗口未隐藏时按住 Alt 触发穿透 → 降至此值，
+ *  给用户「当前鼠标事件直达下层」的可感知反馈（0.5 介于固定 0.6 与透视 0.4 之间） */
+export const OPACITY_PASSTHROUGH = 0.5;
 
-/** computeOpacity 参数（两段规则的输入状态） */
+/** computeOpacity 参数（两段规则 + 穿透的输入状态） */
 export interface ComputeOpacityState {
   pinned?: boolean;          // 固定模式
   isCountingDown?: boolean;  // 贴边倒计时进行中
   remainingMs?: number;      // 倒计时剩余 ms
   totalMs?: number;          // 倒计时总时长 ms
+  /** Alt 穿透激活（2026-11-02）：与两段式结果取小值（穿透优先，可感知性最高） */
+  passthroughActive?: boolean;
+  /** 穿透档位自定义（2026-11-02 托盘菜单）：覆盖 OPACITY_PASSTHROUGH；非法值回落默认 */
+  passthroughOpacity?: number;
 }
 
 /**
@@ -42,12 +49,29 @@ export interface ComputeOpacityState {
  * 倒计时终点（remaining = 0）→ OPACITY_GHOST。中间按剩余比例线性。
  */
 export function computeOpacity(s?: ComputeOpacityState): number {
-  const { pinned, isCountingDown, remainingMs, totalMs } = s ?? {};
-  if (pinned) return OPACITY_PINNED; // 规则 1：固定 → 60%
-  if (!isCountingDown) return OPAQUE;
-  const total = totalMs && totalMs > 0 ? totalMs : 0; // truthy 检查即窄化 number（排除 undefined/0/NaN）
-  if (!total) return OPACITY_GHOST; // 无基准：按终点处理（保守透视显著）
-  const remaining = remainingMs !== undefined ? Math.min(Math.max(remainingMs, 0), total) : 0;
-  const ratio = remaining / total; // 1 → 0
-  return OPAQUE - (OPAQUE - OPACITY_GHOST) * (1 - ratio);
+  const { pinned, isCountingDown, remainingMs, totalMs, passthroughActive, passthroughOpacity } = s ?? {};
+  let base: number;
+  if (pinned) {
+    base = OPACITY_PINNED; // 规则 1：固定 → 60%
+  } else if (!isCountingDown) {
+    base = OPAQUE;
+  } else {
+    const total = totalMs && totalMs > 0 ? totalMs : 0; // truthy 检查即窄化 number（排除 undefined/0/NaN）
+    if (!total) {
+      base = OPACITY_GHOST; // 无基准：按终点处理（保守透视显著）
+    } else {
+      const remaining = remainingMs !== undefined ? Math.min(Math.max(remainingMs, 0), total) : 0;
+      const ratio = remaining / total; // 1 → 0
+      base = OPAQUE - (OPAQUE - OPACITY_GHOST) * (1 - ratio);
+    }
+  }
+  // Alt 穿透（2026-11-02）：与两段式取小值——穿透需要「明显变淡」的可感知反馈，
+  // 但既有倒计时终点（0.4）已更深时不回弹（取小值语义，状态机不打架）。
+  // 档位可配置（2026-11-02 托盘菜单）：合法 [0,1] 数值覆盖默认，否则防呆回落
+  let ptLevel = OPACITY_PASSTHROUGH;
+  if (typeof passthroughOpacity === 'number' && Number.isFinite(passthroughOpacity)
+      && passthroughOpacity > 0 && passthroughOpacity <= 1) {
+    ptLevel = passthroughOpacity;
+  }
+  return passthroughActive ? Math.min(base, ptLevel) : base;
 }

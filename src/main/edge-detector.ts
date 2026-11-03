@@ -93,7 +93,7 @@ const {
   HEADER_DRAG_RESUME_MS: number;
 };
 const { computeOpacity } = require('./window-opacity') as {
-  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number }) => number;
+  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number; passthroughActive?: boolean; passthroughOpacity?: number }) => number;
 };
 const { WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_HALF_WIDTH } = require('./window-dims') as {
   WINDOW_WIDTH: number;
@@ -159,6 +159,8 @@ class EdgeDetector {
   _modDiag: ((msg: string) => void) | null;
   /** 穿透状态机（纯逻辑：防抖 + 边沿生成，modifier-passthrough；键位无关，探针决定键位） */
   _modPass: ReturnType<typeof createModifierPassthrough>;
+  /** 自定义穿透档位（2026-11-02 托盘菜单）：null=未设置走 OPACITY_PASSTHROUGH 默认 */
+  _passthroughOpacity: number | null = null;
 
   constructor(mainWindow: EdgeMainWindow, triggerWindow: EdgeTriggerWindow | null = null) {
     this.mainWindow = mainWindow;
@@ -472,6 +474,9 @@ class EdgeDetector {
           if (this.mainWindow && !this.mainWindow.isDestroyed()) {
             try { this.mainWindow.webContents.send('modifier-passthrough', active); } catch (_) { /* 销毁竞态 */ }
           }
+          // Alt 穿透视觉反馈（2026-11-02 快速通道，小M 提出）：穿透激活 → 面板降 0.5，
+          // 释放恢复原值。边沿翻转立即重算推送（不等下一拍倒计时/180ms 过渡由渲染层 CSS 承担）
+          this._syncWindowOpacity();
           if (active) {
             // 穿透瞬间面板必须 inert：清 header hover 状态机并回推 false，
             // 防止「按住 Alt 前光标已悬停 header → 穿透后 header 卡在展开态」。
@@ -947,6 +952,9 @@ class EdgeDetector {
       isCountingDown: this.isCountingDown && this._hideDeadline != null,
       remainingMs: this._hideDeadline ? this._hideDeadline - Date.now() : 0,
       totalMs: this.hideDelay,
+      // Alt 穿透（2026-11-02）：穿透激活 → 降档（默认 0.5，托盘可调；取小值口径见 window-opacity.ts）
+      passthroughActive: this._modPass.isActive(),
+      passthroughOpacity: this._passthroughOpacity ?? undefined,
     });
     this._applyWindowOpacity(target);
   }
@@ -985,6 +993,18 @@ class EdgeDetector {
   /**
    * 设置窗口固定状态
    */
+  /** 设置穿透档位（2026-11-02 托盘菜单）：立即重算推送；null 回落默认 */
+  setPassthroughOpacity(v: number | null): void {
+    this._passthroughOpacity = v;
+    this._appliedOpacity = null;
+    this._syncWindowOpacity();
+  }
+
+  /** 读取穿透档位（托盘单选态）；null=默认 */
+  getPassthroughOpacity(): number | null {
+    return this._passthroughOpacity;
+  }
+
   setPinned(pinned: boolean): void {
     this.isPinned = Boolean(pinned);
     this._appliedOpacity = null;
