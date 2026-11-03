@@ -716,6 +716,12 @@ body.mod-pass .hint {
   transition: border-color 0.2s, background 0.2s, opacity 0.15s ease;
   position: relative; /* 落位光晕 .item-landing::after 定位基准（2026-09-12 方案 C） */
   opacity: var(--win-alpha, 1); /* 随窗口状态衰减（固定 80%/倒计时透视） */
+  /* 2026-11-02 resize 卡顿修复（小M 报告）：resizable+transparent 窗口拖拽调整尺寸时，
+     视口外条目不再参与布局/绘制（500 条全量 relayout 是卡顿根因）。auto：靠近视口才
+     完整布局+绘制；contain-intrinsic-size 以单卡实测高估滚动总高（auto 前缀记忆已见
+     尺寸，滚回不跳条）。可见条目的悬停/磁吸/hover 恢复照常，无回归面。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 86px;
 }
 
 /* 悬停条目恢复完全不透明（2026-09-30 小M）：窗口半透明时悬停的条目以 100% 实心
@@ -994,11 +1000,61 @@ body.mod-pass .hint {
   min-height: 22px; /* 2026-09-30 压缩：固定紧凑行高（原随 chip 撑高） */
   overflow-x: auto;
   scrollbar-width: none;
+  /* R2 筛选行过渡（2026-11-02）：显隐不再跳变，max-height 120ms 收放 */
+  max-height: 40px;
+  transition: max-height 120ms ease, opacity 120ms ease;
+}
+
+/* 收起态：max-height 归零 + 透明（过渡中不闪内容） */
+.tag-filter.collapsed {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
 }
 
 /* hidden 属性优先级必须高于 .tag-filter 的 display:flex（作者样式会盖过 UA 的 [hidden]） */
 .tag-filter[hidden] {
   display: none;
+}
+
+/* R1 分页哨兵（2026-11-02 视觉修正）：列表末尾的次要操作——弱化为 muted 文字 +
+   幽灵按钮，与 .empty/.meta 同语言；hover 提亮 accent（非实心，不抢 item 视觉） */
+.load-more-btn {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 4px auto 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.load-more-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* R3 清空搜索快捷操作（2026-11-02）：无匹配空态的内联按钮（弱化描边风格） */
+.clear-search-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 4px 14px;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.clear-search-btn:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 .tag-filter::-webkit-scrollbar {

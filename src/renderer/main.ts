@@ -101,6 +101,7 @@ interface Window {
 const listEl = document.getElementById('list')!;
 const pinBtn = document.getElementById('pinBtn')!;
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null; // T1 搜索防抖（2026-11-02）
 const hintEl = document.getElementById('hint')!;
 // 返回顶部（2026-10-13 UI 重设计 v2）：单钮 + 环形进度
 const backTopBtn = document.getElementById('backTopBtn') as HTMLButtonElement;
@@ -341,9 +342,14 @@ const renderCtx = {
   timeStr,
   flashItem,
   enabledTags: null as Set<string> | null, // Set<tagId> | null（null = 全部可用）；由 applyTagSettings 维护
+  // T4 空态区分（2026-11-02）：getter 动态回读 searchQuery——renderHistory 空态分支
+  // 需要区分「真空历史」与「无匹配」两种空态（spec S6）
+  get searchQuery() { return searchQuery; },
 };
 
 const renderHandlers: RenderHandlers = {
+  // R3（2026-11-02）：无匹配空态「清除搜索」快捷操作 → collapseSearch 清词
+  onClearSearch: () => collapseSearch(),
   onCopy: async (item, el) => {
     const res = await window.clipboardAPI.copyItem(item.id);
     if (res.ok) {
@@ -559,11 +565,14 @@ function renderTagFilter(): void {
     ...tagRulesCache.filter(r => present.has(r.id) && r.enabled && (!enabled || enabled.has(r.id))).map(r => r.id),
   ];
   if (ids.length === 0) {
+    // R2 过渡（2026-11-02）：hidden 直切改 class 过渡（120ms max-height 收起）
     tagFilterEl.hidden = true;
+    tagFilterEl.classList.add('collapsed');
     tagFilterEl.innerHTML = '';
     return;
   }
   tagFilterEl.hidden = false;
+  tagFilterEl.classList.remove('collapsed');
   tagFilterEl.innerHTML = ''; // 全量重建
   const mkChip = (id: string | null, label: string): HTMLButtonElement => {
     const chip = document.createElement('button');
@@ -712,10 +721,18 @@ searchInput.addEventListener('blur', () => {
 
 
 searchInput.addEventListener('input', () => {
+  // 输入回显同步保留在防抖之外（perf-opt.dom.test.js S1 守卫：searchQuery
+  // 赋值必须即时，否则输入框与过滤态脱钩）
   searchQuery = searchInput.value;
-  const shown = filterHistory(fullHistory);
-  renderHistory(listEl, shown, renderHandlers, renderCtx);
-  updateStats();
+  // 搜索防抖（2026-11-02 性能优化 T1）：每键敲击不触发全量过滤+DOM 重建，
+  // 停顿 150ms 后统一执行（setTimeout 系，perf-opt harness 假计时器可测）
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null;
+    const shown = filterHistory(fullHistory);
+    renderHistory(listEl, shown, renderHandlers, renderCtx);
+    updateStats();
+  }, 150);
 });
 
 // Esc：输入框持焦时直接接住；document 级兕底覆盖「展开但未持焦」（重显自洽态）。
@@ -831,6 +848,10 @@ function bttUpdate(): void {
 
 listEl.addEventListener('scroll', () => {
   bttUpdate();
+  // 分页自动加载（R1）：滚到距底 120px 且存在哨兵时追加下一批（renderer.ts 导出钩子）
+  const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 120;
+  const sentinel = listEl.querySelector<HTMLElement>('[data-load-more]');
+  if (nearBottom && sentinel) sentinel.click(); // 复用「加载更多」委托路径（renderer.ts 内 pageRendered 累加）
 }, { passive: true });
 
 // 列表内容重建（历史更新/搜索/标签筛选）改变 scrollHeight → 重算环进度；

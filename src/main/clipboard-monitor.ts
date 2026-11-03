@@ -137,6 +137,10 @@ class ClipboardMonitor {
   _lastHash: string | null;
   _seenHashes: Set<string>;
   _suppressUntil: number;
+  /** 持久化防抖（2026-11-02 T2）：多次归档合并为一次落盘；before-quit 用 flushSync 同步兜底 */
+  _persistDebounceMs: number = 500;
+  _persistTimer: ReturnType<typeof setTimeout> | null = null;
+  _persistDirty: boolean = false;
   /** 图片快速指纹缓存（2026-10-22：避免每 tick 全量 toDataURL+toPNG 双编码阻塞主进程） */
   _lastImageDigest: { hash: string; cached: ClipboardReadResult } | null = null;
   /** Win32 剪贴板序号（2026-10-22）：koffi 惰性绑定；null/失败 = 退回全读路径 */
@@ -725,6 +729,13 @@ class ClipboardMonitor {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    // stop 即 flush（2026-11-02 T2）：before-quit 调 stop，防抖窗口未到期的
+    // dirty 数据同步落盘，进程退出不丢已捕获条目（spec 红线 1：不丢剪贴板数据）
+    this.flushSync();
   }
 
   /**
@@ -776,6 +787,34 @@ class ClipboardMonitor {
    * 触发持久化（若已注入 storage）
    */
   _persist(): void {
+    // 防抖合并（2026-11-02 T2）：标记 dirty + 500ms 窗口，连续复制只落盘一次
+    // （旧实现每条同步 writeFileSync 2.6MB 加密文件 = 复制瞬间主进程卡 50-200ms）
+    if (!this.storage || typeof this.storage.save !== 'function') return;
+    this._persistDirty = true;
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this.flushAsync(); // D1：防抖到期异步落盘（同步阻塞仅在退出兜底保留）
+    }, this._persistDebounceMs);
+  }
+
+  /**
+   * 异步落盘（2026-11-02 D1 裁定落实）：防抖窗口到期走本方法，
+   * setImmediate 让出当前事件循环 tick 后再写盘，主进程输入/轮询不被单次
+   * writeFileSync（2.6MB 加密）阻塞。退出兜底仍是 flushSync（before-quit）。
+   */
+  flushAsync(): void {
+    setImmediate(() => this.flushSync());
+  }
+
+  /** 同步兜底落盘：before-quit 退出前调用（进程退出不丢数据） */
+  flushSync(): void {
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    if (!this._persistDirty) return;
+    this._persistDirty = false;
     if (this.storage && typeof this.storage.save === 'function') {
       try {
         this.storage.save(this.history);

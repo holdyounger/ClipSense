@@ -48,6 +48,8 @@ interface RenderContext {
   t: (key: string, ...args: unknown[]) => string;
   timeStr: (ts: number) => string;
   enabledTags?: Set<string> | null;
+  /** 当前搜索词（2026-11-02 T4 空态区分：非空且有过滤结果为空 = 无匹配空态） */
+  searchQuery?: string;
 }
 
 /** 交互回调（事件委托入口由 main.js 或 container 委托注册） */
@@ -55,6 +57,8 @@ interface RenderHandlers {
   onCopy?: (item: ClipboardItem, el: HTMLElement) => Promise<void>;
   onSimulateInput?: (item: ClipboardItem, el: HTMLElement) => void;
   onRemove?: (item: ClipboardItem) => Promise<void>;
+  /** 无匹配空态的「清除搜索」快捷操作（2026-11-02 R3） */
+  onClearSearch?: () => void;
 }
 
 /** builder 返回（preview 元素 + meta 文案 + 额外元素如展开按钮） */
@@ -490,6 +494,16 @@ function buildDateDivider(date: Date, ctx: RenderContext): HTMLElement {
 /**
  * 渲染历史列表
  */
+// ==================== 分页渲染（2026-11-02 R1 打回项：初始 50 条 + 滚动加载） ====================
+// 验证轮 R1（高）：500 条全量 innerHTML = 3000 DOM 节点。降级路径（plan 已批准）：
+// 初始渲染最近 PAGE_SIZE 条，滚动接近底部时追加下一批——不碰分组线/展开状态/dock。
+const PAGE_SIZE = 50;
+let pageRendered = PAGE_SIZE; // 已渲染条数（含分组线不计）
+let pageListRef: HTMLElement | null = null; // 当前列表容器（滚动监听挂这里）
+let pageCtxRef: RenderContext | null = null;
+let pageHandlersRef: RenderHandlers | null = null;
+let pageHistoryRef: ClipboardItem[] | null = null;
+
 function renderHistory(
   container: HTMLElement & { _dblclickDelegated?: boolean },
   history: ClipboardItem[] | null,
@@ -501,6 +515,15 @@ function renderHistory(
   // （16:50「只有第一条成功」根因之一）。委托到 container 则重建不影响事件。
   if (!container._dblclickDelegated) {
     container._dblclickDelegated = true;
+    // 「加载更多」委托（R1）：每次点击追加 PAGE_SIZE 条（全量重渲染，复用既有路径）
+    container.addEventListener('click', (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      if (!target || !target.closest('[data-load-more]')) return;
+      pageRendered = Math.min(pageRendered + PAGE_SIZE, (pageHistoryRef || []).length);
+      if (pageListRef && pageHistoryRef && pageCtxRef && pageHandlersRef) {
+        renderHistory(pageListRef, pageHistoryRef, pageHandlersRef, pageCtxRef);
+      }
+    });
     container.addEventListener('dblclick', (e: Event) => {
       const target = e.target as HTMLElement | null;
       if (target && target.closest('.actions')) return;
@@ -514,14 +537,39 @@ function renderHistory(
   }
 
   if (!history || history.length === 0) {
-    container.innerHTML = `<div class="empty">${ctx.t('empty')}</div>`;
+    // 空态区分（2026-11-02 T4）：搜索/筛选导致的无匹配 ≠ 真空历史
+    const q = (ctx.searchQuery || '').trim();
+    if (q) {
+      container.innerHTML = `<div class="empty empty--no-match">${ctx.t('noMatch', q)}</div>`;
+      // R3（2026-11-02）：无匹配空态附「清除搜索」快捷操作（经 handlers 回调清词）
+      if (handlers.onClearSearch) {
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'clear-search-btn';
+        clearBtn.type = 'button';
+        clearBtn.textContent = ctx.t('clearSearch');
+        clearBtn.addEventListener('click', (e: Event) => {
+          e.stopPropagation();
+          handlers.onClearSearch!();
+        });
+        container.appendChild(clearBtn);
+      }
+    } else {
+      container.innerHTML = `<div class="empty">${ctx.t('empty')}</div>`;
+    }
     return;
   }
 
   container.innerHTML = '';
 
+  // 分页渲染（R1）：只画前 pageRendered 条，剩余留待滚动加载
+  pageListRef = container;
+  pageCtxRef = ctx;
+  pageHandlersRef = handlers;
+  pageHistoryRef = history;
+  const visible = history.slice(0, pageRendered);
+
   let lastDayKey: string | null = null;
-  for (const item of history) {
+  for (const item of visible) {
     // 每天之间的分界线：自然日变化时插入组头（搜索过滤后空组自然消失，
     // 因为组头基于实际显示的条目计算）。
     // 防御：timestamp 缺失/无效的脏数据不参与分组（避免 NaN-NaN-NaN 标签），
@@ -679,6 +727,18 @@ function renderHistory(
     });
 
     container.appendChild(div);
+  }
+
+  // 哨兵条（2026-11-02 视觉修正：移到循环后=列表末尾；此前误置循环前跑到顶部）。
+  // 滚到附近由 main.ts listEl.scroll 近底自动触发；点击同样走委托。仅按需创建，
+  // innerHTML 每次重置故无残留，旧「清理块」一并移除。
+  if (history.length > pageRendered) {
+    const more = document.createElement('button');
+    more.className = 'load-more-btn';
+    more.type = 'button';
+    more.dataset.loadMore = '1';
+    more.textContent = `加载更多 · 剩余 ${history.length - pageRendered} 条`;
+    container.appendChild(more);
   }
 }
 
