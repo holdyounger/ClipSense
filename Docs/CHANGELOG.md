@@ -5,7 +5,7 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
-## 未发布（Unreleased）— 2026-11-02 ~ 11-03 性能与体验批次
+## v1.0.14（2026-11-05）— 性能与体验批次（性能二轮 + UI 布局）
 
 ### ⚡ 性能优化（spec S1-S8，L3 全流程，全量 698 测试绿）
 
