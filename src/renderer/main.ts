@@ -581,6 +581,18 @@ function applyStatsSummary(s: { level: number; title: string; nextNeed: number; 
   setText('statsLvNum', String(s.level));      // 等级 tab 环心大数字（此前未绑定，静态 2）
   setText('statsTitle', s.title);               // 称号（footer 徽章）
   setText('statsTitleFull', s.title);           // 称号（等级 tab，此前未绑定）
+  // 稀有度体系（2026-11-11 小M：称号趣味化）：徽章 emoji + data-rarity（CSS 按 rarity 着色/闪光）
+  const rarity = (s as { rarity?: string }).rarity || 'common';
+  const badgeMap: Record<string, string> = { common: '🏅', fine: '🥈', rare: '💠', epic: '🛡️', legend: '💎' };
+  const rankEl = document.getElementById('statsRankBadge');
+  if (rankEl) {
+    rankEl.textContent = badgeMap[rarity] || '🏅';
+    rankEl.dataset.rarity = rarity;
+  }
+  const titleFull = document.getElementById('statsTitleFull');
+  if (titleFull) titleFull.dataset.rarity = rarity;
+  const titleMini = document.getElementById('statsTitle');
+  if (titleMini) titleMini.dataset.rarity = rarity;
   setText('shcCopy', String(s.todayCopy));     // 今日复制
   setText('shcPaste', String(s.todayPaste));   // 今日粘贴
   setText('shcStreak', String(s.streakCurrent)); // 连续天数
@@ -649,7 +661,7 @@ function applyStatsSummary(s: { level: number; title: string; nextNeed: number; 
     }
   }
 
-  // 升级脉冲（level 变大才触发；首帧 _lastStatsLevel=0 不触发）
+  // 升级脉冲 + 小惊喜 toast（2026-11-11 小M：升级来点趣味反馈）
   if (_lastStatsLevel > 0 && s.level > _lastStatsLevel) {
     const lvNum = document.getElementById('statsLv');
     if (lvNum) {
@@ -657,6 +669,14 @@ function applyStatsSummary(s: { level: number; title: string; nextNeed: number; 
       void (lvNum as HTMLElement).offsetWidth;
       lvNum.classList.add('shc-pulse');
     }
+    const pool = [
+      '🎉 升级！新称号已解锁，快去看看',
+      '✨ 剪贴板在你手里发光了',
+      '📦 又一批碎片归档完毕，收容基金会向你致敬',
+      '🚀 经验条都追不上你的复制速度',
+      '🔮 据说每复制 100 次，就有一个 Ctrl 键默默感谢你',
+    ];
+    showToast(pool[Math.floor(Math.random() * pool.length)] + `（Lv${s.level} · ${s.title}）`);
   }
   _lastStatsLevel = s.level;
 }

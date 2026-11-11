@@ -1763,3 +1763,30 @@ body.mod-pass .hint {
   font-size: 10.5px;
   color: var(--muted);
 }
+
+/* --- 称号稀有度体系（2026-11-11 小M：称号趣味化 + 小惊喜） --- */
+.scs-title[data-rarity='fine'] {
+  color: #2ecc71;
+}
+.scs-title[data-rarity='rare'] {
+  color: var(--accent-hover);
+}
+.scs-title[data-rarity='epic'] {
+  color: #f39c12;
+}
+.scs-title[data-rarity='legend'] {
+  background: linear-gradient(90deg, #f39c12, #ffd700, #f39c12);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: scs-legend-shine 2.4s linear infinite;
+}
+@keyframes scs-legend-shine {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+  100% { filter: brightness(1); }
+}
+#statsRankBadge[data-rarity='legend'] {
+  background: rgba(243, 156, 18, 0.15);
+  border-color: rgba(255, 215, 0, 0.4);
+}

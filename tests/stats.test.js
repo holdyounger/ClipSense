@@ -118,10 +118,22 @@ describe('S5 等级计算（computeLevel/computeProgress 纯函数）', () => {
     assert.strictEqual(Stats.computeLevel(99999).level, 10);
   });
 
-  test('称号表：Lv1 收集学徒 / Lv3 整理行家 / Lv10 剪贴板传奇', () => {
-    assert.strictEqual(Stats.computeLevel(0).title, '收集学徒');
-    assert.strictEqual(Stats.computeLevel(150).title, '整理行家');
+  test('称号表：Lv1 剪贴萌新 / Lv3 复制界的搬运工 / Lv10 剪贴板传奇', () => {
+    assert.strictEqual(Stats.computeLevel(0).title, '剪贴萌新');
+    assert.strictEqual(Stats.computeLevel(150).title, '复制界的搬运工');
     assert.strictEqual(Stats.computeLevel(2250).title, '剪贴板传奇');
+  });
+
+  test('稀有度：1-2 普通 / 3-5 优秀 / 6-7 稀有 / 8-9 史诗 / 10 传说', () => {
+    assert.strictEqual(Stats.rarityOf(1), 'common');
+    assert.strictEqual(Stats.rarityOf(2), 'common');
+    assert.strictEqual(Stats.rarityOf(3), 'fine');
+    assert.strictEqual(Stats.rarityOf(5), 'fine');
+    assert.strictEqual(Stats.rarityOf(6), 'rare');
+    assert.strictEqual(Stats.rarityOf(7), 'rare');
+    assert.strictEqual(Stats.rarityOf(8), 'epic');
+    assert.strictEqual(Stats.rarityOf(9), 'epic');
+    assert.strictEqual(Stats.rarityOf(10), 'legend');
   });
 
   test('computeProgress：0.7 档进度与封顶满环', () => {
@@ -174,7 +186,8 @@ describe('StatsStore 文件 IO（spec 红线：统计损坏不影响剪贴板数
     st = Stats.record(st, 'paste', '2026-11-05');
     const s = Stats.summarize(st, '2026-11-05');
     assert.strictEqual(s.level, 2);
-    assert.strictEqual(s.title, '归档助手');
+    assert.strictEqual(s.title, '碎片收藏家');
+    assert.strictEqual(s.rarity, 'common');
     assert.strictEqual(s.todayCopy, 55);
     assert.strictEqual(s.todayPaste, 1);
     assert.ok(s.progress > 0 && s.progress < 1);

@@ -23,9 +23,20 @@ const LEVEL_STEP = 50;      // 每级递增基数：Lv n→n+1 需 50×n
 
 /** 等级称号表（index 0 = Lv1；ClipSense 剪贴板拟物主题命名） */
 const LEVEL_TITLES = [
-  '收集学徒', '归档助手', '整理行家', '效率专员', '剪贴达人',
-  '流水大师', '信息管家', '剪贴专家', '极速档案官', '剪贴板传奇',
+  '剪贴萌新', '碎片收藏家', '复制界的搬运工', '档案猎人', 'Ctrl+C 骑士',
+  '剪贴板诗人', '时空档案官', '碎片次元管理员', '复制即永恒', '剪贴板传奇',
 ];
+/** 稀有度（2026-11-11 小M：称号趣味化 + 小惊喜）：普通/优秀/稀有/史诗/传说 */
+type Rarity = 'common' | 'fine' | 'rare' | 'epic' | 'legend';
+/** 稀有度纯函数：1-2 普通 / 3-5 优秀 / 6-7 稀有 / 8-9 史诗 / 10 传说 */
+function rarityOf(level: number): Rarity {
+  const lv = typeof level === 'number' && isFinite(level) && level > 0 ? Math.floor(level) : 1;
+  if (lv >= LEVEL_MAX) return 'legend';
+  if (lv >= 8) return 'epic';
+  if (lv >= 6) return 'rare';
+  if (lv >= 3) return 'fine';
+  return 'common';
+}
 
 /** 当日日期键（本地时区 YYYY-MM-DD；可注入替换用于测试） */
 function dateKey(d?: Date): string {
@@ -206,6 +217,7 @@ function summarize(stats: StatsData | null, dkey?: string): Record<string, unkno
     exp: st.total.copy,
     level: lv.level,
     title: lv.title,
+    rarity: rarityOf(lv.level),
     nextNeed: lv.nextNeed,
     progress: computeProgress(st.total.copy),
     todayCopy: today.copy,
@@ -231,4 +243,5 @@ export = {
   StatsStore: StatsStore,
   summarize: summarize,
   last7Days: last7Days,
+  rarityOf: rarityOf,
 };
