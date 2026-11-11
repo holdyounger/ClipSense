@@ -26,11 +26,13 @@ export interface LeafSpec {
 
 /** 布局输入 */
 export interface LayoutInput {
+  /** interact 级自定义动作叶（2026-11-05 Bug3：互动二级扇动作点播）；仅 level='interact' 消费 */
+  interactLeaves?: Array<LeafSpec & { value: string }>;
   winW: number;
   winH: number;
   dirH: 'l' | 'r';
   dirV: 'u' | 'd';
-  level: 'main' | 'mode';
+  level: 'main' | 'mode' | 'interact';
   mode: string;
   scale: number;
   /** 猫锚点（video 视觉中心，DIP） */
@@ -65,18 +67,23 @@ const R_SUB = 62;           // 二级绕主扇心同圈（与主扇叶同轨，�
 const MARGIN = 4;
 
 /** 主扇 5 叶（基准角：90=下 135=左下 180=左 225=左上 270=上） */
+// 3 叶（2026-11-04 二次修正，小M 实机反馈「互动按钮没了」）：R2 判定失误纠正——
+// 「冗余」本意指 size 死代码，互动叶（❤️ 手动触发反应动画）是用户主动互动入口，保留。
+// summon 仍删（单击桌宠已覆盖 pet:summon，该判定小M 认可）。
+// 3 叶 50° 均布（210/160/110），扇形疏朗（R7）。
 const MAIN_LEAVES: LeafSpec[] = [
-  { key: 'summon', ang: 250, icon: '🖥️', hint: '唤出面板' },
-  { key: 'mode', ang: 200, icon: '🐱', hint: '模式' },
-  { key: 'react', ang: 150, icon: '❤️', hint: '爱心' },
-  { key: 'quit', ang: 100, icon: '⏻', hint: '退出' },
+  { key: 'mode', ang: 210, icon: '🐱', hint: '模式' },
+  { key: 'react', ang: 160, icon: '❤️', hint: '互动' },
+  { key: 'quit', ang: 110, icon: '⏻', hint: '退出' },
 ];
 
 /** 模式二级 3 叶（绕主扇心内圈，250/180/110） */
+// R6 icon 语义重选（2026-11-04 小M：原 🐱/📌/🌙 不清晰）：
+// 🐾=桌宠本体（区别于主扇 mode 叶的 🐱 图标）/ 📐=贴边停靠 / 💤=纯隐藏（暂停驻留）
 const MODE_LEAVES: Array<LeafSpec & { value: string }> = [
-  { key: 'pet', ang: 245, icon: '🐱', hint: '桌宠模式', value: 'pet' },
-  { key: 'edge', ang: 180, icon: '📌', hint: '贴边模式', value: 'edge' },
-  { key: 'hidden', ang: 115, icon: '🌙', hint: '纯隐藏', value: 'hidden' },
+  { key: 'pet', ang: 245, icon: '🐾', hint: '桌宠模式', value: 'pet' },
+  { key: 'edge', ang: 180, icon: '📐', hint: '贴边模式', value: 'edge' },
+  { key: 'hidden', ang: 115, icon: '💤', hint: '纯隐藏', value: 'hidden' },
 ];
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -117,6 +124,17 @@ export function computeLayout(input: LayoutInput): LayoutResult {
   let specs: Array<LeafSpec & { value?: string }>;
   if (!sub) {
     specs = MAIN_LEAVES;
+  } else if (level === 'interact') {
+    // interact 二级扇（2026-11-05 Bug3）：back 锚 react 叶位（160°），动作叶由调用方注入
+    const parent = MAIN_LEAVES.find((l) => l.key === 'react')!;
+    const back: LeafSpec & { value?: string; backAtParent?: boolean } = {
+      key: 'back',
+      ang: parent.ang,
+      icon: '↩',
+      hint: '返回',
+      backAtParent: true,
+    };
+    specs = [back].concat(input.interactLeaves || []);
   } else {
     const parent = MAIN_LEAVES.find((l) => l.key === 'mode')!;
     // back 叶在父叶的主扇位置（R_MAIN、父叶角）——点它回主扇

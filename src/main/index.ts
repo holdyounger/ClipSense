@@ -42,6 +42,7 @@ interface IndexWebContents {
   sendInputEvent: (input: { type: string; x: number; y: number }) => void;
   focus: () => void;
   openDevTools: (options?: { mode?: string }) => void;
+  closeDevTools: () => void;
   on: (channel: string, listener: (...args: unknown[]) => void) => void;
   isDestroyed: () => boolean;
   /** 临时验证（2026-10-14 UI 验收）：菜单打开态渲染内容截图 */
@@ -200,6 +201,7 @@ const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
 const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore } = require('./pet-manager') as typeof import('./pet-manager');
+const StatsModule = require('./stats') as typeof import('./stats');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
 // 面板 WS_EX_NOACTIVATE 不夺焦：用户按 Alt 时系统焦点在目标应用，渲染层收不到
@@ -278,6 +280,11 @@ class ClipboardSpikeApp {
   _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
   _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
   _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
+  _trayScaleNearest: number = -1; // 托盘单选态最近档位缓存（滚轮步进防托盘闪烁，2026-11-04）
+  _orphanNudgeAt: number = 0; // orphan-up nudge 冷却锚（2026-11-05：菜单会话连环触发限频）
+  _petStageCreatedOnce: boolean = false; // 舞台是否曾创建（区分启动首次 vs 运行期切 pet，2026-11-04 Bug1）
+  statsStore: InstanceType<typeof StatsModule.StatsStore> | null = null; // 统计与等级模块（2026-11-05 spec）
+  _petDebugMode: boolean = false; // 桌宠调试模式（DevTools 开关，config 持久化）
   _petCtxOpen: boolean = false;            // 右键菜单打开中（全窗可交互，渲染层 mouseleave 关闭）
   _petCtxPollId: ReturnType<typeof setInterval> | null = null;
   _petCtxHold: boolean = false; // 临时验证用：true 时失焦轮询暂停
@@ -418,7 +425,8 @@ class ClipboardSpikeApp {
     const isDev = !app.isPackaged;
     console.log(`[Spike] 当前环境: ${isDev ? 'development（未打包）' : 'production（已打包）'}`);
     if (isDev) {
-      this.mainWindow!.webContents.openDevTools({ mode: 'detach' });
+      // npm start 不自动开 DevTools（2026-11-05 小M：调试模式通过托盘/F12 手动切换）
+      console.log('[Spike] dev mode: use F12 or tray toggle for DevTools');
     } else {
       console.log('[Spike] 生产模式，关闭菜单栏');
       this.mainWindow!.removeMenu();
@@ -468,6 +476,57 @@ class ClipboardSpikeApp {
           { label: '特大（1.6×）', type: 'radio', checked: Math.abs(this._getPetScale() - 1.6) < 0.05, click: () => this._setPetScalePreset(1.6) },
           { label: '巨大（2×）', type: 'radio', checked: Math.abs(this._getPetScale() - 2) < 0.05, click: () => this._setPetScalePreset(2) },
         ],
+      },
+      {
+        // P-B 形象选择器（2026-11-04 市场调研裁决添加）：models/ 目录枚举，
+        // 热切换（重建舞台走既有回退链，加载失败自动回 hiyori）
+        label: '桌宠形象',
+        submenu: this._listPetModels().map((m) => ({
+          label: m,
+          type: 'radio' as const,
+          checked: this._getPetModel() === m,
+          click: () => this._setPetModel(m),
+        })),
+      },
+      {
+        // 调试模式（2026-11-05 小M「调试模式不生效」修复）：petStage DevTools 手动开关——
+        // dev 模式自动开（did-finish-load 路径），打包版/生产模式下经此开关排查桌宠渲染问题
+        label: '调试模式（主面板 DevTools）',
+        type: 'checkbox',
+        checked: this._petDebugMode,
+        click: (menuItem: { checked: boolean }) => {
+          this._petDebugMode = menuItem.checked;
+          try { this.storage._writeConfig({ petDebugMode: menuItem.checked }); } catch (_) { }
+          const mw = this.mainWindow;
+          if (mw && !mw.isDestroyed()) {
+            if (menuItem.checked) {
+              mw.webContents.openDevTools({ mode: 'detach' });
+              _modDiag('[MainPanel] DevTools opened (tray debug toggle)');
+            }
+            else {
+              try { mw.webContents.closeDevTools(); } catch (_) { }
+              _modDiag('[MainPanel] DevTools closed (tray debug toggle)');
+            }
+          }
+        },
+      },
+      {
+        label: '调试模式（桌宠 DevTools）',
+        type: 'checkbox',
+        checked: this._petDebugMode,
+        click: (menuItem: { checked: boolean }) => {
+          this._petDebugMode = menuItem.checked;
+          const w = this.petStage;
+          if (w && !w.isDestroyed()) {
+            if (menuItem.checked) {
+              w.webContents.openDevTools({ mode: 'detach' });
+              _modDiag('[PetStage] DevTools opened (tray debug toggle)');
+            } else {
+              try { w.webContents.closeDevTools(); } catch (_) {}
+              _modDiag('[PetStage] DevTools closed (tray debug toggle)');
+            }
+          }
+        },
       },
       {
         label: '关于 ClipSense',
@@ -553,11 +612,24 @@ class ClipboardSpikeApp {
   _setPetScale(scale: number): void {
     this._petScale = normalizeScale(scale);
     try { this.storage.setPetScale(this._petScale); } catch (_) { /* 持久化失败不影响当次生效 */ }
-    // 去 resize 化（2026-10-20）：窗口恒定 220x220，缩放仅推渲染层（video 高度变化，窗口零操作）
+    // 窗口随缩放长大（2026-11-04 显示不全修复）：220 固定窗口在大档裁掉模型头顶
+    //（小M 截图实证）。底边锚定：getBounds 底边 = y + h 保持不动，窗口向上生长。
     const win = this.petStage;
     if (!win || win.isDestroyed()) return;
+    try {
+      const b = win.getBounds();
+      this._setPetBoundsAnchored(b.x, b.y + b.height);
+    } catch (_) { /* 销毁竞态 */ }
     try { win.webContents.send('pet:scale', this._petScale); } catch (_) { /* 销毁竞态 */ }
-    this.initTray(); // 重建单选态
+    // 托盘闪烁修复（2026-11-04 小M）：滚轮连续步进（step 0.06）逐档 initTray 重建 =
+    // 任务栏托盘图标持续闪烁。托盘 radio 视觉只在「最近档位」变化时才改变——
+    // 仅跨档时重建；同带内静默（持久化照旧）。
+    const presets = [0.7, 1, 1.3, 1.6, 2];
+    const nearest = presets.reduce((a, b) => (Math.abs(b - this._petScale) < Math.abs(a - this._petScale) ? b : a));
+    if (nearest !== this._trayScaleNearest) {
+      this._trayScaleNearest = nearest;
+      this.initTray(); // 重建单选态（仅跨档时）
+    }
   }
 
   /** 托盘档位入口（离散档，直观可逆） */
@@ -571,21 +643,27 @@ class ClipboardSpikeApp {
    */
   _applyHideMode(): void {
     const mode = this._getHideMode();
-    const wasPet = this._petModeOn;
     this._petModeOn = mode === 'pet';
     const ed = this.edgeDetector;
     if (!ed) return; // init 早于 edgeDetector 创建时不会发生（调用点在 start() 后）
     ed.setMode(mode);
     ed.setTriggerSuppressed(mode !== 'edge');
     if (mode === 'pet') {
-      if (!wasPet) {
-        // 收面板 + 收贴边条：桌宠接管隐藏态（轮询不停，穿透探针继续 tick）
-        // 状态对账（2026-10-29 单击失效修复）：直接 hide 绕过了 edge-detector，
-        // isWindowVisible 残留 true → 下次 pet:summon 被「已可见」守卫早退
-        ed.notifyExternalHide();
-        if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
-        if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
+      // 启动首次（舞台从未创建）vs 运行期切换（舞台有过）——Bug1 根因修正
+      // （2026-11-04）：原实现启动时 !wasPet 分支无条件 hide 主面板，把
+      // 「启动优先展示主面板」压掉，且 defer 判定读到已 hide 面板恒不生效。
+      if (!this._petStageCreatedOnce) {
+        // 启动首次进入 pet 模式：优先展示主面板（小M 需求），桌宠延迟登场——
+        // 面板收起（setOnHidden）时经补口首次创建舞台
+        ed.notifyExternalHide(); // 状态对账（面板将走 forceShow 正常显示周期）
+        ed.forceShow();
+        console.log('[Pet] 启动首次 → 优先主面板，桌宠延迟登场（收起后创建）');
+        return;
       }
+      // 运行期切换到 pet：收面板 + 收贴边条，桌宠立即接管（原语义保留）
+      ed.notifyExternalHide();
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.hide();
+      if (this.triggerWindow && !this.triggerWindow.isDestroyed()) this.triggerWindow.hide();
       this._createPetStage();
     } else {
       this._destroyPetStage();
@@ -605,6 +683,7 @@ class ClipboardSpikeApp {
 
   /** 创建桌宠舞台（幂等）：loadFile pet-stage.html → did-finish-load 后定位+等待首帧 */
   _createPetStage(): void {
+    this._petStageCreatedOnce = true; // Bug1：启动/运行期分界的里程碑
     if (this.petStage && !this.petStage.isDestroyed()) {
       this._positionAndShowPet();
       return;
@@ -653,6 +732,17 @@ class ClipboardSpikeApp {
       _modDiag(`[PetStage] loadFile 失败 code=${code} ${desc}`);
     });
     win.webContents.on('did-finish-load', () => {
+      // 调试模式判定（2026-11-05 小M「调试模式不生效」）：dev 构建（isPackaged=false）
+      // 或 config.petDebugMode=true（托盘开关）均自动打开 petStage DevTools
+      // npm start 不自动开 petStage DevTools（2026-11-05 小M）；托盘开关/F12 手动控制
+      let dbg = false;
+      try { dbg = this.storage._readConfig().petDebugMode === true; } catch (_) {}
+      if (dbg) {
+        try { win.webContents.openDevTools({ mode: 'detach' }); _modDiag('[PetStage] DevTools opened (config)'); } catch (_) {}
+      }
+      // 调试通道（2026-11-05 小M「调试模式不生效」修复）：petStage 是调试盲区——
+      // isDev 只给 mainWindow 开 DevTools。dev 模式下 detached 打开 petStage DevTools
+      // （Live2D 渲染/穿透/动作链路可断点排查）；打包版不开。
       _modDiag('[PetStage] did-finish-load（页面加载完成）');
       // 大小可调（2026-10-14）：重启后把持久化缩放系数推给渲染层（窗口尺寸主进程已按其定位）
       try { win.webContents.send('pet:scale', this._petScale); } catch (_) { /* 销毁竞态 */ }
@@ -687,7 +777,10 @@ class ClipboardSpikeApp {
       const b = buildPetStageBounds(display, this._petScale);
       bx = b.x; by = b.y;
     }
-    win.setBounds({ x: bx, y: by, width: 220, height: 220 });
+    {
+      const { w, h } = this._petStageSize();
+      win.setBounds({ x: bx, y: by, width: w, height: h });
+    }
     this._petCursorOnModel = false; // 重置命中缓存：新定位后旧命中态作废
     this._petPaintReady = false;
     if (this._petShowFallback) clearTimeout(this._petShowFallback);
@@ -720,6 +813,16 @@ class ClipboardSpikeApp {
       _modDiag('[Pet] _showPetWindow input-surface nudge applied');
     } catch (_) { /* 竞态静默 */ }
     this._applyPetIgnore();
+  }
+
+  /** 统计汇总推送（2026-11-05 spec §3.1 终版 footer 方案）：footer 徽章常驻消费 */
+  _pushStatsSummary(): void {
+    if (!this.statsStore || !this.mainWindow || this.mainWindow.isDestroyed()) return;
+    try {
+      const summary = StatsModule.summarize(this.statsStore.data);
+      try { summary.petStatsBadge = this.storage._readConfig().petStatsBadge !== false; } catch (_) {}
+      this.mainWindow.webContents.send('stats:summary', summary);
+    } catch (_) { /* 推送失败静默：统计不阻断主流程 */ }
   }
 
   /**
@@ -758,6 +861,64 @@ class ClipboardSpikeApp {
    * 注意与面板穿透相反：此处常态需要 forward:true（桌宠 hover 反馈/视线跟随依赖
    * mousemove 镜像），面板 v1 的「forward 镜像致视觉反应」教训不适用于此窗口。
    */
+  /**
+   * 可用 Live2D 模型枚举（2026-11-04 P-B 形象选择器）：扫描 models/<name>/<name>.model3.json
+   * 目录约定；hiyori 恒在首位（内置兜底）。fs.readdirSync 同步安全（小目录，托盘构建期）。
+   */
+  _listPetModels(): string[] {
+    const out: string[] = [];
+    try {
+      const dir = path.join(__dirname, '../renderer/models');
+      for (const name of fs.readdirSync(dir)) {
+        try {
+          const p = path.join(dir, name, name + '.model3.json');
+          if (fs.existsSync(p)) out.push(name);
+        } catch (_) { /* 单项失败不影响其余 */ }
+      }
+    } catch (_) { /* 目录缺失：空表 */ }
+    if (out.indexOf('hiyori') !== -1) {
+      const i = out.indexOf('hiyori');
+      out.splice(i, 1);
+      out.unshift('hiyori'); // 内置兜底恒首位
+    }
+    return out;
+  }
+
+  _getPetModel(): string {
+    try {
+      const m = this.storage._readConfig().petLive2dModel;
+      if (typeof m === 'string' && m) return m;
+    } catch (_) { /* 回落默认 */ }
+    return 'hiyori';
+  }
+
+  /** 切换形象：持久化 → 重建舞台（loadFile 重新走 enterLive2dMode，from 失败自动回 hiyori） */
+  _setPetModel(name: string): void {
+    if (typeof name !== 'string' || !name) return;
+    try { this.storage._writeConfig({ petLive2dModel: name }); } catch (_) { /* 持久化失败不阻断 */ }
+    // 舞台重建 = 最简热切换（模型加载失败时渲染层既有回退链自动落 hiyori/webm）
+    if (this.petStage && !this.petStage.isDestroyed()) {
+      this._destroyPetStage();
+    }
+    if (this._petModeOn) this._createPetStage();
+    this.initTray(); // 重建单选态
+  }
+
+  /** 舞台逻辑尺寸（2026-11-04 显示不全修复）：220 × petScale，随缩放增长；
+   *  live2d 大档（2.0/2.2）模型高度超 220 窗口 → 头顶被裁（小M 实机截图实证）。
+   *  底边锚定不变：调用方 setBounds 的 y = 旧底边 - 新高度。 */
+  _petStageSize(): { w: number; h: number } {
+    const s = Math.round(220 * (this._petScale || 1));
+    return { w: s, h: s };
+  }
+
+  /** 底边锚定的 setBounds（x 同参；y 按新高度上移，窗口底边保持在原位） */
+  _setPetBoundsAnchored(x: number, bottomY: number): void {
+    if (!this.petStage || this.petStage.isDestroyed()) return;
+    const { w, h } = this._petStageSize();
+    this.petStage.setBounds({ x: Math.round(x), y: Math.round(bottomY - h), width: w, height: h });
+  }
+
   _applyPetIgnore(): void {
     // 命中穿透 v2（2026-10-23 小M 复测：forward 转发两次实测失活→看门狗回退整窗，
     // 220x220 透明区重新挡鼠标 ~250px）。v2 主进程自持轮询驱动（无 forward 依赖）：
@@ -803,6 +964,15 @@ class ClipboardSpikeApp {
       // 置顶自愈：模式切换/hide→show 周期可能掉出 topmost 带，150ms 内补回
       if (!win.isAlwaysOnTop()) {
         win.setAlwaysOnTop(true, 'screen-saver');
+      }
+      // 显隐自愈（2026-11-04 Bug：桌宠不稳定不显示/疑似未置顶）：取证 TOPMOST 恒 true，
+      // 非置顶不成立；主嫌疑是 setOnShown 隐藏 ↔ setOnHidden 召回的时序缝隙。
+      // 面板已收起但舞台不可见 → 幂等重 show（showInactive 不夺焦，150ms 内自愈）。
+      if (!win.isVisible()) {
+        const panelVisibleNow = this.edgeDetector ? this.edgeDetector.isWindowVisible : false;
+        if (!panelVisibleNow) {
+          this._showPetWindow();
+        }
       }
       if (this._petCtxOpen || this._petAltActive) return; // 交互/Alt 态由既有逻辑管
       if (this._petDragOffset) return; // B2 守卫：拖拽手势中轮询不翻转穿透（150ms 翻转吞 mousedown 即 v2 缺陷）
@@ -1118,6 +1288,17 @@ class ClipboardSpikeApp {
   }
 
   registerShortcut() {
+    // F12 调试切换（2026-11-05 小M「调试模式不生效」辅助）：切换主面板 DevTools，
+    // 无需进托盘翻菜单。生产模式同样可用（排查需要）。
+    globalShortcut.register('F12', () => {
+      const mw = this.mainWindow;
+      if (!mw || mw.isDestroyed()) return;
+      // isDevTC：DevTools 是否已开（webContents.capturePage 不可靠，用 devToolsWebContents 判定）
+      const devOpen = (mw.webContents as unknown as { devToolsWebContents?: { isDestroyed(): boolean } }).devToolsWebContents
+        && !(mw.webContents as unknown as { devToolsWebContents: { isDestroyed(): boolean } }).devToolsWebContents.isDestroyed();
+      if (devOpen) { mw.webContents.closeDevTools(); }
+      else { mw.webContents.openDevTools({ mode: 'detach' }); }
+    });
     // Alt+V 唤出（V = clipboard 语义）
     const ok = globalShortcut.register('Alt+V', () => {
       if (this.edgeDetector) {
@@ -1234,6 +1415,9 @@ class ClipboardSpikeApp {
     // file 条目「复制路径」按钮：写路径文本而非文件本体（回写抑制在 monitor 内）
     ipcMain.handle('copy-item-path', (event, id) => this.monitor.copyItemPath(id));
 
+    // 置顶 toggle（2026-11-11 FR1/FR5）：monitor.togglePin 收敛于 pin-utils 纯函数
+    ipcMain.handle('toggle-pin', (event, id: string) => this.monitor.togglePin(id));
+
     // 自定义标签规则（标签体系二期，2026-10-11）：CRUD 存 storage，变更广播渲染层
     ipcMain.handle('get-tag-rules', () => this.storage.getCustomRules());
     ipcMain.handle('set-tag-rules', (event, rules) => {
@@ -1328,6 +1512,8 @@ class ClipboardSpikeApp {
       } else {
         console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview} (restored=${result.restored})`);
         _modDiag(`[Paste] OK restored=${result.restored}`);
+        // S2 埋点（2026-11-05 spec §一）：双击粘贴成功 +1（失败不加——成功回调语义）
+        try { if (this.statsStore) { this.statsStore.record('paste'); this._pushStatsSummary(); } } catch (_) {}
         // 粘贴成功后抑制轮询归档+重建基线：否则 600ms 轮询把刚粘贴的内容当新复制
         // 处理 → pushHistory → 渲染层全量重建 → 连续双击的 DOM 元素被销毁，
         // 第二击事件丢失（16:50「只有第一条成功」根因）
@@ -1486,12 +1672,31 @@ class ClipboardSpikeApp {
     ipcMain.on('pet:diag', (_event: unknown, msg: unknown) => {
       _modDiag(`[PetStage] ${String(msg).split('\n').join(' | ')}`);
     });
+    // Live2D 后端配置通道（2026-11-03 T3，A2 约定）：模型热插拔 + 总开关。
+    // petLive2dModel 缺省 null → 渲染层回落 hiyori；petLive2dEnabled 缺省 true。
+    ipcMain.handle('pet:get-config', () => {
+      try {
+        const cfg = this.storage._readConfig();
+        const model = cfg.petLive2dModel;
+        return {
+          petLive2dModel: typeof model === 'string' && model ? model : null,
+          petLive2dEnabled: cfg.petLive2dEnabled !== false,
+          models: this._listPetModels(), // P-B：形象选择 UI 的枚举源
+        };
+      } catch (_) {
+        return { petLive2dModel: null, petLive2dEnabled: true };
+      }
+    });
     // B1b（2026-11-03）：孤儿 mouseup 采样——渲染层收到左 up 而无 down（Bug1 失败签名）时，
     // 当场 dump EXSTYLE + 穿透状态机快照。失败时刻的 Win32 风格实证，三选一定性：
     // TRANSPARENT 残留（样式失同步）/ NOACTIVATE 丢失（激活路径吞 down）/ 两者皆正常（Electron 输入面失活）。
     ipcMain.on('pet:orphan-up', (_event: unknown, p: { x?: number; y?: number; hit?: boolean; ctx?: boolean }) => {
       const w = this.petStage;
       if (!w || w.isDestroyed()) return;
+      // 限频（2026-11-05 Bug1）：菜单会话（ctx）内 nudge 与 setBounds 链互相触发连环
+      // （昨夜日志 20+ 连环）——菜单期完全禁用；非会话期 400ms 冷却。
+      const now = Date.now();
+      if (p.ctx || this._petCtxOpen || now - this._orphanNudgeAt < 400) return;
       const q = (p && typeof p === 'object') ? p : ({} as { x?: number; y?: number; hit?: boolean; ctx?: boolean });
       _modDiag('[Pet] orphan-up x=' + q.x + ' y=' + q.y + ' hit=' + q.hit + ' ctx=' + q.ctx
         + ' lastApplied=' + this._petLastIgnoreApplied + ' onModel=' + this._petCursorOnModel);
@@ -1505,6 +1710,7 @@ class ClipboardSpikeApp {
         const bb = w.getBounds();
         w.setBounds({ x: bb.x, y: bb.y, width: bb.width, height: bb.height });
         w.moveTop();
+        this._orphanNudgeAt = Date.now();
         this._diagExStyle(w, 'after-nudge');
         _modDiag('[Pet] orphan-up healed: setBounds self-nudge applied');
       } catch (_) { /* 销毁竞态静默 */ }
@@ -1590,17 +1796,20 @@ class ClipboardSpikeApp {
       // 窗口尺寸经 DIP↔物理像素往返取整逐次漂移（30Hz 拖拽数秒 = 肉眼可见「一直变大」）。
       // 修法：setBounds 每拍显式钉死宽高，取整误差无从累积；漂移取证日志实锤根因。
       const b = this.petStage.getBounds();
-      // 窗口恒定 220（去 resize 化）
-      if (b.width !== 220 || b.height !== 220) {
-        _modDiag(`[Pet] 拖拽尺寸漂移 ${b.width}x${b.height} → 钉回 220x220（DPI 取整实锤）`);
+      // 窗口尺寸 = 220 × petScale（2026-11-04：随缩放长大；DPI 防漂移钉死语义保留）
+      const size = this._petStageSize();
+      if (b.width !== size.w || b.height !== size.h) {
+        _modDiag(`[Pet] 拖拽尺寸漂移 ${b.width}x${b.height} → 钉回 ${size.w}x${size.h}（DPI 取整实锤）`);
       }
-      this.petStage.setBounds({ x: c.x, y: c.y, width: 220, height: 220 });
+      this.petStage.setBounds({ x: c.x, y: c.y, width: size.w, height: size.h });
     });
     ipcMain.on('pet:drag-end', () => {
       if (!this.petStage || this.petStage.isDestroyed()) { this._petDragOffset = null; return; }
       const pos = this.petStage.getPosition();
-      const c = clampPetPosition(pos[0], pos[1], screen.getPrimaryDisplay(), this._petScale);
-      this.petStage.setBounds({ x: c.x, y: c.y, width: 220, height: 220 });
+      const b = this.petStage.getBounds();
+      const c = clampPetPosition(pos[0], b.y + b.height - Math.round(220 * this._petScale), screen.getPrimaryDisplay(), this._petScale);
+      const { w, h } = this._petStageSize();
+      this.petStage.setBounds({ x: c.x, y: c.y, width: w, height: h });
       this.storage.setPetPosition({ x: c.x, y: c.y });
       this._petDragOffset = null;
       this._petLastIgnoreApplied = null; // B2：强制下次同步实际生效值（拖拽中已置 true）
@@ -1766,14 +1975,18 @@ class ClipboardSpikeApp {
       const WS_EX_NOACTIVATE = 0x08000000;
       const WS_EX_TOPMOST = 0x00000008;
       const hwnd = win.getNativeWindowHandle().readBigInt64LE(0);
-      const cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      // 修复（2026-11-11）：koffi 3.1.6 intptr_t 本机实测返回 number（非 BigInt，
+      // 见 842 诊断区注释与今日 run3 日志 TypeError）——number & BigInt 抛
+      // "Cannot mix BigInt and other types"，致 NOACTIVATE 一直未生效。
+      // 读写类型自适应归一（EXSTYLE 实际都在低 32 位，Number 化安全）。
+      const curRaw = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number | bigint;
+      const cur = typeof curRaw === 'bigint' ? curRaw : BigInt(Math.round(curRaw));
       // NOACTIVATE + TOPMOST（alwaysOnTop 在 Electron 内部也设 TOPMOST，这里补齐以防重置）
-      // 注意：句柄是 64 位，EXSTYLE 读写都在低 32 位，但传参必须保持完整 intptr_t 宽度，
-      // 先 BigInt 运算再整体转 Number 会丢高 32 位（句柄高位非零时窗口句柄错乱），
-      // 因此 SetWindowLongPtrW 直接收 BigInt（koffi intptr_t 原生支持）。
       const newStyle = (cur | BigInt(WS_EX_NOACTIVATE) | BigInt(WS_EX_TOPMOST));
-      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, newStyle);
-      const after = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      const newStyleOut = typeof curRaw === 'bigint' ? newStyle : Number(newStyle);
+      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, newStyleOut);
+      const afterRaw = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number | bigint;
+      const after = typeof afterRaw === 'bigint' ? afterRaw : BigInt(Math.round(afterRaw));
       const applied = (after & BigInt(WS_EX_NOACTIVATE)) !== 0n;
       console.log(`[Spike] WS_EX_NOACTIVATE ${applied ? '已应用' : '应用失败'}: hwnd=${hwnd} exstyle 0x${cur.toString(16)} -> 0x${after.toString(16)}`);
     } catch (err) {
@@ -1844,7 +2057,11 @@ class ClipboardSpikeApp {
       this.focusTracker!.clear(); // 回调触发时 init 已完成创建（运行时恒非空）
       // 桌宠模式：面板收起 → 舞台回归。改走 _showPetWindow（show 后重申置顶）：
       // hide→show 周期是掉 topmost 带的高频路径——置顶丢失的主要场景
-      if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
+      if (this._petModeOn && (!this.petStage || this.petStage.isDestroyed())) {
+        // 启动延迟登场（2026-11-03 Bug1）补口：面板在场时舞台未创建（petStage=null），
+        // 收起瞬间在这里首次创建——否则桌宠永不出现
+        this._createPetStage();
+      } else if (this._petModeOn && this.petStage && !this.petStage.isDestroyed()) {
         this._showPetWindow();
       }
     });
@@ -1865,6 +2082,15 @@ class ClipboardSpikeApp {
     // setOnShown 单槽回调：桌宠面板可见期隐藏舞台的逻辑已在上方注册处合并
     //（两处注册会相互覆盖，2026-10-13 去重）
     this.edgeDetector.start();
+    // 统计与等级模块（2026-11-05 spec §一）：独立 clipboard-stats.json，与历史文件解耦；
+    // load 内含 90 天滚动清理与损坏容错（统计损坏不影响剪贴板数据）
+    try {
+      this.statsStore = new StatsModule.StatsStore(path.join(app.getPath('userData'), 'clipboard-stats.json'));
+      this.statsStore.load();
+      // 启动静默推送（2026-11-05 footer 终版）：面板徽章数据就绪即常驻显示。
+      // 延迟 1.5s 等渲染层订阅就绪（did-finish-load 后 onStatsSummary 才挂上）。
+      setTimeout(() => { try { this._pushStatsSummary(); } catch (_) {} }, 1500);
+    } catch (_) { this.statsStore = null; }
     // 桌宠模式接线（P0 spike）：Alt 穿透边沿联动舞台 + 启动时应用持久化模式
     //（决策 1：缺省/旧配置 = edge，存量用户零感知）
     this.edgeDetector.setOnModifierEdge((active) => {
@@ -1939,6 +2165,8 @@ class ClipboardSpikeApp {
     // 剪贴板变化 → 推送给渲染进程
     this.monitor.setOnChange((item, history) => {
       console.log(`[Spike] 剪贴板变化: ${item!.preview}`); // changed=true 分支 item 恒非空（tick 契约）
+      // S1 埋点（2026-11-05 spec §一）：复制入库 +1（被动积累，零主动采集）
+      try { if (this.statsStore) { this.statsStore.record('copy'); this._pushStatsSummary(); } } catch (_) {}
       this.pushHistory();
     });
 

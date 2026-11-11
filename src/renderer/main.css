@@ -17,6 +17,21 @@
   --border: #3d3d48;
 }
 
+/* ========== Fluent Design token 子集（2026-11-05 统计模块引入，避免手工魔法数字） ==========
+   依据：microsoft/fluentui 设计规范（github.com/microsoft/fluentui，Windows 桌面应用
+   原生气质）。规则：统计模块样式只引用这些 token，不得新增魔法数字（每次手改出错根因）。
+   ⚠️ CSS 已知陷阱：border-image 与 border-radius 不兼容（直角渲染）——圆角容器禁用。 */
+:root {
+  --fd-radius-sm: 4px;   /* Fluent: corner radius small（按钮/输入） */
+  --fd-radius-md: 8px;   /* Fluent: corner radius medium（卡片/弹层） */
+  --fd-stroke-card: rgba(255, 255, 255, 0.10);  /* Fluent: 卡片描边（低透明白） */
+  /* Fluent shadow8（浮层分层阴影）：近距锐影 + 远距柔影两层 */
+  --fd-shadow-pop: 0 2px 4px rgba(0,0,0,0.14), 0 12px 28px rgba(0,0,0,0.24);
+  /* Fluent Acrylic 材质：半透明深底 + 背景模糊（面板透视时保持可读对比度） */
+  --fd-acrylic-bg: rgba(44, 44, 52, 0.88);
+}
+
+
 html, body {
   width: 100%;
   min-width: 0;
@@ -708,7 +723,7 @@ body.mod-pass .hint {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
+  padding: 10px 12px 10px 18px;
   margin-bottom: 6px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -729,7 +744,7 @@ body.mod-pass .hint {
 .item:hover {
   opacity: 1;
   /* 物理直觉 hover（2026-10-30 UI v3.1）：上浮 2px + 投影加深（抬离桌面），
-     类型条保持身份标识，hover 走立体反馈而非边框高亮 */
+     类型圆点保持身份标识，hover 走立体反馈而非边框高亮 */
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
   z-index: 1;
 }
@@ -740,47 +755,32 @@ body.mod-pass .hint {
 }
 
 
-/* ========== 磁吸辉光（2026-09-17 方案 A，dock-anim.js 驱动；两侧版） ==========
-   JS 每帧只写 .item 的 --dock-i（0..1 强度，余弦窗衰减）；左右两缘 accent bar 的
-   露出高度（scaleY）与辉光（opacity）由 CSS 消费该变量——JS 零 transform 写入，
-   文本零变形。::before 左缘 / ::after 右缘镜像（.item 已 position:relative，零 DOM 改动）。
-   注意：.item-landing::after（入场落位光晕）也用 ::after——两者场景互斥（入场动画
-   只播新条目，播放期间 dock 强度为 0），同帧若叠加实机确认后可拆专用元素。 */
+/* ========== 磁吸辉光 + 类型圆点（2026-11-10 v4：高亮条改小圆点，小M 提出） ==========
+   JS 每帧只写 .item 的 --dock-i（0..1 强度，余弦窗衰减）；类型圆点的
+   辉光（box-shadow）与 opacity 由 CSS 消费该变量——JS 零 transform 写入，
+   文本零变形。左缘 ::before 承载类型圆点（.item 已 position:relative，零 DOM 改动）。
+   注意：.item-landing::after（入场落位光晕）仍用 ::after——与圆点场景互斥（入场动画
+   只播新条目，播放期间 dock 强度为 0）。 */
 .item::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 0;
-  width: 3px;
-  height: 100%;
-  border-radius: 8px 0 0 8px;
-  background: var(--bar-color, linear-gradient(180deg, var(--accent), #6c5ce7));
+  left: 5px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: var(--bar-color, var(--accent));
   box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
-  /* 类型常驻条（2026-10-30 UI v3）：--bar-i/--bar-color 由 .item--<tag> 注入；
+  /* 类型圆点（2026-11-10 v4）：--bar-i/--bar-color 由 .item--<tag> 注入；
      强度 = max(磁吸辉光, 常驻)，opacity 由浏览器钳制到 [0,1] */
   opacity: min(1, calc(var(--dock-i, 0) + var(--bar-i, 0)));
   transform-origin: center;
   pointer-events: none;
 }
 
-/* 右缘镜像（2026-09-17 11:20 小M 要求两侧） */
-.item::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 3px;
-  height: 100%;
-  border-radius: 0 8px 8px 0;
-  background: var(--bar-color, linear-gradient(180deg, var(--accent), #6c5ce7));
-  box-shadow: 0 0 calc(10px * var(--dock-i, 0)) rgba(162, 155, 254, calc(0.55 * var(--dock-i, 0)));
-  /* 类型常驻条（2026-10-30 UI v3）：--bar-i/--bar-color 由 .item--<tag> 注入；
-     强度 = max(磁吸辉光, 常驻)，opacity 由浏览器钳制到 [0,1] */
-  opacity: min(1, calc(var(--dock-i, 0) + var(--bar-i, 0)));
-  transform-origin: center;
-  pointer-events: none;
-  /* 强度由 JS 逐帧驱动，CSS 不加 transition（避免双轨插值打架） */
-}
+/* 右缘条移除（2026-11-10 v4）：高亮条整体改为左侧类型圆点；
+   ::after 仅保留 .item-landing 入场落位光晕（该规则自足，不受影响）。 */
 
 /* 重复内容计数徽标（2026-09-17）：meta 行尾部 ×N，≥2 次才渲染 */
 .copy-count {
@@ -1085,7 +1085,7 @@ body.mod-pass .hint {
   background: var(--accent);
   border-color: var(--accent-hover);
 }
-/* 类型高亮条（2026-10-30 UI v3）：按首个内置标签着色，两侧常驻（::before/::after 消费） */
+/* 类型圆点（2026-11-10 UI v4，替代高亮条）：按首个内置标签着色，左缘常驻（::before 消费） */
 .item--link    { --bar-color: #4a9eff; --bar-i: 1; }
 .item--email   { --bar-color: #a29bfe; --bar-i: 1; }
 .item--otp     { --bar-color: #2ecc71; --bar-i: 1; }
@@ -1163,44 +1163,44 @@ body.mod-pass .hint {
 
 .actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   justify-content: flex-end;
 }
 
-.copy-btn, .copy-path-btn, .open-path-btn, .del-btn, .open-btn {
-  padding: 3px 10px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+/* 操作按钮统一规格（2026-11-11 UI 打回整改：三按钮风格统一 + 压缩占位）：
+   图标化 ghost 按钮（Segoe Fluent Icons/MDL2 单色图标，CSS 可着色），
+   muted 底态 + hover 语义色（可用动作=紫 accent，危险=红），Raycast ghost 口径 */
+.copy-btn, .copy-path-btn, .open-path-btn, .del-btn, .open-btn, .item-pin {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: 13px;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
-  background: var(--bg2);
-  color: var(--text);
-  transition: background 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
 
-.copy-btn:hover {
-  background: var(--accent);
-  color: #fff;
-}
-
-.open-btn:hover {
-  background: var(--accent);
-  border-color: var(--accent-hover);
-}
-
-.copy-path-btn:hover {
-  background: var(--accent);
-  color: #fff;
-}
-
-.open-path-btn:hover {
-  background: var(--accent);
-  color: #fff;
+.copy-btn:hover, .open-btn:hover, .copy-path-btn:hover, .open-path-btn:hover, .item-pin:hover {
+  background: rgba(162, 155, 254, 0.14);
+  color: var(--accent-hover);
 }
 
 .del-btn:hover {
-  background: #a33;
-  color: #fff;
+  background: rgba(163, 51, 51, 0.28);
+  color: #ff9b9b;
+}
+
+.item--pinned .item-pin {
+  color: var(--accent-hover);
+  background: rgba(108, 92, 231, 0.12);
 }
 
 /* 多 URL 提取清单浮层 */
@@ -1287,4 +1287,479 @@ body.mod-pass .hint {
    引导职责由欢迎页覆盖；元素保留（main.ts 引用兼容），仅视觉隐藏 */
 .hint {
   display: none;
+}
+
+/* ========== 统计等级底栏（2026-11-05 spec，2026-11-09 HUD+玻璃拟态重设计，小M） ==========
+   全局玻璃拟态 + 游戏 HUD 风格。三个 tab（等级/今日/趋势）。
+   设计 token：Fluent radius + Acrylic blur + HUD glow。
+   规则：只引用 token，不写魔法数字（Garden Skills web-design-engineer 规范）。 */
+
+/* --- footer 底栏容器（.footer 类复用，statsFooter 专属紧凑化覆盖） --- */
+#statsFooter {
+  padding: 2px 12px; /* 紧凑化（2026-11-05 小M：footer 占空间太大，4px→2px 上下压） */
+  gap: 0; /* 单行徽章无 gap 需求 */
+  min-height: 0; /* 消除旧 .footer 的隐式最小高度 */
+}
+
+/* --- 徽章本体（footer 右侧，stats-show 由 JS 切显示） --- */
+.footer-stats {
+  display: none;
+  align-items: center; gap: 5px;
+  margin-left: auto;
+  font-size: 11px; color: var(--muted);
+  cursor: default;
+  position: relative;
+  border-radius: 8px; padding: 3px 8px;
+  transition: background 0.15s ease-out;
+}
+.footer-stats.stats-show { display: flex; }
+.footer-stats:hover { background: rgba(162,155,254,0.08); }
+
+/* --- 统计弹窗（玻璃拟态 + HUD 融合面板） --- */
+.stats-popover {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  width: 280px;
+  /* 玻璃拟态 */
+  background: rgba(24,24,34,0.82);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(162,155,254,0.18);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(108,92,231,0.1),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+  overflow: hidden;
+  z-index: 300;
+  opacity: 0; visibility: hidden;
+  transform: translateY(8px) scale(0.97);
+  transform-origin: bottom right;
+  transition: opacity 0.22s cubic-bezier(0.16,1,0.3,1), transform 0.22s cubic-bezier(0.16,1,0.3,1), visibility 0.22s;
+}
+.footer-stats:hover .stats-popover,
+.footer-stats.stats-show:hover .stats-popover,
+.footer-stats.stats-click-open .stats-popover {
+  opacity: 1; visibility: visible;
+  transform: translateY(0) scale(1);
+}
+/* 弹窗内 hover 保持可见（鼠标从徽章移到弹窗经过间隙不消失） */
+.stats-popover:hover {
+  opacity: 1; visibility: visible;
+  transform: translateY(0) scale(1);
+}
+/* HUD 顶部光线 */
+.stats-popover::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 10%, rgba(162,155,254,0.6) 50%, transparent 90%);
+}
+
+/* --- tab 栏 --- */
+.scs-tabs {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 5px 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+.scs-tab {
+  flex: 1; padding: 6px 0; text-align: center;
+  font-size: 11px; color: var(--muted); cursor: pointer;
+  border: none; background: none;
+  transition: color 0.15s, background 0.15s;
+  font-family: inherit;
+  letter-spacing: 0.5px;
+  border-radius: 9999px;
+  z-index: 1;
+}
+.scs-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.scs-tab.scs-active {
+  color: var(--accent-hover); font-weight: 600;
+}
+/* 流光滑轨 v2（2026-11-11 二次打磨）：去玻璃描边改 stadium 胶囊，
+   弹簧滑移 + 每次切换单次高光扫过（替代常驻无限扫，观感更干净） */
+.scs-tab-glider {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 40px;
+  border-radius: 9999px;
+  background: rgba(162, 155, 254, 0.16);
+  transition:
+    left 0.3s cubic-bezier(0.34, 1.3, 0.64, 1),
+    width 0.3s cubic-bezier(0.34, 1.3, 0.64, 1);
+  pointer-events: none;
+  overflow: hidden;
+}
+.scs-tab-glider::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  transform: translateX(-120%);
+  opacity: 0;
+}
+.scs-tab-glider.scs-shine::after {
+  animation: scs-glider-shine 0.55s ease-out 1;
+}
+@keyframes scs-glider-shine {
+  0% { transform: translateX(-120%); opacity: 1; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+
+/* --- tab 内容面板 --- */
+.scs-panel {
+  position: relative;
+  overflow: hidden;
+  min-height: 148px;
+  padding: 16px;
+}
+
+/* --- 等级 tab：HUD 环 + 称号 + 进度 + streak --- */
+.scs-level {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.scs-ring-area { position: relative; width: 88px; height: 88px; }
+.scs-ring-svg { transform: rotate(-90deg); display: block; }
+.scs-ring-svg .scs-ring-track {
+  fill: none; stroke: rgba(255,255,255,0.06); stroke-width: 3;
+}
+.scs-ring-svg .scs-ring-progress {
+  fill: none; stroke: var(--accent-hover); stroke-width: 3; stroke-linecap: round;
+  stroke-dasharray: 75.4; stroke-dashoffset: 22.6;
+  filter: drop-shadow(0 0 4px rgba(162,155,254,0.4));
+  transition: stroke-dashoffset 0.3s ease-out;
+}
+.scs-ring-core {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 2px;
+}
+.scs-lv-num {
+  font-family: "Cascadia Code","JetBrains Mono",Consolas,monospace;
+  font-size: 18px; font-weight: 700; color: var(--accent-hover);
+  text-shadow: 0 0 8px rgba(162,155,254,0.6);
+}
+.scs-lv-cap { font-size: 8px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+.scs-title {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  text-shadow: 0 0 6px rgba(162,155,254,0.3);
+}
+.scs-progress-line {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; color: var(--muted);
+  font-family: "Cascadia Code",Consolas,monospace;
+}
+.scs-progress-track {
+  width: 120px; height: 3px;
+  background: rgba(255,255,255,0.06); border-radius: 2px;
+  overflow: hidden;
+}
+.scs-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  box-shadow: 0 0 6px rgba(162,155,254,0.6);
+}
+.scs-streak-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px;
+  background: rgba(162,155,254,0.08);
+  border: 1px solid rgba(162,155,254,0.15);
+  border-radius: 10px;
+  font-size: 10px; font-family: "Cascadia Code",Consolas,monospace;
+  color: var(--accent-hover);
+}
+
+/* --- 今日 tab：HUD 数字大屏 --- */
+.scs-today {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.scs-stat-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  border-left: 2px solid var(--accent);
+}
+.scs-stat-label { font-size: 11px; color: var(--muted); }
+.scs-stat-val {
+  font-family: "Cascadia Code","JetBrains Mono",Consolas,monospace;
+  font-size: 20px; font-weight: 700; color: var(--text);
+  text-shadow: 0 0 6px rgba(162,155,254,0.3);
+}
+.scs-stat-unit { font-size: 10px; color: var(--muted); margin-left: 4px; }
+
+
+
+/* ========== 统计徽章块结束 ========== */
+
+/* ========== 置顶（2026-11-11 FR1/FR2/D1/D2）========== */
+/* 📌 按钮样式已并入上方操作按钮统一规格（图标化 ghost + 语义 hover）；
+   置顶态常显 accent 由 .item--pinned .item-pin 承担 */
+/* 置顶分组线（对齐游戏 HUD token：紫 accent + hairline 分隔） */
+.pin-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--accent-hover);
+}
+/* 轻量 toast（FR5 置顶位满额提示，2s 自动消失） */
+.app-toast {
+  position: fixed;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  background: rgba(30, 30, 40, 0.95);
+  border: 1px solid rgba(162, 155, 254, 0.35);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  z-index: 400;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* --- 趋势 tab：近 7 日复制/粘贴双色柱（HUD 风格，2026-11-11） --- */
+.scs-trend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tr-chart {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 6px;
+  height: 84px;
+}
+.tr-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+.tr-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 64px;
+}
+.tr-b-copy {
+  width: 7px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, var(--accent-hover), var(--accent));
+}
+.tr-b-paste {
+  width: 7px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, #0ce0e5, #0a9bb0);
+}
+.tr-day {
+  font-size: 10px;
+  color: var(--muted);
+}
+.tr-legend {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tr-lg::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.tr-lg-copy::before {
+  background: var(--accent);
+}
+.tr-lg-paste::before {
+  background: #0ce0e5;
+}
+.tr-tip {
+  text-align: center;
+  font-size: 11px;
+  color: var(--accent-hover);
+  min-height: 14px;
+}
+
+/* 面板流光已移除（2026-11-11 小M：观感不佳），切换反馈保留快速淡入 */
+.scs-panel.scs-sweeping {
+  animation: scs-panel-in 0.2s ease-out 1;
+}
+@keyframes scs-panel-in {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+/* --- 等级 tab 重设计（2026-11-11：HUD 对齐趋势面板 + 个性化 + 动画） --- */
+.scs-level {
+  gap: 10px;
+  align-items: stretch;
+}
+.scs-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.scs-ring-area {
+  width: 72px;
+  height: 72px;
+  position: relative;
+  flex-shrink: 0;
+}
+.scs-ring-svg {
+  width: 72px;
+  height: 72px;
+}
+.scs-ring-svg .scs-ring-progress {
+  stroke: url(#ringGrad);
+}
+.scs-ring-core .scs-lv-num {
+  display: block;
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent-hover);
+  line-height: 1;
+  animation: scs-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both 0.18s;
+}
+.scs-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scs-rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: rgba(108, 92, 231, 0.15);
+  border: 1px solid rgba(162, 155, 254, 0.3);
+  font-size: 14px;
+}
+.scs-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.scs-progress-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.scs-progress-line .scs-prog-text {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.scs-prog-pct {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-hover);
+}
+.scs-mini-row {
+  display: flex;
+  gap: 8px;
+}
+.scs-chip {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.scs-chip b {
+  color: var(--accent-hover);
+}
+.scs-chip-flame {
+  animation: scs-flame 1.8s ease-in-out infinite;
+}
+@keyframes scs-flame {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+@keyframes scs-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  70% { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes scs-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+/* 面板打开时子元素错峰入场（display 切换自动重放动画） */
+#scsLevelTab .scs-hero,
+#scsLevelTab .scs-progress-track,
+#scsLevelTab .scs-mini-row {
+  animation: scs-fade-up 0.34s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+#scsLevelTab .scs-hero {
+  animation-delay: 0.05s;
+}
+#scsLevelTab .scs-progress-track {
+  animation-delay: 0.16s;
+}
+#scsLevelTab .scs-mini-row {
+  animation-delay: 0.26s;
+}
+
+/* --- 今日 tab：2×2 HUD 瓦片（对齐趋势面板密度，2026-11-11） --- */
+.scs-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.scs-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  animation: scs-fade-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.scs-tile:nth-child(2) { animation-delay: 0.05s; }
+.scs-tile:nth-child(3) { animation-delay: 0.1s; }
+.scs-tile:nth-child(4) { animation-delay: 0.15s; }
+.scs-tile-ic {
+  font-size: 16px;
+}
+.scs-tile-num {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent-hover);
+  line-height: 1.1;
+}
+.scs-tile-lb {
+  font-size: 10.5px;
+  color: var(--muted);
 }

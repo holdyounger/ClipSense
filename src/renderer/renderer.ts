@@ -39,6 +39,9 @@ interface ClipboardItem {
   width?: number;
   height?: number;
   tags?: string[];
+  /** 置顶标记（2026-11-11 FR3）：渲染层消费（分区/常显按钮） */
+  pinned?: boolean;
+  pinnedAt?: number;
   /** 展开状态持久化到 item 对象：列表重渲染传入同一引用，状态不丢 */
   _expanded?: boolean;
 }
@@ -57,6 +60,8 @@ interface RenderHandlers {
   onCopy?: (item: ClipboardItem, el: HTMLElement) => Promise<void>;
   onSimulateInput?: (item: ClipboardItem, el: HTMLElement) => void;
   onRemove?: (item: ClipboardItem) => Promise<void>;
+  /** 置顶 toggle（2026-11-11 FR1）：容器委托派发（data-pin-btn） */
+  onTogglePin?: (item: ClipboardItem) => Promise<void> | void;
   /** 无匹配空态的「清除搜索」快捷操作（2026-11-02 R3） */
   onClearSearch?: () => void;
 }
@@ -518,6 +523,13 @@ function renderHistory(
     // 「加载更多」委托（R1）：每次点击追加 PAGE_SIZE 条（全量重渲染，复用既有路径）
     container.addEventListener('click', (e: Event) => {
       const target = e.target as HTMLElement | null;
+      // 置顶 toggle 委托（2026-11-11 FR1）：data-pin-btn 命中即派发，不逐条绑
+      const pinHit = target ? target.closest('[data-pin-btn]') : null;
+      if (pinHit) {
+        const itemEl = pinHit.closest('.item') as (HTMLElement & { _itemData?: ClipboardItem }) | null;
+        if (itemEl && itemEl._itemData && handlers.onTogglePin) handlers.onTogglePin(itemEl._itemData);
+        return;
+      }
       if (!target || !target.closest('[data-load-more]')) return;
       pageRendered = Math.min(pageRendered + PAGE_SIZE, (pageHistoryRef || []).length);
       if (pageListRef && pageHistoryRef && pageCtxRef && pageHandlersRef) {
@@ -566,23 +578,13 @@ function renderHistory(
   pageCtxRef = ctx;
   pageHandlersRef = handlers;
   pageHistoryRef = history;
-  const visible = history.slice(0, pageRendered);
+  // 置顶分区（2026-11-11 FR2/D2）：置顶区恒全量渲染（≤10 条），分页只作用于普通区
+  const pinnedItems = history.filter((i) => i.pinned);
+  const normalItems = history.filter((i) => !i.pinned);
+  pageHistoryRef = normalItems;
 
-  let lastDayKey: string | null = null;
-  for (const item of visible) {
-    // 每天之间的分界线：自然日变化时插入组头（搜索过滤后空组自然消失，
-    // 因为组头基于实际显示的条目计算）。
-    // 防御：timestamp 缺失/无效的脏数据不参与分组（避免 NaN-NaN-NaN 标签），
-    // 条目本身仍正常渲染。
-    const d = new Date(item.timestamp);
-    if (!isNaN(d.getTime())) {
-      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      if (dayKey !== lastDayKey) {
-        lastDayKey = dayKey;
-        container.appendChild(buildDateDivider(d, ctx));
-      }
-    }
-
+  // 条目元素构建（原 for 循环体提取：置顶区与普通区共用同一构建路径）
+  const buildItemEl = (item: ClipboardItem): HTMLElement => {
     const type = item.type || 'text';
     const builder = ItemBuilders[type] || ItemBuilders.text;
 
@@ -597,6 +599,7 @@ function renderHistory(
       ? tagUtilsApi.pickBarTag(item.tags || [])
       : ((item.tags || []).find((t) => t === 'link' || t === 'email' || t === 'otp' || t === 'snippet') || null);
     if (barTag) div.classList.add('item--' + barTag);
+    if (item.pinned) div.classList.add('item--pinned'); // FR1 置顶标识（2026-11-11）
     (div as HTMLElement & { _itemData?: ClipboardItem })._itemData = item;   // 事件委托用：重建后新元素仍带数据引用
 
     const meta = document.createElement('div');
@@ -623,7 +626,8 @@ function renderHistory(
     // 操作按钮
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-btn';
-    copyBtn.textContent = ctx.t('copy');
+    copyBtn.textContent = '\uE8C8'; // MDL2 Copy
+    copyBtn.title = ctx.t('copy');
     copyBtn.addEventListener('click', async (e: Event) => {
       e.stopPropagation();
       if (handlers.onCopy) await handlers.onCopy(item, div);
@@ -631,7 +635,8 @@ function renderHistory(
 
     const delBtn = document.createElement('button');
     delBtn.className = 'del-btn';
-    delBtn.textContent = '✕';
+    delBtn.textContent = '\uE74D'; // MDL2 Delete
+    delBtn.title = '删除该条目';
     delBtn.addEventListener('click', async (e: Event) => {
       e.stopPropagation();
       if (handlers.onRemove) await handlers.onRemove(item);
@@ -647,7 +652,7 @@ function renderHistory(
     if (links && links.length > 0 && window.clipboardAPI && window.clipboardAPI.openExternal) {
       const openBtn = document.createElement('button');
       openBtn.className = 'open-btn';
-      openBtn.textContent = '🌐';
+      openBtn.textContent = '\uE8A7'; // MDL2 OpenInNewWindow
       openBtn.title = links.length === 1
         ? `在默认浏览器打开\n${links[0]}`
         : `提取链接（${links.length} 个 URL）`;
@@ -668,7 +673,7 @@ function renderHistory(
     if (item.type === 'file' && window.clipboardAPI && window.clipboardAPI.copyItemPath) {
       const pathBtn = document.createElement('button');
       pathBtn.className = 'copy-path-btn';
-      pathBtn.textContent = ctx.t('copyPath');
+      pathBtn.textContent = '\uE8A5'; // MDL2 Document
       pathBtn.title = '复制文件路径文本';
       pathBtn.addEventListener('click', async (e: Event) => {
         e.stopPropagation();
@@ -693,7 +698,7 @@ function renderHistory(
         && window.clipboardAPI && window.clipboardAPI.openPath) {
       const openPathBtn = document.createElement('button');
       openPathBtn.className = 'open-path-btn';
-      openPathBtn.textContent = ctx.t('openPath');
+      openPathBtn.textContent = '\uE8A7'; // MDL2 OpenInNewWindow
       openPathBtn.title = '打开该路径（系统关联程序/资源管理器）';
       openPathBtn.addEventListener('click', async (e: Event) => {
         e.stopPropagation();
@@ -702,6 +707,15 @@ function renderHistory(
       });
       actions.appendChild(openPathBtn);
     }
+
+    // 置顶按钮（2026-11-11 FR1）：hover 随操作区浮现；置顶态经 .item--pinned 常显。
+    // 点击走 listEl 容器委托（data-pin-btn），不逐条绑（plan D1 硬约定）
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'item-pin';
+    pinBtn.setAttribute('data-pin-btn', '');
+    pinBtn.textContent = '\uE718'; // MDL2 Pin
+    pinBtn.title = item.pinned ? '取消置顶' : '置顶';
+    actions.appendChild(pinBtn);
 
     actions.appendChild(delBtn);
 
@@ -726,18 +740,45 @@ function renderHistory(
       }
     });
 
-    container.appendChild(div);
+    return div;
+  };
+
+  // 置顶分组（FR2）：恒全量渲染；置顶条目 _itemData 同引用，展开态天然保留
+  if (pinnedItems.length > 0) {
+    const pinDivider = document.createElement('div');
+    pinDivider.className = 'pin-group';
+    pinDivider.textContent = `📌 已置顶 (${pinnedItems.length})`;
+    container.appendChild(pinDivider);
+    for (const item of pinnedItems) container.appendChild(buildItemEl(item));
+  }
+
+  const visible = normalItems.slice(0, pageRendered);
+  let lastDayKey: string | null = null;
+  for (const item of visible) {
+    // 每天之间的分界线：自然日变化时插入组头（搜索过滤后空组自然消失，
+    // 因为组头基于实际显示的条目计算）。
+    // 防御：timestamp 缺失/无效的脏数据不参与分组（避免 NaN-NaN-NaN 标签），
+    // 条目本身仍正常渲染。
+    const d = new Date(item.timestamp);
+    if (!isNaN(d.getTime())) {
+      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (dayKey !== lastDayKey) {
+        lastDayKey = dayKey;
+        container.appendChild(buildDateDivider(d, ctx));
+      }
+    }
+    container.appendChild(buildItemEl(item));
   }
 
   // 哨兵条（2026-11-02 视觉修正：移到循环后=列表末尾；此前误置循环前跑到顶部）。
   // 滚到附近由 main.ts listEl.scroll 近底自动触发；点击同样走委托。仅按需创建，
   // innerHTML 每次重置故无残留，旧「清理块」一并移除。
-  if (history.length > pageRendered) {
+  if (normalItems.length > pageRendered) {
     const more = document.createElement('button');
     more.className = 'load-more-btn';
     more.type = 'button';
     more.dataset.loadMore = '1';
-    more.textContent = `加载更多 · 剩余 ${history.length - pageRendered} 条`;
+    more.textContent = `加载更多 · 剩余 ${normalItems.length - pageRendered} 条`;
     container.appendChild(more);
   }
 }

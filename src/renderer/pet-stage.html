@@ -14,6 +14,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<title>ClipSense PetStage（桌宠舞台）</title>
 <style>
   html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
   body.fallback { background: linear-gradient(180deg, #6c5ce7, #4834d4); border-radius: 42%; }
@@ -65,8 +66,18 @@
     display: none;
     pointer-events: none;
   }
+  /* Bug2（2026-11-05）模态语义：确认气泡显示期间叶淡出禁点——气泡独占交互，
+     消除「气泡被菜单遮挡」/「叶被气泡盖住不可点」两类互相挤压 */
+  #ctxMenu.confirm-mode .leaf {
+    opacity: 0.18;
+    pointer-events: none;
+  }
   #ctxMenu .cm-confirm {
     position: absolute;
+    z-index: 200; /* 遮挡修复：高于叶 120（同 120 时依赖 DOM 顺序，脆弱） */
+    max-width: calc(100% - 12px); /* Bug2（2026-11-05）：小窗口 128px 下 nowrap 180px 气泡
+      盖满全窗压住叶——maxWidth 自适应窗宽 + 允许换行，任何档位都完整可读 */
+    white-space: normal;
     padding: 5px 10px;
     background: rgba(38, 38, 46, 0.97);
     border: 1px solid rgba(255, 107, 129, 0.55);
@@ -108,6 +119,9 @@
   <div class="cm-confirm" id="cmConfirm"><span class="cm-q" id="cmQ"></span><span class="cm-yes" id="cmYes">退出</span><span class="cm-no" id="cmNo">取消</span></div>
 </div>
 <img id="sprite" src="pet-sprite.png" alt="" draggable="false">
+<script src="live2d/live2dcubismcore.min.js"></script>
+<script src="live2d/pixi.min.js"></script>
+<script src="live2d/pixi-live2d-display.min.js"></script>
 <script>
 'use strict';
 try { require('electron').ipcRenderer.send('pet:diag', '[build] RENDER_BUILD_20261015_1050_INPUTLOG block#0'); } catch (_) {}
@@ -150,7 +164,18 @@ const spriteEl = document.getElementById('sprite');
 
 let mode = 'none';           // webm | sprite
 window.__petMode = mode;
-function setMode(m) { mode = m; try { window.__petMode = m; } catch (_) {} }
+function setMode(m) {
+  mode = m;
+  try { window.__petMode = m; } catch (_) {}
+  // Live2D 后端启动链可观测契约 C3（tests/live2d-backend.dom.test.js）：
+  // 按尝试顺序 push 后端名（live2d 尝试必在链上；sprite 兜底也记录）
+  try {
+    window.__petBackendChain = window.__petBackendChain || [];
+    if (window.__petBackendChain[window.__petBackendChain.length - 1] !== m) {
+      window.__petBackendChain.push(m);
+    }
+  } catch (_) {}
+}
 
 // 大小可调（2026-10-14）：缩放系数 → video 高度动态适配（滚轮/托盘/右键三入口共享）
 // v10 重写时丢失本定义导致 ReferenceError（实机取证 L287），补回
@@ -158,6 +183,11 @@ let petScale = 1.0;
 function applyScale(s) {
   petScale = Number(s) || 1;
   eachV(function (v) { v.style.height = Math.round(210 * petScale) + 'px'; });
+  // 滚轮缩放失效修复（2026-11-04 小M）：live2d 下 video 高度变化无视觉效果，
+  // 必须重排模型（layoutLive2d 读 petScale 计算缩放/底边锚定）
+  if (mode === 'live2d' && __l2d && __l2d.layout) {
+    try { __l2d.layout(); } catch (_) {}
+  }
   reportBodyRect();
 }
 
@@ -263,7 +293,8 @@ function playAction(poolName, backToIdle) {
 function triggerReact() {
   state = 'action';
   nextIdleAt = performance.now() + 4200;
-  if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('react');
+  if (mode === 'live2d' && window.__petLive2dAction) window.__petLive2dAction('react');
+  else if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('react');
   else if (mode === 'webm') playAction('react');
 }
 let nextIdleAt = 0;
@@ -298,6 +329,14 @@ setInterval(function () {
 
 // ==================== 命中检测（video 矩形；未就绪整窗） ====================
 function cursorHit(x, y) {
+  // Live2D 模式：模型包围盒命中（TC-202；vrm video-rect-0 教训 ：322——video 桩矩形
+  // (900,900) 哨兵/videoWidth=0 不得参与判定）。置于 webglOk 检查之前：live2d 模式
+  // 下 webglOk 恒 false，否则整窗命中短路包围盒语义。
+  if (mode === 'live2d') {
+    var lb = live2dBounds();
+    if (!lb) return false;
+    return x >= lb.x && x <= lb.x + lb.w && y >= lb.y && y <= lb.y + lb.h;
+  }
   if (!webglOk) return true;
   if (mode === 'vrm') {
     // Shiba 四足站姿命中区（2026-10-26）：居中 130px 宽 × 下 62% 高（横体型）
@@ -317,6 +356,13 @@ function cursorHit(x, y) {
 }
 let lastEchoSentAt = 0; // echo-alive 节流（2026-10-22 动态穿透心跳）
 function reportBodyRect() {
+  // Live2D 分支（TC-203）：模型包围盒直报（Math.round 与主进程约定一致）——
+  // 不得走 video 分支（哨兵矩形误判即红，vrm 教训同上）
+  if (mode === 'live2d') {
+    var lbr = live2dBounds();
+    if (lbr) ipcRenderer.send('pet:body-rect', lbr);
+    return;
+  }
   // 命中穿透 v2（2026-10-23）：本体矩形上报（窗口相对 DIP）——主进程 150ms 轮询
   // 用它判定光标是否在本体上，驱动整窗交互/穿透切换（无 forward 依赖）。
   // vrm 分支（2026-10-26）：与 cursorHit 的 vrm 矩形同模型（居中 96px 宽 × 下 78% 高）。
@@ -358,7 +404,8 @@ function reportHit(x, y) {
   const now = performance.now();
   if (hit && !cursorOnModel && state === 'idle' && now >= hoverCooldownUntil) {
     hoverCooldownUntil = now + 7000;
-    if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('hover');
+    if (mode === 'live2d' && window.__petLive2dAction) window.__petLive2dAction('hover');
+    else if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('hover');
     else playAction('hover');
   }
   if (!hit && cursorOnModel) {
@@ -369,6 +416,16 @@ function reportHit(x, y) {
 
 // ==================== 指针交互（协议不变） ====================
 window.addEventListener('mousemove', function (e) {
+  // Live2D 眼神跟随（TC-201，A3：focus((x/W)-0.5, (y/H)-0.5) ∈ [-0.5,0.5]）；
+  // FocusController 内建每帧插值，这里只送目标值（主进程合成 mousemove 亦同路驱动）
+  if (mode === 'live2d' && __l2d && __l2d.model && __l2d.model.internalModel &&
+      __l2d.model.internalModel.focusController) {
+    try {
+      __l2d.model.internalModel.focusController.focus(
+        e.clientX / window.innerWidth - 0.5,
+        e.clientY / window.innerHeight - 0.5);
+    } catch (_) {}
+  }
   cursorNX = e.clientX / window.innerWidth;
   window.__petCursorNX = cursorNX;
   window.__petCursorNY = e.clientY / window.innerHeight;
@@ -393,6 +450,10 @@ window.addEventListener('mousemove', function (e) {
 });
 window.addEventListener('mousedown', function (e) {
   if (e.button !== 0) return;
+  // Bug1 修复（2026-11-05 小M：点互动叶桌宠右移）：菜单会话内 mousedown 冒泡会武装
+  // pressing/拖拽状态机，与 orphan-up nudge/summon 链互相打架 → 表现为桌宠位移。
+  // 菜单打开期间整窗交互归菜单（主进程 _applyPetIgnore 已切全窗可交互）。
+  if (ctxOpen) return;
   if (!cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20 小M）：透明区不再拖拽
   pressing = true; moved = false; downSX = e.screenX; downSY = e.screenY;
 });
@@ -411,7 +472,7 @@ window.addEventListener('mouseup', function (e) {
   if (ctxOpen && ctxMenu.contains(e.target)) { pressing = false; return; }
   const wasClick = pressing && !moved;
   pressing = false;
-  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
+  if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'live2d' && window.__petLive2dAction) window.__petLive2dAction('idle'); else if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
   else if (wasClick) {
     // 切换卡顿优化（2026-10-29）：先唤出面板、延迟 420ms 再播反应动作——
     // 旧时序 react 视频换源/解码/交叉淡入与面板 prepare+滑入同帧竞争 GPU/合成器，
@@ -437,7 +498,11 @@ window.addEventListener('mouseup', function (e) {
 window.addEventListener('contextmenu', function (e) {
   try { ipcRenderer.send('pet:diag', 'contextmenu fired ' + e.clientX + ',' + e.clientY + ' mode=' + mode + ' ctxOpen=' + ctxOpen); } catch (_) {}
   e.preventDefault();
-  if (!cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20）：透明区右键不弹菜单
+  // 加载期右键兜底（2026-11-04 菜单重构方向3，Bug-B2 修复）：live2d pending 期
+  // live2dBounds() 未就绪返回 null → cursorHit false → 菜单 1-2s 窗口内永不弹出。
+  // 未就绪 = 整窗可点（与 webglOk=false 同款语义），菜单照常弹出。
+  var l2dPending = mode === 'live2d' && !__l2d;
+  if (!l2dPending && !cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20）：透明区右键不弹菜单
   // 去 resize 化（2026-10-20）：窗口恒定菜单全尺寸，右键纯渲染层展开（主进程零窗口操作）→ 无 resize 闪烁、无瞬移
   if (ctxOpen) { ipcRenderer.send('pet:open-ctx'); return; } // 已开：仅续期失焦轮询
   dirH = 'l'; dirV = 'u';           // 常量：窗口恒定后菜单展开方向不再需要动态
@@ -470,6 +535,8 @@ const ctxMenu = document.getElementById('ctxMenu');
 const cmHint = document.getElementById('cmHint');
 const cmConfirm = document.getElementById('cmConfirm');
 const cmQ = document.getElementById('cmQ');
+const cmYes = document.getElementById('cmYes'); // F2（验证轮）：严格模式下缺失即抛 ReferenceError
+const cmNo = document.getElementById('cmNo');   // F2 同批
 const layoutEngine = require('./pet-menu-layout');
 let ctxOpen = false;
 let ctxLevel = 'main';       // main | mode
@@ -495,6 +562,17 @@ function captureVideoOffsets() {
   };
 }
 function catAnchor() {
+  // Live2D 分支（2026-11-04 菜单重构方向1，Bug-A 修复）：锚定源 = 模型包围盒中心
+  // ——video 几何在 live2d 下与可见模型完全脱钩（哨兵矩形/left:50% 样式），
+  // 同一教训第三次复发（vrm 命中 :322 → body-rect → 本菜单锚定），几何源统一到 live2dBounds。
+  if (mode === 'live2d') {
+    var b = live2dBounds();
+    if (b) {
+      return { catX: b.x + b.w / 2, catY: b.y + b.h / 2 };
+    }
+    // 包围盒未就绪（加载 pending）：窗口水平中点 + 底边上方（与模型落位语义一致）
+    return { catX: window.innerWidth / 2, catY: window.innerHeight * 0.75 };
+  }
   return {
     catX: video.offsetLeft + video.offsetWidth / 2,
     catY: video.offsetTop + video.offsetHeight / 2,
@@ -510,6 +588,7 @@ function applyLayout() {
     level: ctxLevel,
     mode: petMode,
     scale: petScaleV,
+    interactLeaves: interactLeaves,
     catX: (frozenCat ? frozenCat.catX : catAnchor().catX),
     catY: (frozenCat ? frozenCat.catY : catAnchor().catY),
   });
@@ -521,6 +600,7 @@ function applyLayout() {
     el.className = 'leaf' + (l.selected ? ' selected' : '') + (l.size < 40 ? ' leaf-sub' : '');
     el.dataset.leaf = l.key;
     el.dataset.opt = l.key;
+    if (l.value) el.dataset.value = l.value; // interact 动作叶：value=动作索引/标识（Bug3 数据通道）
     el.textContent = l.icon;
     el.style.left = l.x + 'px';
     el.style.top = l.y + 'px';
@@ -529,14 +609,9 @@ function applyLayout() {
     ctxMenu.appendChild(el);
   });
   // size 二级：扇心显示当前系数
-  if (ctxLevel === 'size') {
-    cmHint.textContent = petScaleV.toFixed(1) + '\u00d7';
-    cmHint.style.display = 'block';
-    cmHint.style.left = Math.round(lay.cx - 20) + 'px';
-    cmHint.style.top = Math.round(lay.cy - 12) + 'px';
-  } else {
-    cmHint.style.display = 'none';
-  }
+  // size 二级扇死代码已删（2026-11-04 菜单重构 R1：主扇无 size 入口叶，
+  // ctxLevel 恒为 main/mode，cmHint 仅保留确认气泡用途）
+  cmHint.style.display = 'none';
   try {
     ipcRenderer.send('pet:diag', '[leaf] v4 level=' + ctxLevel + ' dir=' + dirH + dirV
       + ' leaves=' + lay.leaves.map(function (l) { return l.key + '@' + l.x + ',' + l.y; }).join(' '));
@@ -544,6 +619,40 @@ function applyLayout() {
 }
 function renderMainFan() { ctxLevel = 'main'; applyLayout(); }
 function renderModeSub() { ctxLevel = 'mode'; applyLayout(); }
+// Bug3（2026-11-05 小M：互动太少且没关联动作）：互动叶改二级动作点播扇——
+// live2d 动作池均匀采样 6 叶 + 🎲 随机；webm 走 click/hover 池 + ❤️ 爱心。
+// 布局走 pet-menu-layout 的 interact 级（back 锚 react 叶位，红灯用例已锁）。
+let interactLeaves = [];
+var live2dMotionCount = 9;   // 模块级：live2d 加载后由 motionManager definitions 实测回填
+var live2dMotionNames = [];  // 模块级：动作显示名（hint 用），model3.json 无 displayName 时回落「动作 N」
+function renderInteractSub() {
+  ctxLevel = 'interact';
+  if (mode === 'live2d') {
+    var n = live2dMotionCount;
+    // 左弧约束二次修正（2026-11-05 小M：动作叶挡住形象主体）：原 245-i*65 全圆包裹
+    // 让 9 叶铺满整窗圆周（实机日志 leaves 铺满 154 窗口 + rand/m2 同坐标叠放）——
+    // 模型主体在圆心必被遮挡。收敛到左弧 250°→110°（背向主体，与 mode 扇同侧），
+    // 均匀采样最多 5 叶；🎲 随机语义由 hover/idle 池承担不再单列（原 rand 与采样叶同位叠放）。
+    var angs = [250, 210, 170, 130, 90, 55, 20, 345]; // 左弧+底弧扩展：40° 均布（弦长≈29px > 叶径 22px 判定阈）；最多 8 叶（9 动作去 1 当前）
+    var cap = Math.min(angs.length, n);
+    interactLeaves = [];
+    var prevIdx = -1;
+    for (var k = 0; k < cap; k++) {
+      var i = cap > 1 ? Math.round(k * (n - 1) / (cap - 1)) : 0;
+      i = Math.max(0, Math.min(n - 1, i));
+      if (i <= prevIdx) continue;
+      prevIdx = i;
+      interactLeaves.push({ key: 'm' + i, ang: angs[interactLeaves.length], icon: '▶', hint: (live2dMotionNames[i] || ('动作 ' + (i + 1))), value: String(i) });
+    }
+  } else {
+    interactLeaves = [
+      { key: 'click', ang: 245, icon: '👆', hint: '点击动作', value: 'click' },
+      { key: 'hover', ang: 180, icon: '👋', hint: '挥手动作', value: 'hover' },
+      { key: 'heart', ang: 115, icon: '❤️', hint: '爱心', value: 'heart' },
+    ];
+  }
+  applyLayout();
+}
 // 方向感知（2026-10-15 小M 四问）：主进程按桌宠屏幕象限决定展开方向
 let dirH = 'l';              // l=向左展开（猫靠右缘）| r=向右展开
 let dirV = 'u';              // u=主扇向上 | d=向下
@@ -600,6 +709,7 @@ function closeCtx(notify, reason) {
   ctxMenu.classList.remove('show');
   cmHint.style.display = 'none';
   cmConfirm.style.display = 'none';
+  ctxMenu.classList.remove('confirm-mode'); // Bug2 模态语义收尾
   savedVideoOffsets = null;
   frozenCat = null;
   frozenWin = null;
@@ -647,21 +757,39 @@ ctxMenu.addEventListener('click', function (e) {
     const k = leaf.dataset.leaf;
     if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon'); }
     else if (k === 'mode') renderModeSub();
-    else if (k === 'react') triggerReact();
+    else if (k === 'react') renderInteractSub(); // Bug3：点互动 → 动作点播二级扇
     else if (k === 'quit') {
       pendingConfirm = 'quit';
       cmQ.textContent = '确定退出桌宠？';
       cmYes.textContent = '退出';
       cmConfirm.style.display = 'block';
-      const br = leaf.getBoundingClientRect();
-      const base = ctxMenu.getBoundingClientRect();
-      cmConfirm.style.left = Math.max(6, br.left - base.left - 40) + 'px';
-      cmConfirm.style.top = Math.max(6, br.top - base.top - 34) + 'px';
-      setTimeout(function () { if (pendingConfirm === 'quit') { pendingConfirm = null; cmConfirm.style.display = 'none'; } }, 4000);
+      ctxMenu.classList.add('confirm-mode'); // Bug2（2026-11-05）：模态语义——叶淡出禁点，气泡独占
+      // F1+F3 统一定位（验证轮）：顶部居中 + bubbleTopCenterX 双缘钳制
+      try {
+        cmConfirm.style.left = bubbleTopCenterX(cmConfirm) + 'px';
+        cmConfirm.style.top = '10px';
+      } catch (_) {}
+      setTimeout(function () { if (pendingConfirm === 'quit') { pendingConfirm = null; cmConfirm.style.display = 'none'; ctxMenu.classList.remove('confirm-mode'); } }, 4000);
     }
   } else if (leaf.dataset.opt === 'back') {
     ctxLevel = 'main';
     applyLayout();
+  } else if (ctxLevel === 'interact') {
+    // Bug3 数据通道修复：动作叶 value=动作索引（'0'…），key='m0'… 仅作 DOM 标识——
+    // 优先读 value，back 叶无 value 回落 opt
+    const opt = leaf.dataset.value || leaf.dataset.opt;
+    if (leaf.dataset.opt === 'back') { ctxLevel = 'main'; applyLayout(); return; }
+    if (!opt) return;
+    closeCtx();
+    if (opt === 'rand') { triggerReact(); return; } // 🎲 随机 = 原互动语义（triggerReact 按后端分发）
+    if (mode === 'live2d' && window.__petLive2dAction) {
+      // live2d：按动作序号点播（motionCount 采样索引）
+      var idx = parseInt(opt, 10);
+      if (isFinite(idx)) { try { __l2d.model.motion('Idle', idx, 3); } catch (_) {} } // priority=3 FORCE：打断 idle 立即播
+      else if (opt === 'click') triggerReact();
+    } else if (opt === 'click') { playAction('click'); }
+    else if (opt === 'hover') { playAction('hover'); }
+    else if (opt === 'heart') { playAction('react'); }
   } else if (ctxLevel === 'mode') {
     const opt = leaf.dataset.opt;
     if (!opt) return;
@@ -673,24 +801,19 @@ ctxMenu.addEventListener('click', function (e) {
       cmConfirm.style.display = 'block';
       const br = leaf.getBoundingClientRect();
       const base = ctxMenu.getBoundingClientRect();
-      cmConfirm.style.left = Math.max(6, br.left - base.left - 40) + 'px';
-      cmConfirm.style.top = Math.max(6, br.top - base.top - 34) + 'px';
-      setTimeout(function () { if (pendingConfirm === 'hide') { pendingConfirm = null; cmConfirm.style.display = 'none'; } }, 6000);
+      // F3 修复（验证轮）：hidden 气泡与 quit 同用统一公式（原叶锚定公式三档推演均压叶/出窗）
+      ctxMenu.classList.add('confirm-mode'); // Bug2 模态语义（同 quit）
+      cmConfirm.style.left = bubbleTopCenterX(cmConfirm) + 'px';
+      cmConfirm.style.top = '10px';
+      setTimeout(function () { if (pendingConfirm === 'hide') { pendingConfirm = null; cmConfirm.style.display = 'none'; ctxMenu.classList.remove('confirm-mode'); } }, 6000);
       return;
     }
     petMode = opt;
     ipcRenderer.send('pet:set-hide-mode', petMode);
     renderModeSub();
-  } else if (ctxLevel === 'size') {
-    const opt = leaf.dataset.opt;
-    if (opt === 'minus') petScaleV = Math.max(0.5, petScaleV - 0.15);
-    else if (opt === 'plus') petScaleV = Math.min(2.2, petScaleV + 0.15);
-    else if (opt === 'reset') petScaleV = 1;
-    else return;
-    ipcRenderer.send('pet:set-scale', petScaleV);
-    applyScale(petScaleV);
-    renderSizeSub();
   }
+  // size 点击分支已删（2026-11-04 菜单重构 R1：主扇无 size 入口叶，ctxLevel 恒 main/mode
+  // 本分支不可达死代码；滚轮 = 唯一尺寸交互，持久化由 pet:scale-wheel → _setPetScale 承担）
 });
 // 确认气泡按钮（2026-10-20 方案a；同时修复既有缺陷：cmYes/cmNo 此前无监听，退出叶点确认无响应）
 ctxMenu.addEventListener('click', function (e) {
@@ -699,6 +822,7 @@ ctxMenu.addEventListener('click', function (e) {
     const act = pendingConfirm;
     pendingConfirm = null;
     cmConfirm.style.display = 'none';
+    ctxMenu.classList.remove('confirm-mode'); // Bug2 模态收尾（quit 确认路径）
     if (act === 'quit') { closeCtx(); ipcRenderer.send('pet:quit'); }
     else if (act === 'hide') { closeCtx(); ipcRenderer.send('pet:set-hide-mode', 'hidden'); }
     return;
@@ -707,13 +831,21 @@ ctxMenu.addEventListener('click', function (e) {
   if (no) {
     pendingConfirm = null;
     cmConfirm.style.display = 'none';
+    ctxMenu.classList.remove('confirm-mode'); // Bug2 模态收尾（取消路径：叶恢复可点）
   }
 });
 // hover 提示（叶语义）
+// T4（2026-11-05 spec §3.2 菜单联动）：互动叶 tooltip 附今日计数与等级——
+// stats:summary 推送缓存（petStatsBadge 缺省 true 可关），零新叶零新窗（背景统计定位）
+let petStatsCache = null;
+try { ipcRenderer.on('stats:summary', function (_e, s) { petStatsCache = s; }); } catch (_) {}
 ctxMenu.addEventListener('mouseover', function (e) {
   const leaf = e.target.closest('.leaf');
   if (!leaf) { cmHint.style.display = 'none'; return; }
-  const txt = activeHints[leaf.dataset.leaf || leaf.dataset.opt];
+  let txt = activeHints[leaf.dataset.leaf || leaf.dataset.opt];
+  if (leaf.dataset.leaf === 'react' && petStatsCache && petStatsCache.petStatsBadge !== false) {
+    txt += ' · 今日 ' + (petStatsCache.todayCopy || 0) + ' · Lv' + (petStatsCache.level || 1) + ' ' + (petStatsCache.title || '');
+  }
   if (!txt) { cmHint.style.display = 'none'; return; }
   cmHint.textContent = txt;
   cmHint.style.display = 'block';
@@ -750,36 +882,241 @@ function spriteTick(now) {
     'rotate(' + ((cursorNX - 0.5) * 5).toFixed(2) + 'deg) scale(' + bx.toFixed(3) + ', ' + by.toFixed(3) + ')';
 }
 
-// ==================== 启动链 ====================
-(function start() {
-  if (!window.__petReadMove) {
-    enterSpriteMode('fs 桥不可用，降级 2D 精灵');
-    return;
+// ==================== Live2D 渲染后端（2026-11-03 T1/T2/T3，spec-桌宠Live2D后端） ====================
+// 启动链第一环（A1 拍板：维持 spec 语义——live2d 不依赖 webm blobs，成功时省 14MB 预载）；
+// 回退链 live2d → webm → sprite（6s 超时；C1-C4 可观测契约见 tests/live2d-backend.dom.test.js）。
+// 交互映射（BongoCat 范式最小集）：全屏 mousemove → FocusController 眼神跟随（A3 口径）；
+// cursorHit/body-rect 走模型包围盒（vrm video-rect-0 教训 ：322 不重演）。
+let __l2d = null; // { app, model } 运行期句柄
+// 气泡定位统一公式（F1/F3 修复，2026-11-04 验证轮）：顶部居中 + 双缘钳制。
+// F1 教训：0.7× 档窗口 154px < 气泡 ~180px，只钳左缘则右缘溢出 ~32px。
+function bubbleTopCenterX(el) {
+  // 宽度回退 180（审计 harness 契约：桩 offsetWidth=0 → 回退 180；实机量测值优先）
+  var cw = 180;
+  try { var m = el.offsetWidth; if (m && m > 0) cw = m; } catch (_) {}
+  var W = window.innerWidth;
+  var x = Math.round((W - cw) / 2);
+  if (x < 6) x = 6;                 // 左缘钳制
+  if (x + cw > W - 6) x = W - cw - 6; // 右缘钳制（气泡宽于窗口时贴左，右缘保 6px）
+  if (x < 6) x = 6;                 // cw > W-12 的极端兜底
+  return Math.max(6, x);
+}
+
+function enterLive2dMode() {
+  window.__petLive2dAttempted = true; // 契约 C1：尝试发生即置位（含同步判定失败）
+  setMode('live2d'); // C3：先记链（TC-103 断言 sprite 兜底时链上仍有 live2d）
+  var PIXI_NS = window.PIXI;
+  if (!PIXI_NS || !PIXI_NS.live2d || !PIXI_NS.live2d.Live2DModel) {
+    // C4：失败留痕（diag 含 live2d + 失败语义）
+    ipcRenderer.send('pet:diag', '[mode] live2d fail: PIXI.live2d 缺失（库未加载）→ 回退 webm');
+    enterWebmMode('live2d 库缺失'); // 同步落 webm（TC-101 终态）
+    return 'fail';
   }
-  const ok = preloadBlobs();
-  if (!ok) {
-    enterSpriteMode('动作库预载不完整，降级 2D 精灵');
-    return;
+  // T3：模型名解析（A2 通道 pet:get-config；缺省/null → hiyori）
+  var modelName = 'hiyori';
+  try {
+    var cfg = window.__petTestConfig; // 测试桩直驱
+    if (!cfg && window.__petIpc && window.__petIpc.invoke) {
+      cfg = null; // 真实环境异步取（下方 promise 链内同步不可得，走 invoke）
+    }
+    if (cfg && cfg.petLive2dModel) modelName = String(cfg.petLive2dModel);
+  } catch (_) {}
+  var modelUrl = 'models/' + modelName + '/' + modelName + '.model3.json';
+  var settled = false;
+  var fallbackTimer = setTimeout(function () {
+    if (settled) return;
+    settled = true;
+    ipcRenderer.send('pet:diag', '[mode] live2d fail: 加载超时（6s）→ 回退 webm');
+    destroyLive2d();
+    enterWebmMode('live2d 超时');
+  }, 6000);
+  function ok_() { if (!settled) { settled = true; clearTimeout(fallbackTimer); } }
+  function fail_(reason) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(fallbackTimer);
+    ipcRenderer.send('pet:diag', '[mode] live2d fail: ' + reason + ' → 回退 webm');
+    destroyLive2d();
+    enterWebmMode('live2d ' + reason);
   }
-  // vrm 优先（2026-10-23 three.js 接入）：模块加载成功 → __vrmAccept 切 vrm；
-  // 失败/超时 → __vrmFail 回退 webm（下述 webm 启动逻辑原样保留为回退路径）
+  window.__petLive2dFail = fail_; // 测试/外部强制回退口
+  // A2 通道（GAP-2 修复：统一 cfgState，开关判定消费同一来源——原实现真实 invoke
+  // 结果只透传模型名、petLive2dEnabled 被丢弃，实机一键回 webm 失效）
+  var cfgState = null; // {petLive2dModel?, petLive2dEnabled?}
+  var boot = Promise.resolve();
+  if (window.__petTestConfig) {
+    cfgState = window.__petTestConfig; // 测试桩直驱（harness）
+  } else if (window.__petIpc && window.__petIpc.invoke) {
+    boot = window.__petIpc.invoke('pet:get-config').then(function (c) {
+      cfgState = c || {}; // 真实通道结果落同一状态
+    }).catch(function () { cfgState = {}; });
+  }
+  boot.then(function () {
+    if (cfgState && cfgState.petLive2dModel) {
+      modelName = String(cfgState.petLive2dModel);
+      modelUrl = 'models/' + modelName + '/' + modelName + '.model3.json';
+    }
+    // 总开关（plan 风险缓解）：petLive2dEnabled === false → 走回退链回 webm。
+    // AUD-2 回归锁：开关 false 下 from 不得被调、终态须为 webm。
+    if (cfgState && cfgState.petLive2dEnabled === false) {
+      return Promise.reject(new Error('配置禁用 live2d'));
+    }
+    return PIXI_NS.live2d.Live2DModel.from(modelUrl); // T3：from 入参含模型名（TC-301/302）
+  }).then(function (model) {
+    ok_();
+    var app = new PIXI_NS.Application({ backgroundAlpha: 0, resizeTo: window, autoStart: true });
+    app.stage.addChild(model);
+    // Bug2 修复（2026-11-03 小M 实机：桌宠未显示）：app.view 必须挂载进 DOM——
+    // 此前 canvas 渲染进了「虚空」（日志 live2d ok 但 booted:false / 窗口全透明不可见）。
+    // pointer-events:none：命中由主进程轮询驱动，canvas 不拦截鼠标。
+    try {
+      var cv = app.view;
+      if (cv && cv.style) {
+        cv.style.position = 'absolute';
+        cv.style.inset = '0';
+        cv.style.width = '100%';
+        cv.style.height = '100%';
+        cv.style.pointerEvents = 'none';
+        cv.style.zIndex = '1'; // 钉底：低于 ctxMenu(100)/叶(120)，渲染画布永不遮挡菜单
+        document.body.appendChild(cv);
+      }
+    } catch (_) {}
+    // 铺满语义（2026-11-04 二次修复）：窗口尺寸已随 petScale 长大（主进程
+    // _setPetBoundsAnchored，底边锚定），画布 resizeTo:window 自动跟随——
+    // 模型铺满窗口高即可，不再乘 petScale（缩放因子已由窗口尺寸承载）。
+    // ⚠️ 基准冻结不变：PIXI width/height getter 含 scale，迭代发散教训（同日实证）。
+    var baseW = model.width, baseH = model.height;
+    function layoutLive2d() {
+      var W = window.innerWidth, H = window.innerHeight;
+      var sc = H / baseH;
+      if (!isFinite(sc) || sc <= 0) return; // 异常防御（baseH 未就绪时跳过本次）
+      sc = Math.min(Math.max(sc, 0.01), 3); // 钳制防极端值
+      model.scale.set(sc);
+      model.position.set(W / 2 - (baseW * sc) / 2, H - baseH * sc);
+      try { model.anchor && model.anchor.set && model.anchor.set(0, 0); } catch (_) {}
+      // 首次隐藏为桌宠无法点击的根因修复（2026-11-05，日志实锤：08:26 会话全程零
+      // body-rect 上报 → _petBodyRect=null → 命中轮询 if(!r) return 短路 → 恒穿透）。
+      // pet:scale/applyScale 的上报发生在模型加载前（live2dBounds=null 被跳过），
+      // layout 后模型几何已定，必须补调 reportBodyRect 让轮询恢复命中判定。
+      reportBodyRect();
+    }
+    layoutLive2d();
+    setTimeout(layoutLive2d, 60); // setBounds 异步补偿（resize 事件+定时双保险）
+    window.addEventListener('resize', layoutLive2d);
+    app.stage.interactive = false;
+    app.stage.hitArea = null;
+    __l2d = { app: app, model: model, layout: layoutLive2d };
+    try { window.PIXI.__lastModel = model; } catch (_) {} // TC-201 观测口
+    // idle 轮播 + hover/react/drag motion 映射（GAP-3 修复：plan T2④⑤ 补齐）。
+    // GAP-4 一并修：motion 总数从 model3.json 动态解析（原硬编码 10，实测注册 9 条 → 1/10 空转）；
+    // F1（2026-11-05）：同步回填模块级 live2dMotionCount/live2dMotionNames——
+    // renderInteractSub 在另一作用域，此前 typeof 恒 undefined 永远走 9 兜底
+    var l2dState = 'idle';
+    var lastM = -1;
+    var motionCount = 9;
+    try {
+      var defs = model.internalModel && model.internalModel.motionManager &&
+        model.internalModel.motionManager.definitions;
+      var grp = defs && (defs.Idle || defs.idle);
+      if (grp && grp.length) motionCount = grp.length;
+    } catch (_) {}
+    live2dMotionCount = motionCount;
+    live2dMotionNames = [];
+    for (var mi = 0; mi < motionCount; mi++) live2dMotionNames.push('动作 ' + (mi + 1));
+    function playIdleMotion() {
+      l2dState = 'idle';
+      var idx = Math.floor(Math.random() * motionCount);
+      if (idx === lastM) idx = (idx + 1) % motionCount; // avoid 立即重复（webm 池同款）
+      lastM = idx;
+      try { model.motion('Idle', idx); } catch (_) {}
+    }
+    // GAP-3：一次性动作（hover/react）——播完 motionfinish 归位 idle（修 state 卡 'action'）
+    function playOnceMotion() {
+      l2dState = 'action';
+      var idx = Math.floor(Math.random() * motionCount);
+      if (idx === lastM) idx = (idx + 1) % motionCount;
+      lastM = idx;
+      try { model.motion('Idle', idx); } catch (_) { l2dState = 'idle'; }
+    }
+    playIdleMotion();
+    // 事件名实证：pixi-live2d-display.min.js 内唯一事件名为 motionFinish（驼峰），
+    // 原小写 motionfinish 永不触发 → idle 轮播断裂（独立 bug，2026-11-04 grep 实证修复）
+    model.on('motionFinish', function () {
+      playIdleMotion();
+      // F9 修复（验证轮）：全局 state 同步复位——reportHit 的 hover 门控读它，
+      // 卡 'action' 会导致互动播完后 hover 冷却门控失效
+      state = 'idle';
+    });
+    // 外部触发口（与 vrm __vrmAPI.action 同款协议；TC-201 观测口旁挂）。
+    // GAP-3 次生问题修复：同步维护全局 state——reportHit 的 hover 门控
+    // （state==='idle'）与统一 ended 监听都读它，不同步则 hover 状态机失真
+    window.__petLive2dAction = function (kind) {
+      if (kind === 'hover' || kind === 'react') {
+        playOnceMotion();
+        state = 'action';
+      } else {
+        playIdleMotion(); // 'idle'/'drag-end' 等一律归位
+        state = 'idle';
+      }
+    };
+    ipcRenderer.send('pet:diag', '[mode] live2d ok: model=' + modelName + ' → live2d 模式');
+    window.__petBooted = true; // 状态探询 booted 语义对齐（webm/sprite 路径同款首帧语义）
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { ipcRenderer.send('pet-paint-ready'); });
+    });
+    // l2d-probe（2026-11-04 空渲染取证）：屏幕截图对透明分层窗口不可靠（CopyFromScreen
+    // 可能读到壁纸）——直接读 WebGL 画布像素拿地面真相。alpha>0 像素占比裁决：
+    // >0 = 模型已画进画布（问题在合成/窗口层）；=0 = 模型/纹理层问题。
+    setTimeout(function () {
+      try {
+        var ext = app.renderer.plugins && app.renderer.plugins.extract;
+        var px = ext ? ext.pixels(app.stage) : null;
+        var nonzero = 0, total = 0;
+        if (px) { for (var i = 3; i < px.length; i += 4) { total++; if (px[i] > 8) nonzero++; } }
+        var inDom = !!(app.view && app.view.parentNode);
+        ipcRenderer.send('pet:diag', '[l2d-probe] alpha>0=' + nonzero + '/' + total
+          + ' modelWH=' + model.width + 'x' + model.height
+          + ' scale=' + (model.scale ? model.scale.x.toFixed(3) : '?')
+          + ' pos=(' + model.position.x.toFixed(0) + ',' + model.position.y.toFixed(0) + ')'
+          + ' canvas=' + app.view.width + 'x' + app.view.height
+          + ' inDOM=' + inDom);
+      } catch (e) {
+        ipcRenderer.send('pet:diag', '[l2d-probe] fail: ' + (e && e.message));
+      }
+    }, 1500);
+  }).catch(function (err) {
+    fail_('加载失败: ' + (err && err.message));
+  });
+  return 'pending'; // 异步加载中：start 链挂起，成功定格 live2d / 失败定时器+fail_ 兜回退
+}
+function destroyLive2d() {
+  if (!__l2d) return;
+  try { __l2d.app.destroy(true); } catch (_) {}
+  __l2d = null;
+}
+function enterWebmMode(reason) {
+  destroyLive2d();
   setMode('webm');
+  if (reason) ipcRenderer.send('pet:diag', '[mode] webm 启动（' + reason + '）');
+  startWebmRuntime(); // GAP-1 修复：异步回退路径补齐 webm 运行时（原仅 setMode → 空转）
+}
+// webm 运行时启动（GAP-1：从 start() 内联块提取，幂等可重入；
+// fs 桥不可用/预载失败时由调用方落 sprite，这里不重复判定）
+function startWebmRuntime() {
+  if (window.__petReadMove) preloadBlobs();
   webglOk = true;
   video.loop = true;
   playIdle(performance.now());
   nextIdleAt = performance.now() + 9000;
   var vrmFallbackTimer = setTimeout(function () { if (window.__vrmFail) window.__vrmFail('load timeout'); }, 6000);
-  // 2026-10-26 网易架构回归：混元模型经离线渲染（三点灯光配置）产出高质量
-  // WebM（idle 363KB / react 113KB，亮度层次 112/166/199）已部署——
-  // 质量锁定在制作期，运行时只播视频（网易方案核心）。vrm 模块保留代码不接管。
   window.__vrmAccept = function (api) {
     clearTimeout(vrmFallbackTimer);
     ipcRenderer.send('pet:diag', '[mode] vrm module loaded but webm kept (NetEase pipeline: Hunyuan offline render)');
   };
-  window.__vrmFail = function (reason) {
+  window.__vrmFail = function (reason2) {
     clearTimeout(vrmFallbackTimer);
     if (mode === 'vrm') return;
-    ipcRenderer.send('pet:diag', '[mode] vrm fail → webm: ' + reason);
+    ipcRenderer.send('pet:diag', '[mode] vrm fail → webm: ' + reason2);
   };
   video.addEventListener('loadeddata', function () {
     lastT0 = performance.now();
@@ -787,6 +1124,44 @@ function spriteTick(now) {
       requestAnimationFrame(function () { ipcRenderer.send('pet-paint-ready'); });
     });
   }, { once: true });
+}
+function live2dBounds() {
+  // TC-202/203：模型包围盒（vrm video-rect-0 教训：live2d 下 video 是隐藏/哨兵矩形，
+  // 任何走 frontV.getBoundingClientRect 的分支都会误判）
+  if (__l2d && __l2d.model && __l2d.model.getBounds) {
+    var b = __l2d.model.getBounds();
+    return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) };
+  }
+  return null;
+}
+
+// ==================== 启动链 ====================
+(function start() {
+  // Live2D 首环（A1 拍板 2026-11-03：spec 语义，不受 webm 资产检查短路）。
+  // 返回值：'ok'（同步成功，暂不可能）/ 'pending'（异步加载中，6s 定时器兜回退）/
+  // 'fail'（同步失败，enterLive2dMode 内部已落 webm/sprite）。
+  var l2dResult = enterLive2dMode();
+  if (l2dResult === 'pending') {
+    ipcRenderer.send('pet:diag', '[mode] live2d 加载中（异步），webm 资产链挂起等待回退裁决');
+    return; // 成功 → 已在 live2d 模式；失败 → fail_() 已自动 enterWebmMode
+  }
+  if (l2dResult === 'ok' && mode === 'live2d') {
+    ipcRenderer.send('pet:diag', '[mode] live2d 主路径就绪，跳过 webm blob 预载');
+    return;
+  }
+  if (!window.__petReadMove) {
+    enterSpriteMode('fs 桥不可用，降级 2D 精灵');
+    return;
+  }
+  var ok = preloadBlobs();
+  if (!ok) {
+    enterSpriteMode('动作库预载不完整，降级 2D 精灵');
+    return;
+  }
+  // vrm 优先（2026-10-23 three.js 接入）：模块加载成功 → __vrmAccept 切 vrm；
+  // 失败/超时 → __vrmFail 回退 webm（启动体已提取至 startWebmRuntime，GAP-1 修复）
+  setMode('webm');
+  startWebmRuntime();
   // canvas 自检（3s 后客观验证渲染内容）
   setTimeout(function () {
     try {

@@ -17,6 +17,8 @@
  * 检测/归档/迁移逻辑零改动。
  */
 
+import { applyPinToggle, trimWithPinned, PIN_LIMIT } from './pin-utils';
+
 const { clipboard, nativeImage } = require('electron') as {
   clipboard: ElectronClipboardApi;
   nativeImage: ElectronNativeImageModule;
@@ -71,6 +73,9 @@ interface MonitorHistoryItem {
   id: string;
   type?: 'text' | 'image' | 'file' | 'rich-text';
   timestamp: number;
+  /** 置顶标记（2026-11-11 FR3）：pinnedAt 为置顶时间戳（D4 排序用） */
+  pinned?: boolean;
+  pinnedAt?: number;
   count?: number;
   text?: string;
   preview?: string;
@@ -463,7 +468,8 @@ class ClipboardMonitor {
 
     this.history.unshift(item);
     if (this.history.length > this.maxHistory) {
-      this.history = this.history.slice(0, this.maxHistory);
+      // FR5（2026-11-11）：LRU 裁剪跳过置顶条目（纯函数收敛于 pin-utils）
+      this.history = trimWithPinned(this.history, this.maxHistory);
     }
 
     this._persist();
@@ -679,6 +685,20 @@ class ClipboardMonitor {
    * @param {string} id 条目 id
    * @returns {{ok: boolean, error?: string}}
    */
+  /**
+   * 置顶 toggle（2026-11-11 FR1/FR5）：上限与豁免逻辑收敛于 pin-utils 纯函数；
+   * 操作后走 _persist 落盘（渲染层 invoke 后 refresh() 拉取新序）。
+   * @param {string} id 条目 id
+   * @returns {{ok: boolean, pinned?: boolean, count?: number, error?: string}}
+   */
+  togglePin(id: string, now: number = Date.now()): { ok: boolean; pinned?: boolean; count?: number; error?: string } {
+    const r = applyPinToggle(this.history, id, PIN_LIMIT, now);
+    if (!r.ok) return { ok: false, error: r.error || 'pin-limit', count: r.count };
+    this.history = r.items;
+    this._persist();
+    return { ok: true, pinned: r.pinned, count: r.count };
+  }
+
   copyItemPath(id: string): { ok: boolean; error?: string } {
     const item = this.history.find(h => h.id === id);
     if (!item) return { ok: false, error: '未找到该条目' };

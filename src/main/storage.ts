@@ -46,6 +46,9 @@ interface StorageItem {
   width?: number;
   height?: number;
   tags?: string[];
+  /** 置顶标记（2026-11-11 FR3）：随加密持久化链路落盘，重启保留 */
+  pinned?: boolean;
+  pinnedAt?: number;
   /** 展开状态持久化到 item 对象：列表重渲染传入同一引用，状态不丢 */
   _expanded?: boolean;
 }

@@ -736,7 +736,10 @@ describe('I. 透明度覆盖收敛（footer/backtop/计数唯一位）', () => {
     assert.ok(!js.includes('statCount'), 'main.js 无 statCount 残留');
     const updateStats = js.match(/function updateStats\(\): void \{[\s\S]*?\n\}/);
     assert.ok(updateStats, 'updateStats 函数体可提取');
-    assert.ok(updateStats[0].includes("getElementById('headerMeta')"), 'headerMeta 更新保留');
+    // 2026-11-05 统计徽章嵌入 headerMeta 后：meta 文字改写内层 span headerMetaText
+    //（textContent 整写外层会销毁内嵌徽章 DOM）——更新语义保留，目标元素更换
+    assert.ok(updateStats[0].includes("getElementById('headerMetaText')"),
+      'headerMeta 更新保留（徽章嵌入后写内层 span headerMetaText）');
   });
 
   test('I4 backtop 单钮+环形进度：钮底/环底消费 --win-alpha；环与图标 accent 全不透明锚点', () => {
@@ -867,7 +870,9 @@ describe('K. Alt 按住穿透：渲染层接线（推送 → body.mod-pass + hin
     const h = loadWiring();
     await h.settle();
     assert.strictEqual(typeof h.handlers.modifierPassthrough, 'function', 'onModifierPassthrough 回调已注册');
-    const hintEl = h.document.getElementById('hint');
+    // 2026-11-05 统计徽章嵌入 hint 区后：穿透文案写内层 #hintText span
+    //（整写 #hint.innerHTML 会销毁内嵌 stats-badge DOM——四写点同根因修复）
+    const hintEl = h.document.getElementById('hintText');
     const beforeHint = hintEl.innerHTML;
 
     h.handlers.modifierPassthrough(true);

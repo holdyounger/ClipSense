@@ -14,7 +14,7 @@ const DEST = path.join(__dirname, '..', 'dist', 'renderer');
 fs.mkdirSync(DEST, { recursive: true });
 
 let copied = 0;
-// 递归复制（2026-10-14 Live2D 接入）：live2d/（运行时库）与 hiyori/（模型资产）
+// 递归复制（2026-10-14 Live2D 接入）：live2d/（运行时库）与 models/（Live2D 模型资产，2026-11-03 自 hiyori/ 迁移）
 // 是子目录，原实现 readdirSync 后 isDirectory 即 continue 会整目录漏掉。
 // .js 跳过规则仅限渲染层根目录（源码由 tsc emit）；子目录的 .js 是 vendor 库
 //（pixi.min.js 等），必须随包分发（v8 实机教训：跳过规则误伤 → PIXI 插件未加载）

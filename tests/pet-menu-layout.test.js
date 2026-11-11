@@ -46,16 +46,18 @@ const BASE = { winW: VIEW_W, winH: VIEW_H, dirH: 'l', dirV: 'u', mode: 'pet', sc
 describe('布局引擎：主扇基准（猫居中）', () => {
   const r = computeLayout({ ...BASE, level: 'main', catX: 121, catY: 185 });
 
-  test('输出 5 叶、全部在窗内（核心不变量）', () => {
-    assert.strictEqual(r.leaves.length, 4);
+  test('输出 3 叶（mode/react/quit，2026-11-04 R5 修正：react 互动叶保留）、全部在窗内（核心不变量）', () => {
+    assert.strictEqual(r.leaves.length, 3);
+    const keys = r.leaves.map((l) => l.key).sort();
+    assert.deepStrictEqual(keys, ['mode', 'quit', 'react'], '主扇应为 mode/react/quit，实际: ' + keys.join(','));
     assert.ok(inBounds(r, VIEW_W, VIEW_H), JSON.stringify(r.leaves.map((l) => [l.key, l.x, l.y])));
   });
 
-  test('扇形绕猫展开：summon 上 / quit 下 / size 最左', () => {
+  test('扇形绕猫展开：mode 上 / react 居中 / quit 下（50° 均布）', () => {
     const byKey = Object.fromEntries(r.leaves.map((l) => [l.key, l]));
-    assert.ok(byKey.summon.y < r.cy, 'summon above center');
+    assert.ok(byKey.mode.y < r.cy, 'mode above center');
     assert.ok(byKey.quit.y > r.cy, 'quit below center');
-    assert.ok(byKey.mode.x <= byKey.summon.x, 'mode left of summon');
+    assert.ok(Math.abs(byKey.react.y - r.cy) < Math.abs(byKey.mode.y - r.cy), 'react 纵向更贴近扇心（160° 居中叶）');
   });
 
   test('叶互不重叠（形状完整性）', () => {
@@ -82,7 +84,7 @@ describe('布局引擎：贴四边/四角（显示不全回归锁）', () => {
     { name: '右下角', catX: 200, catY: 330 },
   ];
   for (const c of cases) {
-    test(c.name + '：5 叶全在窗内', () => {
+    test(c.name + '：2 叶全在窗内', () => {
       const r = computeLayout({
         ...BASE, level: 'main',
         catX: c.catX, catY: c.catY,
@@ -99,10 +101,10 @@ describe('布局引擎：贴四边/四角（显示不全回归锁）', () => {
 });
 
 describe('布局引擎：自适应半径（挤成一列根治锁）', () => {
-  test('贴左缘：侧向空间不足 → R 收缩，叶 x 方向散开（≥3 个不同 x）', () => {
+  test('贴左缘：侧向空间不足 → R 收缩，叶不互相重叠（x 叠列时 y 必散开）', () => {
     const r = computeLayout({ ...BASE, level: 'main', catX: 60, catY: 185 });
-    const xs = new Set(r.leaves.map((l) => l.x));
-    assert.ok(xs.size >= 3, 'leaves spread across x: ' + JSON.stringify(r.leaves.map((l) => [l.key, l.x])));
+    const o = noOverlap(r);
+    assert.ok(!o.overlap, o.a + ' overlaps ' + o.b + ' — ' + JSON.stringify(r.leaves.map((l) => [l.key, l.x, l.y])));
     assert.ok(inBounds(r, VIEW_W, VIEW_H));
   });
 
@@ -180,15 +182,16 @@ describe('布局引擎：方向镜像一致性', () => {
     const r = computeLayout({ ...BASE, level: 'main', catX: 121, catY: 185, dirH: 'r' });
     const ls = Object.fromEntries(l.leaves.map((x) => [x.key, x]));
     const rs = Object.fromEntries(r.leaves.map((x) => [x.key, x]));
-    assert.ok(Math.abs(ls.summon.x - rs.summon.x) < VIEW_W, 'summon x mirrored within window');
+    assert.ok(Math.abs(ls.mode.x - rs.mode.x) < VIEW_W, 'mode x mirrored within window');
   });
 
-  test('dirV=d 时纵向镜像（summon 翻到扇心下方）', () => {
+  test('dirV=d 时纵向镜像（mode 翻到扇心下方）', () => {
     const u = computeLayout({ ...BASE, level: 'main', catX: 121, catY: 185, dirV: 'u' });
     const d = computeLayout({ ...BASE, level: 'main', catX: 121, catY: 185, dirV: 'd' });
     const us = Object.fromEntries(u.leaves.map((x) => [x.key, x]));
     const ds = Object.fromEntries(d.leaves.map((x) => [x.key, x]));
-    assert.ok(ds.summon.y > us.summon.y - 1, 'dirV=d flips summon below center');
+    assert.ok(ds.mode.y > us.mode.y - 1, 'dirV=d flips mode below center: u=' + us.mode.y + ' d=' + ds.mode.y);
+    assert.ok(ds.quit.y < us.quit.y - 1, 'dirV=d flips quit above center（与 mode 互换，几何对称）');
   });
 });
 
@@ -207,5 +210,43 @@ describe('布局引擎：极小窗口（退化不崩溃）', () => {
     for (const l of r.leaves) {
       assert.ok(Number.isFinite(l.x) && Number.isFinite(l.y), 'coords must be finite');
     }
+  });
+});
+
+describe('布局引擎：响应式扇形（2026-11-04 菜单重构方向2，小窗口自适应）', () => {
+  test('0.7× 档窗口（154×154）：扇形完整收缩在窗内且叶不重叠', () => {
+    const r = computeLayout({ winW: 154, winH: 154, dirH: 'l', dirV: 'u', level: 'main', mode: 'pet', scale: 0.7, catX: 77, catY: 100 });
+    assert.ok(inBounds(r, 154, 154), JSON.stringify(r.leaves.map((l) => [l.key, l.x, l.y])));
+    const o = noOverlap(r);
+    assert.ok(!o.overlap, o.a + ' overlaps ' + o.b);
+  });
+
+  test('标准窗口（240×380）：fit 因子不放大（行为不变守卫）', () => {
+    const r = computeLayout({ winW: 240, winH: 380, dirH: 'l', dirV: 'u', level: 'main', mode: 'pet', scale: 1, catX: 121, catY: 185 });
+    assert.ok(inBounds(r, 240, 380));
+    const o = noOverlap(r);
+    assert.ok(!o.overlap, o.a + ' overlaps ' + o.b);
+  });
+});
+
+describe('布局引擎：interact 互动二级扇（2026-11-05 Bug3：动作关联扩展）', () => {
+  test('interact 级：back 叶 + 自定义动作叶（环心返回钮，动作叶在窗内不重叠）', () => {
+    const r = computeLayout({ ...BASE, level: 'interact', interactLeaves: [
+      { key: 'm0', ang: 245, icon: '▶', hint: '动作 1', value: '0' },
+      { key: 'm1', ang: 180, icon: '▶', hint: '动作 2', value: '1' },
+      { key: 'm2', ang: 115, icon: '🎲', hint: '随机', value: 'rand' },
+    ], catX: 121, catY: 185 });
+    assert.strictEqual(r.leaves.length, 4, 'back + 3 动作叶');
+    const keys = r.leaves.map((l) => l.key).sort();
+    assert.deepStrictEqual(keys, ['back', 'm0', 'm1', 'm2'], JSON.stringify(keys));
+    assert.ok(inBounds(r, VIEW_W, VIEW_H));
+    const o = noOverlap(r);
+    assert.ok(!o.overlap, o.a + ' overlaps ' + o.b);
+  });
+
+  test('interact 级无自定义叶 → 仅 back（防御）', () => {
+    const r = computeLayout({ ...BASE, level: 'interact', catX: 121, catY: 185 });
+    assert.strictEqual(r.leaves.length, 1);
+    assert.strictEqual(r.leaves[0].key, 'back');
   });
 });
