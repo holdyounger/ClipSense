@@ -2,7 +2,7 @@
 
 > 复制内容自动归档，搜索历史剪贴板，并将选中的内容快速粘贴到原目标窗口。
 
-**目录名**: `clipboard-spike` | **项目名**: `ClipSense` | **版本**: `1.0.5` | **当前重点**: Windows / macOS 适配
+**目录名**: `clipboard-spike` | **项目名**: `ClipSense` | **版本**: `1.0.15` | **当前重点**: Windows
 
 ---
 
@@ -19,7 +19,8 @@
 - 🖼️ **图片持久化**：图片独立保存，支持通过 Electron `nativeImage` 读取和回写
 - 📁 **文件支持**：文件历史条目可在 Windows Explorer / macOS Finder 中定位，也支持回写后粘贴文件
 - 🖱️ **边缘唤出**：窗口离开后向最近屏幕边缘推出，保留独立触发条（贴边新内容到达播放「抽屉」收纳动画）
-- 🛸 **Alt 鼠标穿透**：按住 `Alt`（macOS 为 `Option ⌥`）时面板对鼠标完全穿透（点击/滚轮直达下层窗口），松开恢复；穿透期间面板降为半透明（档位托盘可调），「正在穿透」一眼可辨；OS 级键态检测（面板不夺焦也生效），首次使用与版本更新后有一次性功能提示
+- 🛸 **Alt 鼠标穿透**：按住 `Alt` 时面板对鼠标完全穿透（点击/滚轮直达下层窗口），松开恢复；穿透期间面板降为半透明（档位托盘可调），「正在穿透」一眼可辨；OS 级键态检测（面板不夺焦也生效），首次使用与版本更新后有一次性功能提示
+- 🐾 **桌宠陪伴**：卡通桌宠眼神跟随鼠标、菜单互动；启动时主面板优先展示，桌宠随后登场
 - 🚀 **大历史流畅浏览**：历史列表分页加载（初始最近 50 条，滚动到底自动追加），搜索输入防抖、复制落盘异步合并——大历史量下打字/复制/滚动不再卡顿
 - 🫥 **窗口自适应透明**：固定 60%/贴边倒计时 40% 两段式透明基础上，新增穿透档位与列表渲染包含（`content-visibility`）优化，拖拽窗口尺寸流畅
 - ⏱️ **自动隐藏**：鼠标离开面板后按倒计时自动隐藏，默认约 `3 秒`，倒计时随固定按钮环形进度展示
@@ -35,7 +36,7 @@
 - 🎨 **卡通图标**：提供应用图标和托盘图标，适配 Windows 打包
 - 🪟 **系统托盘**：后台运行，可从托盘显示/隐藏、固定窗口、调整历史上限和退出
 
-> ClipSense 当前仍是技术可行性 spike，重点验证剪贴板监听、持久化、窗口交互和指定条目粘贴链路，不等同于完整产品。
+> ClipSense 已从技术验证 spike 演进为功能完整的剪贴板管理工具：769 项自动化测试守护核心链路，置顶、统计等级、桌宠陪伴与 HUD 弹窗等能力持续打磨中。
 
 ---
 
@@ -115,6 +116,8 @@ npm run build:mac
 | **粘贴指定条目** | 双击历史条目 |
 | **定位文件** | 单击文件条目，在 Explorer 中显示文件位置 |
 | **返回顶部** | 历史列表滚动超过一屏后，点击右下角悬浮按钮回到顶部 |
+| **置顶条目** | 悬停条目点击 📌 按钮；再点取消；置顶区在列表顶部恒显示（上限 10 条） |
+| **统计弹窗** | 悬停 footer 徽章展开 HUD 面板；底栏 tab 鼠标扫过即切换 |
 | **固定窗口** | 点击面板固定按钮或使用托盘菜单 |
 | **清空历史** | 使用面板菜单中的清空操作 |
 | **退出应用** | 右键托盘图标 → **退出** |
@@ -170,6 +173,7 @@ ClipSense 的窗口交互逻辑参考 KeySense 的边缘检测 workflow，并针
 - 顶部 header 静止 32px，鼠标悬停自适应展开至 60px（主进程轮询判定，拖拽区悬停同样可靠）。
 - 搜索展开 / 菜单打开时锁定展开态；窗口拖拽结束有 200ms 恢复缓冲，避免判定抖动。
 - 双击粘贴由 PasteBridge 在粘贴瞬间原子恢复原目标窗口焦点并注入，双击不收面板（支持连续粘贴）。
+- 面板与桌宠窗口通过 koffi 附加 `WS_EX_NOACTIVATE` 样式：鼠标点击不激活、不抢前台，目标窗口自始至终保持焦点。
 
 隐藏状态由两个窗口组成：
 
@@ -203,33 +207,38 @@ Electron 的 `setVisibleOnAllWorkspaces()` 在 Windows 上不起作用，`always
 clipboard-spike/
 ├── .github/
 │   └── workflows/
-│       └── build.yml              # GitHub Actions：语法检查、Windows 构建、Release
-├── Docs/
-│   ├── 剪贴板持久化方案调研.md
-│   └── 剪贴板程序可行性方案与需求调研.md
+│       └── build.yml              # GitHub Actions：编译 + 单元测试（node 24）、Windows 构建、Release
+├── Docs/                          # 调研/PRD/规格/计划/用例/验证报告（部分本地归档）
 ├── scripts/
 │   ├── gen-icon.js                # 生成基础图标
+│   ├── copy-assets.js             # 渲染层静态资源同步 dist
 │   └── create-cartoon-logo.py     # 生成卡通应用/托盘图标
 ├── src/
-│   ├── main/
-│   │   ├── index.js               # Electron 主进程入口、IPC、托盘和窗口
-│   │   ├── clipboard-monitor.js   # 剪贴板读取、分类、去重、历史和回写
-│   │   ├── storage.js             # 历史与图片持久化、safeStorage 加密
-│   │   ├── edge-detector.js       # 贴边、自动隐藏、推出动画和触发条
-│   │   ├── paste-bridge.js        # koffi FFI（user32）焦点恢复 + SendInput 粘贴注入
-│   │   └── focus-tracker.js       # 目标窗口焦点跟踪（供粘贴回原窗口）
+│   ├── main/                      # 主进程（TypeScript，编译到 dist/main）
+│   │   ├── index.ts               # Electron 入口、IPC、托盘、窗口与焦点样式
+│   │   ├── clipboard-monitor.ts   # 剪贴板轮询、分类、去重、置顶与回写
+│   │   ├── pin-utils.ts           # 置顶 toggle 与容量裁剪纯函数
+│   │   ├── stats.ts               # 统计与等级（按日计数、连击、summarize）
+│   │   ├── storage.ts             # 历史与图片持久化、safeStorage 加密
+│   │   ├── edge-detector.ts       # 贴边、自动隐藏、推出动画和触发条
+│   │   ├── paste-bridge.ts        # koffi FFI（user32）焦点恢复 + SendInput 粘贴注入
+│   │   ├── focus-tracker.ts       # 目标窗口焦点跟踪（供粘贴回原窗口）
+│   │   ├── pet-manager.ts         # 桌宠窗口与交互决策
+│   │   └── modifier-passthrough.ts # Alt 穿透与窗口样式（WS_EX_NOACTIVATE 等）
 │   ├── common/
-│   │   └── link-utils.js          # URL 识别（入库时提取 item.links）
-│   └── renderer/
-│       ├── index.html             # 面板页面
-│       ├── main.css               # 面板样式
-│       ├── main.js                # 搜索、固定、倒计时和窗口交互
-│       ├── renderer.js            # 历史条目类型化渲染
-│       ├── i18n.js                # 国际化字典（中/英）
-│       ├── slide-anim.js          # 滑入/滑出 CSS 动画
-│       ├── preload.js             # contextBridge 安全桥接
+│   │   └── link-utils.ts          # URL 识别（入库时提取 item.links）
+│   └── renderer/                  # 渲染层（TypeScript，编译到 dist/renderer）
+│       ├── index.html             # 面板页面（含统计弹窗 HUD）
+│       ├── main.css               # 面板样式（玻璃拟态 + 圆角阶梯）
+│       ├── main.ts                # 搜索、统计弹窗、tab 切换与窗口交互
+│       ├── renderer.ts            # 历史条目类型化渲染（置顶分区/类型圆点）
+│       ├── i18n.ts                # 国际化字典（中/英）
+│       ├── entry-anim.ts          # 条目入场动画
+│       ├── dock-anim.ts           # 磁吸辉光（光标邻近感应）
+│       ├── preload.ts             # contextBridge 安全桥接
 │       ├── app-icon.png           # Windows 应用图标（256×256）
 │       └── tray-icon.png          # 托盘图标（16×16）
+├── tests/                         # node:test 自动化测试（769 项）
 ├── README.md
 ├── package.json
 └── package-lock.json
@@ -246,7 +255,9 @@ clipboard-spike/
 | **Electron nativeImage** | 图片剪贴板读取与写入 |
 | **Electron safeStorage** | 历史数据和图片加密 |
 | **Electron shell** | Explorer 文件定位、默认浏览器打开链接 |
-| **koffi（FFI）** | 绑定 user32/kernel32：SendInput 粘贴注入、焦点恢复、修饰键等待 |
+| **koffi（FFI）** | 绑定 user32/kernel32：SendInput 粘贴注入、焦点恢复、WS_EX 窗口样式、修饰键等待 |
+| **TypeScript 5.9** | 全量 TS 迁移（tsc 编译到 dist，渲染层同构） |
+| **node:test** | 769 项自动化测试（主进程纯函数 / DOM 桩 harness / 静态守卫） |
 | **electron-builder** | Windows NSIS 安装包构建 |
 
 ### IPC 通信架构
@@ -270,12 +281,20 @@ contextBridge（preload.js）
 get-history          获取历史
 copy-item            回写指定历史条目
 simulate-input      回写指定条目并发送 Ctrl+V
+remove-item          删除指定历史条目
+open-external        默认浏览器打开链接
 open-file-location   在 Explorer 中定位文件
+get-file-icon        获取文件图标
 focus-search         允许搜索框获得焦点
 mouse-enter         通知鼠标进入面板
 mouse-leave         通知鼠标离开面板
-set-pinned           设置固定状态
+set-pinned           设置窗口固定状态
 get-countdown        查询隐藏倒计时
+get-tag-rules        读取自定义标签规则
+set-tag-rules        写入自定义标签规则
+validate-tag-rule    校验自定义标签正则
+toggle-pin           条目置顶 / 取消置顶（上限与豁免在 pin-utils）
+stats:summary        统计汇总推送（等级/今日/近 7 日，HUD 弹窗消费）
 ```
 
 ---
@@ -291,9 +310,10 @@ app.getPath('userData')
 决定，典型文件包括：
 
 ```text
-clipboard-history.json       历史元数据
+clipboard-history.json       历史元数据（含置顶标记 pinned / pinnedAt）
 clip-images/<id>.bin         独立图片数据
 clip-history-config.json     历史上限等配置
+clipboard-stats.json         统计与等级数据（按日计数、连击、累计经验）
 ```
 
 默认历史上限为 `100` 条，可通过托盘菜单调整为：
@@ -322,7 +342,7 @@ clip-history-config.json     历史上限等配置
 
 工作内容：
 
-1. Ubuntu runner 执行 JavaScript 语法检查（覆盖主进程与渲染层全部模块）。
+1. Ubuntu runner：安装依赖 → `tsc --noEmit` 类型检查 → `tsc` 编译 → copy-assets → `node --test`（769 项单元测试）。
 2. `v*` tag 触发时自动将 tag 版本同步到 `package.json`（保证安装包版本与 Release 一致）。
 3. Windows runner 执行 `npm ci` 和 `npm run build:win`。
 4. 上传 Windows 构建产物。
@@ -332,22 +352,15 @@ clip-history-config.json     历史上限等配置
 
 ## 🧪 验证
 
-### 已执行的静态检查
+### 自动化测试（769 项）
 
 ```bash
-node --check src/main/clipboard-monitor.js
-node --check src/main/edge-detector.js
-node --check src/main/focus-tracker.js
-node --check src/main/index.js
-node --check src/main/paste-bridge.js
-node --check src/main/storage.js
-node --check src/renderer/i18n.js
-node --check src/renderer/main.js
-node --check src/renderer/preload.js
-node --check src/renderer/renderer.js
-node --check src/renderer/slide-anim.js
-git diff --check
+npm run build:ts   # tsc 编译 + copy-assets（测试直测 dist 产物）
+npm test           # node --test tests/*.test.js
 ```
+
+覆盖：主进程纯函数（置顶 toggle/容量裁剪/统计等级/标签引擎/桌宠交互决策）、
+渲染层 DOM 桩 harness（搜索/分页/置顶分区/tab 切换/入场动画）、静态守卫（CSS 与 IPC 接线）。
 
 ### Windows 构建
 
@@ -357,7 +370,7 @@ git diff --check
 npm run build:win
 ```
 
-并生成 Windows 安装包。剪贴板粘贴、焦点、Explorer、边缘触发和多桌面行为仍需继续进行 Windows 实机回归测试。
+并生成 Windows 安装包。置顶、统计弹窗、桌宠交互与多桌面行为仍需持续进行 Windows 实机回归测试。
 
 ### 手动测试建议
 
@@ -371,6 +384,9 @@ npm run build:win
 - [ ] 左右边缘触发条宽度、圆角和鼠标命中
 - [ ] Windows 多虚拟桌面切换与窗口显示
 - [ ] 粘贴后是否恢复原系统剪贴板
+- [ ] 条目置顶 / 取消置顶 / 上限提示 / 重启保留
+- [ ] 统计弹窗三 tab 切换与趋势悬停明细
+- [ ] 桌宠显示与菜单互动
 
 ---
 
@@ -412,10 +428,16 @@ npm run build:win
 - [x] 两段式窗口透明度（固定 60% / 倒计时线性至 40% 可透视）
 - [x] item 悬停恢复 100%（渲染层 CSS alpha 架构）
 - [x] 应用自升级（GitHub Releases 检测/下载/静默安装，403 限流降级）
+- [x] TypeScript 全量迁移与 769 项自动化测试链（node:test）
+- [x] 条目置顶（独立分区 / 豁免裁剪 / 上限 10 / 跨重启保留）
+- [x] 统计与等级系统（HUD 弹窗：等级充能环 / 今日瓦片 / 近 7 日趋势）
+- [x] 统计弹窗交互升级（tab 底部化 / 悬停切换 / 流光滑轨）
+- [x] 操作按钮图标化统一 + 条目类型圆点标识
+- [x] WS_EX_NOACTIVATE 点击不夺焦修复（koffi 类型自适应）
 - [ ] 粘贴后恢复原系统剪贴板
 - [ ] Windows 多虚拟桌面适配
 - [ ] 完成 Windows 全类型手动回归测试
-- [ ] 根据 spike 结果确定正式产品架构
+- [ ] 确定正式产品架构与发布渠道
 
 ---
 
