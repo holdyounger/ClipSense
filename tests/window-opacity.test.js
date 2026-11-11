@@ -80,3 +80,51 @@ describe('computeOpacity 非固定非倒计时 → 不透明', () => {
     }
   });
 });
+
+// ==================== Alt 穿透透明度（2026-11-02 快速通道，小M 提出） ====================
+// 需求：窗口未隐藏时按住 Alt 触发穿透 → 面板降到 0.5（视觉可辨）；与两段式状态取小值；
+// 释放恢复。红灯：当前 computeOpacity 无 passthroughActive 入参，期望 undefined→0.5→NaN。
+describe('Alt 穿透透明度（passthroughActive 取小值口径）', () => {
+  test('穿透激活：无其他状态 → 0.5（OPACITY_PASSTHROUGH）', () => {
+    assert.strictEqual(computeOpacity({ passthroughActive: true }), 0.5);
+  });
+
+  test('穿透激活 + 固定 0.6 → 取小值 0.5（穿透优先）', () => {
+    assert.strictEqual(computeOpacity({ pinned: true, passthroughActive: true }), 0.5);
+  });
+
+  test('穿透激活 + 倒计时中段 0.7 → 取小值 0.5', () => {
+    assert.strictEqual(computeOpacity({ isCountingDown: true, remainingMs: 1500, totalMs: 5000, passthroughActive: true }), 0.5);
+  });
+
+  test('穿透激活 + 倒计时终点 0.4 → 取小值 0.4（既有状态更深时让位）', () => {
+    assert.strictEqual(computeOpacity({ isCountingDown: true, remainingMs: 0, totalMs: 5000, passthroughActive: true }), 0.4);
+  });
+
+  test('未穿透：两段式行为不变（回归守卫）', () => {
+    assert.strictEqual(computeOpacity({ pinned: true }), 0.6);
+    assert.strictEqual(computeOpacity({}), 1);
+    assert.strictEqual(computeOpacity({ isCountingDown: true, remainingMs: 0, totalMs: 5000 }), 0.4);
+  });
+});
+
+// ==================== 穿透透明度可配置（2026-11-02 托盘菜单，小M 提出） ====================
+// 需求：托盘菜单可调穿透时透明度档位；红灯：当前 computeOpacity 无 passthroughOpacity 入参。
+describe('穿透透明度可配置（passthroughOpacity）', () => {
+  test('自定义档位 0.3：穿透激活 → 0.3（替代默认 0.5）', () => {
+    assert.strictEqual(computeOpacity({ passthroughActive: true, passthroughOpacity: 0.3 }), 0.3);
+  });
+
+  test('自定义档位 0.7 + 固定 0.6 → 取小值 0.6（档位比既有状态浅时让位）', () => {
+    assert.strictEqual(computeOpacity({ pinned: true, passthroughActive: true, passthroughOpacity: 0.7 }), 0.6);
+  });
+
+  test('不传档位 → 默认 0.5（向后兼容）', () => {
+    assert.strictEqual(computeOpacity({ passthroughActive: true }), 0.5);
+  });
+
+  test('非法档位（>1 / <0）→ 回落默认 0.5（防呆）', () => {
+    assert.strictEqual(computeOpacity({ passthroughActive: true, passthroughOpacity: 1.5 }), 0.5);
+    assert.strictEqual(computeOpacity({ passthroughActive: true, passthroughOpacity: -0.2 }), 0.5);
+  });
+});

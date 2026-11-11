@@ -17,6 +17,8 @@
  * 检测/归档/迁移逻辑零改动。
  */
 
+import { applyPinToggle, trimWithPinned, PIN_LIMIT } from './pin-utils';
+
 const { clipboard, nativeImage } = require('electron') as {
   clipboard: ElectronClipboardApi;
   nativeImage: ElectronNativeImageModule;
@@ -71,6 +73,9 @@ interface MonitorHistoryItem {
   id: string;
   type?: 'text' | 'image' | 'file' | 'rich-text';
   timestamp: number;
+  /** 置顶标记（2026-11-11 FR3）：pinnedAt 为置顶时间戳（D4 排序用） */
+  pinned?: boolean;
+  pinnedAt?: number;
   count?: number;
   text?: string;
   preview?: string;
@@ -78,6 +83,8 @@ interface MonitorHistoryItem {
   links?: string[] | null;
   tags?: string[] | null;
   dataUrl?: string;
+  /** 缩略图 dataUrl（2026-10-22 IPC 载荷瘦身：渲染层列表只收缩略图，全图留主进程） */
+  thumbnail?: string;
   mimeType?: string;
   size?: number;
   width?: number;
@@ -135,6 +142,16 @@ class ClipboardMonitor {
   _lastHash: string | null;
   _seenHashes: Set<string>;
   _suppressUntil: number;
+  /** 持久化防抖（2026-11-02 T2）：多次归档合并为一次落盘；before-quit 用 flushSync 同步兜底 */
+  _persistDebounceMs: number = 500;
+  _persistTimer: ReturnType<typeof setTimeout> | null = null;
+  _persistDirty: boolean = false;
+  /** 图片快速指纹缓存（2026-10-22：避免每 tick 全量 toDataURL+toPNG 双编码阻塞主进程） */
+  _lastImageDigest: { hash: string; cached: ClipboardReadResult } | null = null;
+  /** Win32 剪贴板序号（2026-10-22）：koffi 惰性绑定；null/失败 = 退回全读路径 */
+  _clipSeqFn: (() => number) | null = null;
+  _clipSeqInit = false;
+  _lastClipSeq = -1;
   intervalId: NodeJS.Timeout | null;
   storage: MonitorStorageLike | null;
   _tagOptions: TagOptionsLike | null;
@@ -143,7 +160,8 @@ class ClipboardMonitor {
 
   constructor(options: ClipboardMonitorOptions = {}) {
     /** 轮询间隔 ms */
-    this.intervalMs = options.intervalMs || 600;
+    // 轮询间隔 600→120ms（2026-10-22 小M：复制响应延迟 ~1s 的主因是轮询间隔）
+    this.intervalMs = options.intervalMs || 120;
     /** 最大历史条数 */
     this.maxHistory = options.maxHistory || 100;
     /** 历史记录数组（新→旧） */
@@ -176,6 +194,22 @@ class ClipboardMonitor {
    *
    * 探测优先级：图片 > 文件 > 纯文本 > 富文本
    */
+  /** Win32 GetClipboardSequenceNumber 惰性绑定（非 win32/失败 → null，退回全读路径） */
+  _getClipboardSeq(): number | null {
+    if (!this._clipSeqInit) {
+      this._clipSeqInit = true;
+      try {
+        if (process.platform === 'win32') {
+          const koffi = require('koffi');
+          const user32 = koffi.load('user32.dll');
+          const fn = user32.func('int __stdcall GetClipboardSequenceNumber()');
+          this._clipSeqFn = () => fn();
+        }
+      } catch (_) { this._clipSeqFn = null; }
+    }
+    return this._clipSeqFn ? this._clipSeqFn() : null;
+  }
+
   _readClipboard(): ClipboardReadResult {
     try {
       const formats = clipboard.availableFormats();
@@ -190,13 +224,26 @@ class ClipboardMonitor {
         const img = clipboard.readImage();
         if (img && !img.isEmpty()) {
           const size = img.getSize();
-          return {
+    // 快速指纹（2026-10-22 小M 性能修复）：尺寸+PNG 长度做轻量指纹，
+    // 命中则零编码复用上次结果（旧逻辑每 tick 两次全量 PNG 编码阻塞主进程 =
+    // 面板弹出卡顿的共因）。指纹仅由 PNG 长度+尺寸构成，重复复制同一图
+    // 仍走 _lastHash 正常 bump 置顶（语义不变）。
+    const pngBuf = img.toPNG ? img.toPNG() : Buffer.alloc(0);
+    const digest = crypto.createHash('md5').update(pngBuf).digest('hex');
+    if (this._lastImageDigest && this._lastImageDigest.hash === digest) {
+      return this._lastImageDigest.cached; // 精确命中：零编码复用（bump 语义不变）
+    }
+
+          const dataUrl = img.toDataURL();
+          const cachedResult: ClipboardReadResult = {
             kind: 'image',
-            dataUrl: img.toDataURL(),
-            size: img.toPNG ? img.toPNG().length : 0,
+            dataUrl,
+            size: pngBuf.length,
             width: size.width,
             height: size.height,
           };
+          this._lastImageDigest = { hash: digest, cached: cachedResult };
+          return cachedResult;
         }
       }
 
@@ -358,6 +405,14 @@ class ClipboardMonitor {
    * @returns {{changed: boolean, item: Object|null}}
    */
   tick(allowBump = true): TickResult {
+    // Win32 序号快速路径（2026-10-22 小M 性能修复）：序号未变 = 内容必未变，
+    // 120ms 轮询成本从「每拍全量读+双编码」降为「每拍一次整数调用」。
+    // 抑制窗口挂起期间不启用（否则基线重建被跳过，回写去重失效）。
+    const seq = this._getClipboardSeq();
+    if (seq !== null && this._suppressUntil === 0 && seq === this._lastClipSeq) {
+      return { changed: false, item: null };
+    }
+    if (seq !== null && Date.now() >= this._suppressUntil) this._lastClipSeq = seq;
     // 回写抑制窗口内：跳过归档（我们自己写的剪贴板内容不算用户复制）
     if (Date.now() < this._suppressUntil) return { changed: false, item: null };
     // 抑制刚结束的第一帧：重建基线 hash 为当前剪贴板内容（抑制期间的内容已被 consume），
@@ -413,7 +468,8 @@ class ClipboardMonitor {
 
     this.history.unshift(item);
     if (this.history.length > this.maxHistory) {
-      this.history = this.history.slice(0, this.maxHistory);
+      // FR5（2026-11-11）：LRU 裁剪跳过置顶条目（纯函数收敛于 pin-utils）
+      this.history = trimWithPinned(this.history, this.maxHistory);
     }
 
     this._persist();
@@ -514,10 +570,19 @@ class ClipboardMonitor {
         };
       }
       case 'image': {
+        // 缩略图（2026-10-22 IPC 载荷瘦身）：nativeImage resize 到高 96px（@2x 列表显示），
+        // IPC 只传缩略图 dataUrl——全尺寸 dataUrl 留在主进程（storage/copy-item 专用）
+        let thumbnail: string | undefined;
+        try {
+          const img = require('electron').nativeImage.createFromDataURL(result.dataUrl);
+          const th = img.resize({ height: 96 });
+          thumbnail = th.toDataURL();
+        } catch (_) { thumbnail = result.dataUrl; }
         return {
           ...base,
           type: 'image',
           dataUrl: result.dataUrl,
+          thumbnail,
           mimeType: this._mimeFromDataUrl(result.dataUrl),
           size: result.size,
           width: result.width,
@@ -620,6 +685,20 @@ class ClipboardMonitor {
    * @param {string} id 条目 id
    * @returns {{ok: boolean, error?: string}}
    */
+  /**
+   * 置顶 toggle（2026-11-11 FR1/FR5）：上限与豁免逻辑收敛于 pin-utils 纯函数；
+   * 操作后走 _persist 落盘（渲染层 invoke 后 refresh() 拉取新序）。
+   * @param {string} id 条目 id
+   * @returns {{ok: boolean, pinned?: boolean, count?: number, error?: string}}
+   */
+  togglePin(id: string, now: number = Date.now()): { ok: boolean; pinned?: boolean; count?: number; error?: string } {
+    const r = applyPinToggle(this.history, id, PIN_LIMIT, now);
+    if (!r.ok) return { ok: false, error: r.error || 'pin-limit', count: r.count };
+    this.history = r.items;
+    this._persist();
+    return { ok: true, pinned: r.pinned, count: r.count };
+  }
+
   copyItemPath(id: string): { ok: boolean; error?: string } {
     const item = this.history.find(h => h.id === id);
     if (!item) return { ok: false, error: '未找到该条目' };
@@ -670,6 +749,13 @@ class ClipboardMonitor {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    // stop 即 flush（2026-11-02 T2）：before-quit 调 stop，防抖窗口未到期的
+    // dirty 数据同步落盘，进程退出不丢已捕获条目（spec 红线 1：不丢剪贴板数据）
+    this.flushSync();
   }
 
   /**
@@ -721,6 +807,34 @@ class ClipboardMonitor {
    * 触发持久化（若已注入 storage）
    */
   _persist(): void {
+    // 防抖合并（2026-11-02 T2）：标记 dirty + 500ms 窗口，连续复制只落盘一次
+    // （旧实现每条同步 writeFileSync 2.6MB 加密文件 = 复制瞬间主进程卡 50-200ms）
+    if (!this.storage || typeof this.storage.save !== 'function') return;
+    this._persistDirty = true;
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this.flushAsync(); // D1：防抖到期异步落盘（同步阻塞仅在退出兜底保留）
+    }, this._persistDebounceMs);
+  }
+
+  /**
+   * 异步落盘（2026-11-02 D1 裁定落实）：防抖窗口到期走本方法，
+   * setImmediate 让出当前事件循环 tick 后再写盘，主进程输入/轮询不被单次
+   * writeFileSync（2.6MB 加密）阻塞。退出兜底仍是 flushSync（before-quit）。
+   */
+  flushAsync(): void {
+    setImmediate(() => this.flushSync());
+  }
+
+  /** 同步兜底落盘：before-quit 退出前调用（进程退出不丢数据） */
+  flushSync(): void {
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    if (!this._persistDirty) return;
+    this._persistDirty = false;
     if (this.storage && typeof this.storage.save === 'function') {
       try {
         this.storage.save(this.history);

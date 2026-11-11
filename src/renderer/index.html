@@ -18,21 +18,12 @@
       <!-- 辅助信息行（2026-09-30 小M）：「共 N 条 · 上次复制时间」绝对定位行中部常驻显示，
            搜索展开时隐藏（.header.search-open .header-meta → opacity 0 让位输入框）。
            绝对定位不参与 flex 布局，pointer-events none 不挡交互。 -->
-      <div class="header-meta" id="headerMeta"></div>
+      <div class="header-meta" id="headerMeta"><span id="headerMetaText"></span></div>
       <!-- header 搜索（2026-09-10 搜索体验优化）：收起态零占位，展开态 flex 占满中部
            （title/倒计时徽标让位，main.css .header.search-open 控制） -->
-      <div class="header-search">
-        <input type="text" id="searchInput" placeholder="搜索..." autocomplete="off">
-      </div>
-      <div class="header-actions">
+            <div class="header-actions">
         <!-- 搜索入口：点击展开/收起（header-actions 最左，拍板 #3），与 pin/menu 同风格描边图标 -->
-        <button id="searchBtn" class="search-btn" title="搜索">
-          <svg class="search-btn-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
-            <line x1="15.8" y1="15.8" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-        </button>
-        <button id="pinBtn" class="pin-btn" title="固定窗口">
+                <button id="pinBtn" class="pin-btn" title="固定窗口">
           <svg class="pin-icon pin-icon--unpinned" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/>
             <circle cx="12" cy="12" r="2" fill="currentColor" opacity="0.4"/>
@@ -68,10 +59,24 @@
     </div>
 
     <div class="hint" id="hint">
-      现在复制任意文本（Ctrl+C），会自动出现在下方列表<br>
-      <small>全局快捷键 <kbd>Alt+V</kbd> 唤出窗口</small>
+      <span id="hintText">现在复制任意文本（Ctrl+C），会自动出现在下方列表<br>
+      <small>全局快捷键 <kbd>Alt+V</kbd> 唤出窗口</small></span>
     </div>
 
+    <!-- 内容顶部工具区（2026-10-30 UI v3）：搜索栏 + 标签筛选常驻（参考稿：
+         搜索栏圆角胶囊带图标；筛选 chips 移出 footer） -->
+    <div class="content-top">
+      <div class="search-bar">
+        <button id="searchBtn" class="search-btn" title="搜索">
+          <svg class="search-btn-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
+            <line x1="15.8" y1="15.8" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <input type="text" id="searchInput" placeholder="搜索历史内容... 支持 date:昨天 和 #标签" autocomplete="off">
+      </div>
+      <div class="tag-filter" id="tagFilter" hidden></div>
+    </div>
     <main class="list" id="list">
       <div class="empty">暂无剪贴板历史</div>
     </main>
@@ -92,11 +97,69 @@
       </svg>
     </button>
 
-    <!-- 底部状态栏：标签筛选条（#tagFilter，无标签时 hidden，位置不变）。
-         底部统计行已移除（2026-09-30）：计数唯一展示位收敛为 header #headerMeta（防重复） -->
-    <footer class="footer" id="footer">
-      <div class="tag-filter" id="tagFilter" hidden></div>
-    </footer>
+    <!-- 统计等级底栏（2026-11-05 UI 终版）：footer 常驻徽章——背景统计锚点最稳，
+         不受列表/hint 变化影响；hover 展开卡向上弹出；样式复用 .footer（win-alpha 透视）。 -->
+    <div class="footer" id="statsFooter">
+      <!-- 统计徽章（紧凑一行）+ hover 展开浮层（absolute 不占文档流） -->
+      <span class="footer-stats stats-show" id="statsBadge">
+        <span class="stats-medal">🏅</span>
+        <span class="stats-lv" id="statsLv">Lv2</span>
+        <span class="stats-title" id="statsTitle">归档助手</span>
+        <span class="stats-sep">·</span>
+        <span class="stats-today">今日 <b id="statsToday">15</b></span>
+        <!-- 展开浮层（absolute，不占 footer 高度） -->
+        <span class="stats-popover" id="statsPopover">
+          <div class="scs-panel scs-level" id="scsLevelTab">
+            <div class="scs-hero">
+              <div class="scs-ring-area">
+                <svg width="72" height="72" viewBox="0 0 28 28" class="scs-ring-svg">
+                  <defs>
+                    <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0" stop-color="#a29bfe"/>
+                      <stop offset="1" stop-color="#6c5ce7"/>
+                    </linearGradient>
+                  </defs>
+                  <circle class="scs-ring-track" cx="14" cy="14" r="12"/>
+                  <circle class="scs-ring-progress" id="shcRingFg" cx="14" cy="14" r="12"/>
+                </svg>
+                <div class="scs-ring-core"><span class="scs-lv-num" id="statsLvNum">2</span><span class="scs-lv-cap">LEVEL</span></div>
+              </div>
+              <div class="scs-hero-side">
+                <div class="scs-title-row"><span class="scs-rank-badge" title="段位徽章">🏅</span><span class="scs-title" id="statsTitleFull">归档助手</span></div>
+                <div class="scs-progress-line"><span class="scs-prog-text" id="shcNext">距 Lv3 还差 100 条</span><span class="scs-prog-pct" id="shcPct">0%</span></div>
+              </div>
+            </div>
+            <div class="scs-progress-track"><div class="scs-progress-fill" id="shcFill"></div></div>
+            <div class="scs-mini-row">
+              <div class="scs-chip scs-chip-flame" id="statsStreakLine">🔥 连续 0 天</div>
+              <div class="scs-chip">⚡ <b id="shcExpLv">0 exp</b></div>
+            </div>
+          </div>
+          <div class="scs-panel scs-today" id="scsTodayTab" style="display:none">
+            <div class="scs-stat-grid">
+              <div class="scs-tile"><span class="scs-tile-ic">📥</span><span class="scs-tile-num scs-num" id="shcCopy">15</span><span class="scs-tile-lb">今日复制</span></div>
+              <div class="scs-tile"><span class="scs-tile-ic">📤</span><span class="scs-tile-num scs-num" id="shcPaste">0</span><span class="scs-tile-lb">今日粘贴</span></div>
+              <div class="scs-tile"><span class="scs-tile-ic">🔥</span><span class="scs-tile-num scs-num" id="shcStreak">1</span><span class="scs-tile-lb">连续天数</span></div>
+              <div class="scs-tile"><span class="scs-tile-ic">⚡</span><span class="scs-tile-num scs-num" id="shcTotalExp">0</span><span class="scs-tile-lb">累计经验</span></div>
+            </div>
+          </div>
+          <div class="scs-panel scs-trend" id="scsTrendTab" style="display:none">
+            <div class="tr-chart" id="trChart"></div>
+            <div class="tr-tip" id="trTip">悬停柱体查看当日明细</div>
+            <div class="tr-legend">
+              <span class="tr-lg tr-lg-copy">复制</span>
+              <span class="tr-lg tr-lg-paste">粘贴</span>
+            </div>
+          </div>
+          <div class="scs-tabs" id="scsTabs">
+            <span class="scs-tab-glider" id="scsTabGlider"></span>
+            <button class="scs-tab scs-active" data-tab="level">等级</button>
+            <button class="scs-tab" data-tab="today">今日</button>
+            <button class="scs-tab" data-tab="trend">趋势</button>
+          </div>
+        </span>
+      </span>
+    </div>
   </div>
 
   <script src="i18n.js"></script>

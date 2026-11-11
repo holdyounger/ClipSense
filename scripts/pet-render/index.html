@@ -1,0 +1,232 @@
+<!doctype html>
+<!-- pet-render/index.html v3 - 个性化动作库离线渲染（2026-10-28）
+     模型：混元照片级比熊（890k 顶点原始精度，离线渲染不在乎体积）
+     输出：temp/pet-frames-hunyuan24/<动作名>/frame_XXXX.png（24fps）
+     动作表：14 个个性化动作，覆盖运行时全部状态机池（idle/click/hover/drag/react）
+     所有循环动作首尾无缝（周期函数整数频率）；单发动作首尾回中性站姿 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>html,body{margin:0;overflow:hidden;background:transparent}</style>
+<script type="importmap">
+{"imports":{"three":"../../node_modules/three/build/three.module.js","three/addons/":"../../node_modules/three/examples/jsm/"}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const { ipcRenderer } = require('electron');
+const fs = require('fs');
+const path = require('path');
+
+const OUT_ROOT = path.join(__dirname, '..', '..', 'temp', 'pet-frames-hunyuan24');
+const W = 300, H = 380, FPS = 24; // 2026-10-28：24fps 流畅度对齐网易
+const progress = (line) => ipcRenderer.send('render-progress', line);
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, W / H, 0.05, 50);
+camera.position.set(0, 0.75, 2.9);
+camera.lookAt(0, 0.6, 0);
+scene.add(new THREE.AmbientLight(0xffffff, 1.25));
+const key = new THREE.DirectionalLight(0xffffff, 1.5);
+key.position.set(1.2, 2.2, 2.4);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xdfe8ff, 0.6);
+fill.position.set(-1.5, 1.0, 1.5);
+scene.add(fill);
+
+const loader = new GLTFLoader();
+const buf = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'pet-model-hunyuan.glb'));
+const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+progress('GLB size=' + Math.round(buf.length / 1024 / 1024) + 'MB');
+
+loader.parse(arrayBuffer, '', (gltf) => {
+  const root = gltf.scene;
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const S = 1.2 / Math.max(0.0001, size.y);
+  progress('raw ' + size.x.toFixed(2) + 'x' + size.y.toFixed(2) + 'x' + size.z.toFixed(2) + ' S=' + S.toFixed(4));
+  root.scale.setScalar(S);
+  const b2 = new THREE.Box3().setFromObject(root);
+  const c2 = b2.getCenter(new THREE.Vector3());
+  root.position.set(root.position.x - c2.x, root.position.y - b2.min.y, root.position.z - c2.z);
+  const BASE_Y = root.position.y;
+  scene.add(root);
+
+  // 每帧渲染前重置到中性站姿，再由 pose 函数施加动作位移——杜绝跨帧污染
+  function reset() {
+    root.rotation.set(0, 0, 0);
+    root.scale.setScalar(S);
+    root.position.set(0, BASE_Y, 0);
+  }
+
+  // ==================== 个性化动作表（2026-10-28 小M：动作也要个性化） ====================
+  // 全部为整体刚体变换（模型无骨骼）；循环动作用整数频率保证首尾无缝
+  const ACTIONS = [
+    // ==================== idle 池（网易标准：4s 循环，多层叠加运动） ====================
+    // 设计语言：呼吸(2s) + 重心偏移(4s) + 头部张望(4/3s) + 微倾 —— 四层叠加才有"活物感"
+    { name: 'd1', frames: 96, pose: (f, N) => { // 优雅型：转身展示 + 四层呼吸
+        const t = f / N;
+        const br = Math.sin(t * Math.PI * 2 * 2);            // 呼吸层 2s
+        const sway = Math.sin(t * Math.PI * 2);               // 重心层 4s
+        const glance = Math.sin(t * Math.PI * 2 * 1.5);       // 张望层 2.67s
+        root.rotation.y = sway * 0.35 + glance * 0.2;
+        root.rotation.z = sway * 0.03;
+        root.position.x = sway * 0.05;
+        root.scale.set(S * (1 - 0.008 * br), S * (1 + 0.014 * br), S * (1 - 0.008 * br));
+      } },
+    { name: 'd2', frames: 96, pose: (f, N) => { // 好奇型：左右张望 + 耳动节奏 + 重心跟随
+        const t = f / N;
+        const br = Math.sin(t * Math.PI * 2 * 2);
+        const look = Math.sin(t * Math.PI * 2 * 1.5 + 0.5);
+        const lean = Math.sin(t * Math.PI * 2);
+        root.rotation.y = look * 0.6;
+        root.rotation.z = lean * 0.05;
+        root.position.x = lean * 0.06;
+        root.scale.set(S * (1 - 0.008 * br), S * (1 + 0.014 * br), S * (1 - 0.008 * br));
+      } },
+    { name: 'd3', frames: 96, pose: (f, N) => { // 活泼型：三连小跳 + 落地挤压 + 摇尾节奏
+        const t = f / N;
+        const hop = Math.abs(Math.sin(t * Math.PI * 3));
+        const sq = Math.max(0, Math.sin(t * Math.PI * 6));
+        const br = Math.sin(t * Math.PI * 2 * 2);
+        root.position.y = BASE_Y + hop * 0.10;
+        root.rotation.z = Math.sin(t * Math.PI * 6) * 0.07;
+        root.scale.set(S * (1 - 0.03 * sq - 0.006 * br), S * (1 + 0.04 * sq + 0.010 * br), S * (1 - 0.03 * sq));
+      } },
+    { name: 'd4', frames: 96, pose: (f, N) => { // 安静型：蹲坐打盹（平滑三段）+ 打盹呼吸
+        const t = f / N;
+        let c = t < 0.15 ? t / 0.15 : (t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25);
+        c = c * c * (3 - 2 * c);
+        const nap = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 3); // 打盹呼吸 1.33s/次
+        root.position.y = BASE_Y - c * 0.16;
+        root.rotation.x = c * 0.10;
+        root.rotation.z = c * Math.sin(t * Math.PI * 4) * 0.05;
+        root.scale.set(S * (1 + 0.02 * c), S * (1 - 0.10 * c + 0.012 * nap * c), S * (1 + 0.02 * c));
+      } },
+    // ==================== click 池（4s 标准；p1/p4 为 15s 表演动作） ====================
+    { name: 'p1', frames: 360, pose: (f, N) => { // 【15s 表演】扑蝶游戏：扑→停→张望→再扑→满足（多阶段编排）
+        const t = f / N;
+        const ph = t < 0.2 ? t / 0.2 : (t < 0.35 ? 1 : (t < 0.55 ? 1 - (t - 0.35) / 0.2 : (t < 0.7 ? 0 : (t < 0.9 ? (t - 0.7) / 0.2 : 1 - (t - 0.9) / 0.1))));
+        root.position.z = ph * 0.5;
+        root.scale.setScalar(S * (1 + 0.10 * ph));
+        root.rotation.x = -0.08 * ph;
+        root.rotation.y = Math.sin(t * Math.PI * 2 * 3) * 0.15; // 张望层
+        const br = Math.sin(t * Math.PI * 2 * 3.75);
+        root.scale.multiply(new THREE.Vector3(1 - 0.006 * br, 1 + 0.012 * br, 1 - 0.006 * br));
+      } },
+    { name: 'p2', frames: 96, pose: (f, N) => { // 开心转圈 + 小跳 + 落地挤压（三层）
+        const t = f / N;
+        root.rotation.y = t * Math.PI * 2;
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.10;
+        const sq = Math.abs(Math.sin(t * Math.PI * 4));
+        root.scale.set(S * (1 + 0.02 * sq), S * (1 + 0.02 * sq), S);
+      } },
+    { name: 'p3', frames: 96, pose: (f, N) => { // 扑向屏幕：两次前扑 + 中间退回（呼吸间隔）
+        const t = f / N;
+        const lunge = t < 0.5 ? Math.sin(t * Math.PI * 2) : Math.sin((t - 0.5) * Math.PI * 2);
+        root.position.z = Math.max(0, lunge) * 0.55;
+        root.scale.setScalar(S * (1 + 0.10 * Math.max(0, lunge)));
+        root.rotation.x = -0.08 * Math.max(0, lunge);
+      } },
+    { name: 'p4', frames: 360, pose: (f, N) => { // 【15s 表演】摇摆串烧：摇摆→停顿→反向→转圈→收尾（五段编排）
+        const t = f / N;
+        const seg = t < 0.2 ? 1 : (t < 0.35 ? 0 : (t < 0.55 ? -1 : (t < 0.75 ? 2 : 0)));
+        if (t < 0.2) root.rotation.z = Math.sin(t * Math.PI * 2 / 0.2) * 0.14;
+        else if (t < 0.35) { const br = Math.sin(t * Math.PI * 2 * 6); root.scale.set(S * (1 - 0.006 * br), S * (1 + 0.012 * br), S); }
+        else if (t < 0.55) root.rotation.z = Math.sin((t - 0.35) * Math.PI * 2 / 0.2) * 0.14;
+        else if (t < 0.75) root.rotation.y = (t - 0.55) / 0.2 * Math.PI * 2;
+        else { root.rotation.z = Math.sin((t - 0.75) * Math.PI * 2 / 0.25) * 0.06; root.position.y = BASE_Y + Math.abs(Math.sin((t - 0.75) * Math.PI * 2 / 0.25)) * 0.04; }
+      } },
+    { name: 'p5', frames: 96, pose: (f, N) => { // 好奇前倾 + 左右细看（前倾与张望叠加）
+        const t = f / N, l = Math.sin(t * Math.PI);
+        root.rotation.x = -0.22 * l;
+        root.position.z = l * 0.30;
+        root.rotation.y = Math.sin(t * Math.PI * 4) * 0.18 * l;
+      } },
+    // ==================== hover 池（网易标准 4s——慢节奏才有"被注视"的生动感） ====================
+    { name: 'z1', frames: 96, pose: (f, N) => { // 嗅探 ×4 + 重心跟随 + 尾部节奏
+        const t = f / N;
+        const dip = Math.abs(Math.sin(t * Math.PI * 4));
+        const sway = Math.sin(t * Math.PI * 2);
+        root.position.y = BASE_Y - dip * 0.06;
+        root.rotation.x = dip * 0.10;
+        root.position.z = dip * 0.12;
+        root.rotation.y = sway * 0.12;
+      } },
+    { name: 'z2', frames: 96, pose: (f, N) => { // 点头 ×6 + 身体随动
+        const t = f / N;
+        const nod = Math.abs(Math.sin(t * Math.PI * 6));
+        root.position.y = BASE_Y - nod * 0.05;
+        root.rotation.x = nod * 0.08;
+        root.rotation.z = Math.sin(t * Math.PI * 6 + 0.5) * 0.03;
+      } },
+    { name: 'z3', frames: 96, pose: (f, N) => { // 惊喜小跳 ×3 + 每次落地挤压衰减
+        const t = f / N;
+        const hop = Math.abs(Math.sin(t * Math.PI * 3));
+        const land = 1 - hop;
+        const decay = 1 - t * 0.4;
+        root.position.y = BASE_Y + hop * 0.10 * decay;
+        root.scale.set(S * (1 + 0.03 * land * decay), S * (1 - 0.04 * land * decay), S * (1 + 0.03 * land * decay));
+      } },
+    // ==================== drag 池（4s 无缝挣扎循环，四层叠加） ====================
+    { name: 't1', frames: 96, pose: (f, N) => { // 挣扎抗议：扭动 + 甩头 + 蹬腿节奏 + 高频抖
+        const t = f / N;
+        root.rotation.z = Math.sin(t * Math.PI * 2) * 0.15;
+        root.rotation.x = Math.sin(t * Math.PI * 4) * 0.06;
+        root.rotation.y = Math.sin(t * Math.PI * 2 + 0.8) * 0.18;
+        root.rotation.x += Math.sin(t * Math.PI * 8) * 0.02; // 高频抖动层
+        root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.03;
+      } },
+    // ==================== react 池（网易标准 4s，衰减编排） ====================
+    { name: 'heart1', frames: 96, pose: (f, N) => { // 兴奋：三连跳转圈 + 末段满足呼吸（衰减收尾）
+        const t = f / N, decay = 1 - t * 0.3;
+        if (t < 0.6) {
+          root.position.y = BASE_Y + Math.abs(Math.sin(t * Math.PI * 2 / 0.6 * 1.5)) * 0.16 * decay;
+          root.rotation.y = (t / 0.6) * Math.PI * 2;
+        } else {
+          const br = Math.sin((t - 0.6) * Math.PI * 2 * 2.5);
+          root.scale.set(S * (1 - 0.008 * br), S * (1 + 0.014 * br), S * (1 - 0.008 * br));
+        }
+      } },
+  ];
+
+  (async () => {
+    try {
+      let total = 0;
+      for (const act of ACTIONS) {
+        const outDir = path.join(OUT_ROOT, act.name);
+        fs.mkdirSync(outDir, { recursive: true });
+        for (let f = 0; f < act.frames; f++) {
+          reset();
+          act.pose(f, act.frames);
+          renderer.render(scene, camera);
+          const url = canvas.toDataURL('image/png');
+          fs.writeFileSync(path.join(outDir, 'frame_' + String(f).padStart(4, '0') + '.png'),
+            Buffer.from(url.split(',')[1], 'base64'));
+          if (f % 24 === 0) progress(act.name + ' ' + f + '/' + act.frames);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        total += act.frames;
+      }
+      ipcRenderer.send('render-done', 'personalized actions=' + ACTIONS.length + ' frames=' + total);
+    } catch (err) {
+      progress('渲染失败: ' + (err && err.message));
+      ipcRenderer.send('render-done', 'FAILED');
+    }
+  })();
+}, (err) => {
+  progress('GLB 解析失败: ' + (err && err.message));
+  ipcRenderer.send('render-done', 'FAILED');
+});
+</script>
+</body>
+</html>

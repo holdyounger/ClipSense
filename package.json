@@ -1,6 +1,6 @@
 {
   "name": "clipboard-spike",
-  "version": "1.0.13",
+  "version": "1.0.15",
   "description": "剪贴板程序可行性 spike demo —— 验证：剪贴板轮询监听 → 面板展示 → 点击回写",
   "main": "dist/main/index.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "prestart:dev": "npm run build:ts",
     "start:dev": "set NODE_ENV=development&& electron .",
     "build:ts": "tsc && node scripts/copy-assets.js",
+    "test": "node --test tests/*.test.js",
     "build": "npm run build:ts && electron-builder",
     "build:win": "npm run build:ts && electron-builder --win",
     "gen:icon": "node scripts/gen-icon.js"
@@ -26,7 +27,9 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "koffi": "^3.1.6"
+    "@pixiv/three-vrm": "^3.5.5",
+    "koffi": "^3.1.6",
+    "three": "^0.186.1"
   },
   "build": {
     "appId": "com.openclaw.ClipSense",

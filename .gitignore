@@ -18,3 +18,17 @@ Docs/*
 # ── 白名单：需要同步到远程的文档，按需增删 ──
 !Docs/CHANGELOG.md
 !Docs/PRD-*.md
+# ── 网易云桌宠逆向调研（本地专用，不同步） ──
+Docs/桌宠资产调研-网易云20261014/
+
+# ── 桌宠资产收口（2026-10-20）：版权/体积甄别后不入库，保留本地 ──
+# Live2D 官方示例模型与运行时（Live2D Inc. 版权，重分发受限）
+src/renderer/live2d/
+src/renderer/models/
+# 3D 实验模型（76MB 混元生成件 + VRM 试验件，超仓库体积极限）
+src/renderer/pet-model-hunyuan.glb
+src/renderer/pet-model.glb
+src/renderer/pet-model.vrm
+# 渲染探针日志（空文件）
+pet-render-log.txt
+src/renderer/pet-hunyuan-opt.glb

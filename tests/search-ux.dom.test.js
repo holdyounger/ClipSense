@@ -270,10 +270,12 @@ async function openViaIcon({ document: doc, window: win }) {
 }
 
 /** 模拟输入搜索词（走真实 input 事件链） */
-function typeWord(doc, word) {
+// T1 防抖（2026-11-02）：input 处理器 150ms 防抖后渲染，键入后需等防抖落地再断言
+async function typeWord(doc, word) {
   const input = doc.getElementById('searchInput');
   input.value = word;
   input.dispatch('input');
+  await new Promise(r => setTimeout(r, 400)); // > 150ms 防抖窗
   return input;
 }
 
@@ -300,8 +302,7 @@ describe('搜索图标展开（验收 1；拍板 #3 header-actions 最左）', (
     btn.dispatch('click', { target: btn });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '进入展开态');
-    assert.ok(header.classList.contains('search-open'), 'header 挂 search-open class');
+    assert.ok(!header.classList.contains('search-open'), '常驻搜索无展开态（2026-10-30 v3.1）');
     assert.equal(document.activeElement, input, '输入框已聚焦');
     assert.ok(window._calls.focusSearch >= 1, 'focusSearch IPC 已调用');
     assert.deepEqual(window._calls.setSearchActive, [true], 'focus 事件 → setSearchActive(true) 挂起自动隐藏');
@@ -323,18 +324,16 @@ describe('收起即清词（验收 2；拍板 #2 统一规则）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    const input = typeWord(document, 'alpha');
+    const input = await typeWord(document, 'alpha');
     assert.equal(api.getState().searchQuery, 'alpha');
     assert.equal(findItems(document.getElementById('list')).length, 1, '过滤生效');
 
     input.blur(); // 真实 blur 事件 → 收起
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false, '已收起');
-    assert.ok(!document.getElementById('header').classList.contains('search-open'));
-    assert.equal(api.getState().searchQuery, '', 'searchQuery 已清');
-    assert.equal(input.value, '', 'input.value 已清');
-    assert.equal(findItems(document.getElementById('list')).length, 2, '列表回到未过滤态');
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（常驻搜索：blur 不清词）');
+    assert.equal(input.value, 'alpha', 'input 值保留');
+    assert.equal(findItems(document.getElementById('list')).length, 1, '过滤态保持');
     assert.ok(window._calls.blurSearch >= 1, 'blurSearch IPC 已调用');
     assert.equal(window._calls.setSearchActive[window._calls.setSearchActive.length - 1], false, '恢复自动隐藏');
   });
@@ -343,41 +342,39 @@ describe('收起即清词（验收 2；拍板 #2 统一规则）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     // 展开 + 持焦态：直接对 document 派发 header 外点击（真实链路由 blur 先行，此处幂等）
     document.dispatch('click', { target: document.getElementById('list') });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false);
-    assert.equal(api.getState().searchQuery, '');
-    assert.equal(findItems(document.getElementById('list')).length, 2);
+    assert.equal(api.getState().searchQuery, 'alpha', '点击外部不清词（常驻搜索）');
+    assert.equal(findItems(document.getElementById('list')).length, 1, '过滤态保持');
+    
   });
 
   test('路径二b：展开未持焦（重显态）点击 header 外 → 清词收起', async () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
     document.activeElement = null; // 模拟焦点已不在输入框（无 blur 可走）
 
     document.dispatch('click', { target: document.getElementById('list') });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false);
-    assert.equal(api.getState().searchQuery, '');
+    assert.equal(api.getState().searchQuery, 'alpha', '未持焦点击外部同样不清词（常驻搜索）');
   });
 
   test('路径二c：点击 header 内（pinBtn 区域语义）不触发外点收起', async () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     document.dispatch('click', { target: document.getElementById('header') });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, 'header 内点击不收起');
     assert.equal(api.getState().searchQuery, 'alpha');
   });
 
@@ -385,7 +382,7 @@ describe('收起即清词（验收 2；拍板 #2 统一规则）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    const input = typeWord(document, 'alpha');
+    const input = await typeWord(document, 'alpha');
     const [spy, fn] = preventSpy();
 
     input.dispatch('keydown', { key: 'Escape', preventDefault: fn });
@@ -401,15 +398,15 @@ describe('收起即清词（验收 2；拍板 #2 统一规则）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     const btn = await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
     assert.equal(document.activeElement, document.getElementById('searchInput'));
 
     btn.dispatch('click', { target: btn });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false, 'toggle 收起');
-    assert.equal(api.getState().searchQuery, '');
-    assert.equal(findItems(document.getElementById('list')).length, 2);
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（图标不再清词）');
+    assert.equal(document.activeElement, document.getElementById('searchInput'), '重新聚焦');
+    assert.equal(findItems(document.getElementById('list')).length, 1, '过滤态保持（词保留）');
   });
 });
 
@@ -424,10 +421,9 @@ describe('Esc 三态 + IME（验收 3）', () => {
     input.dispatch('keydown', { key: 'Escape', preventDefault: fn });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false, '无词收起');
+    
     assert.equal(api.getState().searchQuery, '');
     assert.equal(spy.called, true);
-    assert.ok(window._calls.blurSearch >= 1, '恢复自动隐藏');
   });
 
   test('未展开 → 无动作（不 preventDefault、状态不变）', async () => {
@@ -437,21 +433,20 @@ describe('Esc 三态 + IME（验收 3）', () => {
 
     document.dispatch('keydown', { key: 'Escape', preventDefault: fn });
 
-    assert.equal(api.getSearchOpen(), false, '保持收起');
-    assert.equal(spy.called, false, '未展开不 preventDefault');
+    assert.equal(spy.called, true, 'Esc 恒拦截默认（无词时幂等清词）');
+    assert.equal(api.getState().searchQuery, '');
   });
 
   test('IME 组合中（isComposing）→ 忽略，展开态与词保持', async () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    const input = typeWord(document, 'alpha');
+    const input = await typeWord(document, 'alpha');
     const [spy, fn] = preventSpy();
 
     input.dispatch('keydown', { key: 'Escape', isComposing: true, preventDefault: fn });
     document.dispatch('keydown', { key: 'Escape', isComposing: true, preventDefault: fn });
 
-    assert.equal(api.getSearchOpen(), true, '仍展开');
     assert.equal(api.getState().searchQuery, 'alpha', '词保留');
     assert.equal(spy.called, false, 'IME 组合中不触发');
   });
@@ -460,14 +455,13 @@ describe('Esc 三态 + IME（验收 3）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
     document.activeElement = null;
 
     document.dispatch('keydown', { key: 'Escape' });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false);
-    assert.equal(api.getState().searchQuery, '');
+    assert.equal(api.getState().searchQuery, '', '未持焦 Esc 兜底清词（document 级）');
   });
 });
 
@@ -480,7 +474,6 @@ describe('Ctrl+F 直达搜索（验收 4；不做 globalShortcut）', () => {
     document.dispatch('keydown', { ctrlKey: true, code: 'KeyF', preventDefault: fn });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true);
     assert.equal(document.activeElement, document.getElementById('searchInput'));
     assert.equal(spy.called, true, 'preventDefault 已调用');
     assert.ok(window._calls.focusSearch >= 1);
@@ -490,13 +483,12 @@ describe('Ctrl+F 直达搜索（验收 4；不做 globalShortcut）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    const input = typeWord(document, 'alpha');
+    const input = await typeWord(document, 'alpha');
     const focusCountBefore = window._calls.focusSearch;
 
     document.dispatch('keydown', { ctrlKey: true, code: 'KeyF' });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '保持展开');
     assert.equal(api.getState().searchQuery, 'alpha', '词不清');
     assert.equal(input.value, 'alpha', 'input 值不变');
     assert.ok(window._calls.focusSearch > focusCountBefore, 'focusSearch 重新调用');
@@ -533,20 +525,19 @@ describe('重显自洽（验收 5）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
     const focusCountBefore = window._calls.focusSearch;
     const sasCountBefore = window._calls.setSearchActive.length;
 
     // 窗口隐藏 → 重新可见（隐藏侧无行为；可见侧触发重显自洽）
     document.visibilityState = 'hidden';
     document.dispatch('visibilitychange');
-    assert.equal(api.getSearchOpen(), true, '隐藏侧无行为');
 
     document.visibilityState = 'visible';
     document.dispatch('visibilitychange');
     await flushAsync();
 
-    assert.ok(document.getElementById('header').classList.contains('search-open'), '搜索框视觉展开');
+    assert.ok(!document.getElementById('header').classList.contains('search-open'), '常驻搜索无展开态');
     assert.equal(api.getState().searchQuery, 'alpha', '词保留（隐藏不是收起路径）');
     assert.equal(window._calls.focusSearch, focusCountBefore, '不调 focusSearch，不抢焦点');
     assert.equal(window._calls.setSearchActive.length, sasCountBefore, '不触发 setSearchActive');
@@ -557,7 +548,7 @@ describe('重显自洽（验收 5）', () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
     document.activeElement = null;
     const focusCountBefore = window._calls.focusSearch;
 
@@ -567,7 +558,7 @@ describe('重显自洽（验收 5）', () => {
     document.dispatch('visibilitychange');
     await flushAsync();
 
-    assert.ok(document.getElementById('header').classList.contains('search-open'));
+    assert.ok(!document.getElementById('header').classList.contains('search-open'), '常驻搜索无展开态');
     assert.equal(api.getState().searchQuery, 'alpha');
     assert.equal(window._calls.focusSearch, focusCountBefore);
   });
@@ -583,7 +574,7 @@ describe('重显自洽（验收 5）', () => {
     document.dispatch('visibilitychange');
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '展开态本身保持（未收起过）');
+    
     const { api: api2, document: doc2 } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     doc2.visibilityState = 'visible';
@@ -610,10 +601,8 @@ describe('搜索态挂起/恢复联动（验收 6）', () => {
 
     input.dispatch('keydown', { key: 'Escape' });
     await flushAsync();
-    assert.deepEqual(window._calls.setSearchActive, [true, false, true, false], 'Esc：恢复');
-
-    assert.equal(window._calls.focusSearch, 2, 'focusSearch 与两次展开配对');
-    assert.equal(window._calls.blurSearch, 2, 'blurSearch 与两次收起配对（双保险链路）');
+    // 常驻搜索（2026-10-30 v3.1）：Esc 只清词（此时词已空 → 幂等无新 IPC），不再有「收起」态
+    assert.deepEqual(window._calls.blurSearch >= 1, true, 'blurSearch 已配对（前序 blur）');
     assert.equal(api.getSearchOpen(), false);
   });
 });
@@ -628,7 +617,7 @@ describe('Esc 与标签筛选独立（拍板 #1）', () => {
     assert.equal(api.getState().activeTagFilter, 'link');
 
     await openViaIcon({ document, window });
-    const input = typeWord(document, 'alpha');
+    const input = await typeWord(document, 'alpha');
     input.dispatch('keydown', { key: 'Escape' });
     await flushAsync();
 
@@ -791,22 +780,21 @@ describe('实机 BUG 修复回归：伪 blur 过滤 + 面板级焦点启用（20
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     const input = document.getElementById('searchInput');
     document.activeElement = input; // 模拟 IME/窗口失活伪 blur：DOM 焦点未转移
     input.dispatch('blur', { relatedTarget: null });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '展开态保持');
-    assert.equal(api.getState().searchQuery, 'alpha', '词保留');
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（伪 blur 不清词）');
   });
 
   test('BUG2：伪 blur（焦点转移到 header 自身）→ 不收起', async () => {
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     const header = document.getElementById('header');
     const input = document.getElementById('searchInput');
@@ -814,7 +802,7 @@ describe('实机 BUG 修复回归：伪 blur 过滤 + 面板级焦点启用（20
     input.dispatch('blur', { relatedTarget: header });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '展开态保持');
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（常驻搜索无收起态）');
     assert.equal(api.getState().searchQuery, 'alpha', '词保留');
   });
 
@@ -822,7 +810,7 @@ describe('实机 BUG 修复回归：伪 blur 过滤 + 面板级焦点启用（20
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     const input = document.getElementById('searchInput');
     const list = document.getElementById('list');
@@ -830,8 +818,7 @@ describe('实机 BUG 修复回归：伪 blur 过滤 + 面板级焦点启用（20
     input.dispatch('blur', { relatedTarget: list });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false, '真实转移才收起');
-    assert.equal(api.getState().searchQuery, '', '清词');
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（常驻搜索：blur 不清词）');
   });
 
   test('BUG1：面板任意 pointerdown → focusSearch 启用键盘焦点', async () => {
@@ -852,7 +839,7 @@ describe('实机 BUG 修复回归二：Escape 按键检查 + 输入框 no-drag�
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     const input = document.getElementById('searchInput');
     // 实机 BUG2 复现路径：输入框持焦后按任意键 → 旧代码 handleSearchEscape 缺
@@ -861,7 +848,7 @@ describe('实机 BUG 修复回归二：Escape 按键检查 + 输入框 no-drag�
     input.dispatch('keydown', { key: 'F', code: 'KeyF', ctrlKey: true });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), true, '展开态保持');
+    assert.equal(api.getState().searchQuery, 'alpha', '词保留（常驻搜索无收起态）');
     assert.equal(api.getState().searchQuery, 'alpha', '词保留');
   });
 
@@ -869,13 +856,13 @@ describe('实机 BUG 修复回归二：Escape 按键检查 + 输入框 no-drag�
     const { api, document, window } = loadHarness({ history: TWO_ITEMS });
     await flushAsync();
     await openViaIcon({ document, window });
-    typeWord(document, 'alpha');
+    await typeWord(document, 'alpha');
 
     const input = document.getElementById('searchInput');
     input.dispatch('keydown', { key: 'Escape', preventDefault: () => {} });
     await flushAsync();
 
-    assert.equal(api.getSearchOpen(), false, 'Esc 收起正常');
+    
     assert.equal(api.getState().searchQuery, '', '清词正常');
   });
 
@@ -970,7 +957,7 @@ describe('标签搜索：#tag 语法 + 标签内容匹配（2026-09-11）', () =
   test('DOM 全链路：#tag 输入 → 列表只渲染命中条目', async () => {
     const { api, document } = loadHarness({ history: TAGGED });
     await flushAsync(); // 初始 getHistory 异步装载 fullHistory
-    typeWord(document, '#链接'); // input 事件同步触发 renderHistory
+    await typeWord(document, '#链接'); // T1 防抖（2026-11-02）：typeWord 内已等 400ms 防抖窗
     const list = document.getElementById('list');
     assert.equal(findItems(list).length, 1);
   });

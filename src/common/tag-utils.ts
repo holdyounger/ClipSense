@@ -58,6 +58,7 @@
   /** 双端共用收口对象（module.exports / window.__clipSenseTagUtils） */
   interface TagUtilsApi {
     computeTags: (text: unknown, options?: ComputeTagsOptions) => string[] | null;
+    pickBarTag: (tags: string[] | null | undefined) => string | null;
     normalizeEnabled: (settings?: TagSettingsInput | null) => Record<TagId, boolean>;
     luhnCheck: (digits: string) => boolean;
     MAX_INPUT_LENGTH: number;
@@ -894,6 +895,13 @@
   }
 
   const api: TagUtilsApi = {
+    /** 类型高亮条取色标签（2026-10-30 UI v3）：首个内置着色标签，无则 null */
+    pickBarTag: function (tags: string[] | null | undefined): string | null {
+      const BAR_TAGS = ['link', 'email', 'otp', 'snippet'];
+      const list = Array.isArray(tags) ? tags : [];
+      for (const t of BAR_TAGS) if (list.indexOf(t) !== -1) return t;
+      return null;
+    },
     computeTags, normalizeEnabled, luhnCheck, MAX_INPUT_LENGTH, MAX_TAGS, TAG_PRIORITY,
     // v2 新增识别器单独导出（测试/诊断用；computeTags 内部已带隔离与 enabled 门控）
     detectVuln, detectCmd, detectStack, detectConfig, detectIp, detectIppub, detectHash, detectPath,

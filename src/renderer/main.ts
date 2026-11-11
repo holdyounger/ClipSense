@@ -61,6 +61,7 @@ interface Window {
     openPath: (path: string) => Promise<{ ok?: boolean; error?: string }>;
     simulateInput: (id: string) => Promise<{ ok?: boolean; error?: string }>;
     removeItem: (id: string) => Promise<unknown>;
+    toggleItemPin: (id: string) => Promise<{ ok?: boolean; pinned?: boolean; count?: number; error?: string }>;
     openFileLocation: (path: string) => Promise<{ ok?: boolean; error?: string } | null>;
     openExternal: (url: string) => Promise<{ ok?: boolean; error?: string } | null>;
     getFileIcon: (path: string) => Promise<string | null>;
@@ -86,6 +87,7 @@ interface Window {
     onWindowOpacity: (cb: (alpha: number) => void) => void;
     onWindowVisibility: (cb: (visible: boolean) => void) => void;
     onModifierPassthrough: (cb: (active: boolean) => void) => void;
+    onStatsSummary: (cb: (summary: Record<string, unknown>) => void) => void;
     onLangChanged: (cb: (lang: string) => void) => void;
     onAboutShow: (cb: (version: string) => void) => void;
     onTagSettingsUpdated: (cb: (settings: RendererTagSettings) => void) => void;
@@ -101,7 +103,9 @@ interface Window {
 const listEl = document.getElementById('list')!;
 const pinBtn = document.getElementById('pinBtn')!;
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null; // T1 搜索防抖（2026-11-02）
 const hintEl = document.getElementById('hint')!;
+const hintTextEl = document.getElementById('hintText')!; // Bug 修复（2026-11-05）：hint 区含内嵌徽章，innerHTML 整写 #hint 会销毁徽章 DOM——文字改写独立 span
 // 返回顶部（2026-10-13 UI 重设计 v2）：单钮 + 环形进度
 const backTopBtn = document.getElementById('backTopBtn') as HTMLButtonElement;
 const bttRingFill = document.getElementById('bttRingFill') as HTMLElement;
@@ -269,7 +273,7 @@ function applyStaticText(): void {
 
   titleEl.textContent = t('title');
   hintEl.classList.remove('hint--compact');
-  hintEl.innerHTML = t('hintHtml');
+  hintTextEl.innerHTML = t('hintHtml');
 
   // 设置为不可选中，避免误触发选中状态
   hintEl.style.userSelect = 'none';
@@ -301,12 +305,12 @@ let hintCollapseTimer: ReturnType<typeof setTimeout> | null = null;
 
 function expandHint(): void {
   hintEl.classList.remove('hint--compact');
-  hintEl.innerHTML = t('hintHtml');
+  hintTextEl.innerHTML = t('hintHtml');
 }
 
 function collapseHint(): void {
   hintEl.classList.add('hint--compact');
-  hintEl.innerHTML = t('hintSmallHtml');
+  hintTextEl.innerHTML = t('hintSmallHtml');
 }
 
 hintEl.addEventListener('mouseenter', () => {
@@ -341,9 +345,32 @@ const renderCtx = {
   timeStr,
   flashItem,
   enabledTags: null as Set<string> | null, // Set<tagId> | null（null = 全部可用）；由 applyTagSettings 维护
+  // T4 空态区分（2026-11-02）：getter 动态回读 searchQuery——renderHistory 空态分支
+  // 需要区分「真空历史」与「无匹配」两种空态（spec S6）
+  get searchQuery() { return searchQuery; },
 };
 
+/** 轻量 toast（2026-11-11 FR5）：置顶位满等即时反馈，2s 自动消失 */
+function showToast(msg: string): void {
+  const el = document.createElement('div');
+  el.className = 'app-toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
 const renderHandlers: RenderHandlers = {
+  // R3（2026-11-02）：无匹配空态「清除搜索」快捷操作 → collapseSearch 清词
+  // 置顶 toggle（2026-11-11 FR1/FR5）：成功后 refresh 拉新序；满额 toast（FR5）
+  onTogglePin: async (item) => {
+    const r = await window.clipboardAPI.toggleItemPin(item.id);
+    if (!r || r.ok === false) {
+      showToast(r && r.error === 'pin-limit' ? '置顶位已满，请先取消部分置顶' : '置顶操作失败');
+      return;
+    }
+    await refresh();
+  },
+  onClearSearch: () => collapseSearch(),
   onCopy: async (item, el) => {
     const res = await window.clipboardAPI.copyItem(item.id);
     if (res.ok) {
@@ -427,18 +454,20 @@ function itemDayKey(ts: number): string {
  *    再 OR 入库时间串
  */
 function filterHistory(history: MainHistoryItem[]): MainHistoryItem[] {
-  let list = history;
+  // FR7 置顶豁免（2026-11-11）：置顶条目恒显示（钉住即所见），筛选只作用于普通区
+  const pinned = history.filter((i) => i.pinned);
+  let list = history.filter((i) => !i.pinned);
   // 标签筛选（前置交集）：标签 ∩ 搜索子串 ∩ date:（2026-09-09 自动打标签）
   if (activeTagFilter) {
     // 闭包不保留 let 窄化；filter 同步执行，运行时与 .js 完全一致（含 includes(null) 返 false 的理论分支）
     list = list.filter(item => Array.isArray(item.tags) && item.tags.includes(activeTagFilter!));
   }
   const q = searchQuery.toLowerCase().trim();
-  if (!q) return list;
+  if (!q) return pinned.concat(list);
 
   // #tag 前缀解析（2026-09-11）：与 date: 交集组合（如 `#验证码 date:昨天`）
   const { tagIds, textQ: tagRest, invalid } = parseTagQuery(q);
-  if (invalid) return []; // 未知 #tag = 无匹配（对齐 date: 非日期语义）
+  if (invalid) return pinned; // 未知 #tag = 普通区无匹配，置顶区恒显示（FR7）
 
   let dateCond: DateQuery | null = null;
   let textQ = tagRest;
@@ -448,7 +477,7 @@ function filterHistory(history: MainHistoryItem[]): MainHistoryItem[] {
     const firstToken = rest.split(/\s+/)[0] || '';
     const dateParsed = parseDateQuery(firstToken);
     // date: 模式必须日期开头，非日期 = 无匹配（2026-09-03 用户定）
-    if (!dateParsed) return [];
+    if (!dateParsed) return pinned;
     dateCond = dateParsed;
     // 剩余词作为内容过滤（可为空 = 只按日期）
     textQ = rest.slice(firstToken.length).trim();
@@ -458,7 +487,7 @@ function filterHistory(history: MainHistoryItem[]): MainHistoryItem[] {
   }
 
   // 条件交集：date:（若在）∩ #tag（若在）∩ 内容/时间/标签名子串（若在）
-  return list.filter(item => {
+  return pinned.concat(list.filter(item => {
     if (dateCond) {
       if (dateCond.key) {
         if (itemDayKey(item.timestamp) !== dateCond.key) return false;
@@ -488,7 +517,7 @@ function filterHistory(history: MainHistoryItem[]): MainHistoryItem[] {
     const fullTime = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
       `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     return fullTime.includes(textQ);
-  });
+  }));
   // TODO（标签自动补全，可选加分项，2026-09-11 暂不实现）：输入框 value 以 # 结尾或
   // 正在输入 # 后片段时，浮层列出 12 类标签中文名（TAG_ORDER × t(tagI18nKey(id))），
   // Tab/点击填充为 `#<显示名> `。实现位置：searchInput keydown（Tab 拦截）+ 绝对定位
@@ -506,7 +535,9 @@ function updateStats(): void {
   // 数据源：total = fullHistory.length；rel = history[0].timestamp
   // 相对时间（3 分钟前/2 小时前/昨天）。防御式取用：旧 DOM 桩 harness（new Function
   // 不含 header-hover-ui.js）下 formatRelativeTime 未定义 → 辅助行置空降级。
-  const metaEl = document.getElementById('headerMeta');
+  // 2026-11-05 统计徽章嵌入后：headerMeta 含内嵌徽章 DOM——textContent 整写会销毁它。
+  // meta 文字改写独立内层 span（index.html 同步补 <span id="headerMetaText">）。
+  const metaEl = document.getElementById('headerMetaText');
   if (metaEl) {
     const latest = fullHistory[0];
     if (latest && typeof formatRelativeTime === 'function') {
@@ -516,6 +547,215 @@ function updateStats(): void {
       metaEl.textContent = '';
     }
   }
+}
+
+// ========== 统计等级徽章（2026-11-05 spec-统计与等级模块 §3.1） ==========
+// 主进程 stats:summary 推送（复制/粘贴埋点驱动）→ HUD 弹窗纯展示。
+// footer 常驻徽章 + tab 切换（等级/今日）+ 趋势图。
+// DOM 桩 harness 不含 statsFooter 元素 → 全程可选链防御静默降级。
+let _lastStatsLevel = 0; // 升级检测锚（首帧 0，首次推送不触发脉冲）
+let _ringTarget = 0;     // 环目标 offset（等级 tab 打开动画重触发用）
+let _fillPct = 0;        // 进度条目标宽度 %（同上）
+let _activeStatsTab = 'level'; // 当前激活 tab（悬停切换护栏：流光只在真实切换时播放）
+
+function applyStatsSummary(s: { level: number; title: string; nextNeed: number; progress: number;
+  todayCopy: number; todayPaste: number; streakCurrent: number; streakBest: number; totalCopy?: number; exp?: number;
+  last7?: Array<{ key: string; copy: number; paste: number }> }): void {
+  // footer 徽章常驻显示
+  const badge = document.getElementById('statsBadge');
+  if (badge) badge.classList.add('stats-show');
+
+  // 数据绑定（新 DOM 元素 ID）
+  const setText = (id: string, v: string): void => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  setText('statsLv', String(s.level));         // 环心数字
+  setText('statsLvNum', String(s.level));      // 等级 tab 环心大数字（此前未绑定，静态 2）
+  setText('statsTitle', s.title);               // 称号（footer 徽章）
+  setText('statsTitleFull', s.title);           // 称号（等级 tab，此前未绑定）
+  setText('shcCopy', String(s.todayCopy));     // 今日复制
+  setText('shcPaste', String(s.todayPaste));   // 今日粘贴
+  setText('shcStreak', String(s.streakCurrent)); // 连续天数
+  setText('shcTotalExp', String(s.exp ?? s.totalCopy ?? 0)); // 累计经验（summary 键为 exp，此前读 totalCopy 恒 0——顺手修复）
+  setText('shcExpLv', (s.exp ?? s.totalCopy ?? 0) + ' exp'); // 等级 tab 经验 chip（新增）
+  setText('statsStreakLine', `🔥 连续 ${s.streakCurrent} 天`); // 等级 tab streak chip（此前未绑定，静态文案——顺手修复）
+  setText('shcPct', Math.round(s.progress * 100) + '%'); // 进度百分比（新增）
+
+  // 环/进度条目标值存模块变量（开臵动画由 switchStatsTab 重触发）
+  _ringTarget = Math.round(75.4 * (1 - s.progress) * 10) / 10;
+  _fillPct = Math.round(s.progress * 100);
+  const ring = document.getElementById('shcRingFg');
+  if (ring) {
+    (ring as unknown as SVGCircleElement).style.strokeDashoffset = String(_ringTarget);
+  }
+  // 进度条（width 0→100%）
+  const fill = document.getElementById('shcFill');
+  if (fill) fill.style.width = _fillPct + '%';
+  // 升级进度文案
+  setText('shcNext', s.nextNeed > 0
+    ? `距 Lv${s.level + 1} 还差 ${s.nextNeed} 条`
+    : '已达最高等级 · 剪贴板传奇');
+
+  // 趋势 tab（2026-11-11）：近 7 日复制/粘贴双色柱（今天在前，HUD 风格）
+  const trChart = document.getElementById('trChart');
+  if (trChart && Array.isArray(s.last7)) {
+    const max = Math.max(1, ...s.last7.map((d) => Math.max(d.copy, d.paste)));
+    trChart.innerHTML = '';
+    for (const d of s.last7) {
+      const col = document.createElement('div');
+      col.className = 'tr-col';
+      const bars = document.createElement('div');
+      bars.className = 'tr-bars';
+      const mkBar = (cls: string, v: number, label: string) => {
+        const b = document.createElement('div');
+        b.className = cls;
+        b.style.height = Math.max(2, Math.round((v / max) * 64)) + 'px';
+        b.title = `${d.key.slice(5)} · ${label} ${v}`;
+        return b;
+      };
+      bars.appendChild(mkBar('tr-b-copy', d.copy, '复制'));
+      bars.appendChild(mkBar('tr-b-paste', d.paste, '粘贴'));
+      const day = document.createElement('div');
+      day.className = 'tr-day';
+      day.textContent = d.key.slice(5);
+      col.dataset.day = d.key;
+      col.dataset.copy = String(d.copy);
+      col.dataset.paste = String(d.paste);
+      col.appendChild(bars);
+      col.appendChild(day);
+      trChart.appendChild(col);
+    }
+    // 趋势 hover 明细（2026-11-11 FR：hover 显示当日具体数量）
+    const tip = document.getElementById('trTip');
+    if (tip) {
+      tip.textContent = '悬停柱体查看当日明细';
+      trChart.addEventListener('mouseover', (e: Event) => {
+        const col = (e.target as HTMLElement).closest('.tr-col') as (HTMLElement & { dataset: Record<string, string> }) | null;
+        if (col && col.dataset.day) {
+          tip.textContent = `${col.dataset.day.slice(5)} · 复制 ${col.dataset.copy} · 粘贴 ${col.dataset.paste}`;
+        }
+      });
+      trChart.addEventListener('mouseleave', () => {
+        tip.textContent = '悬停柱体查看当日明细';
+      });
+    }
+  }
+
+  // 升级脉冲（level 变大才触发；首帧 _lastStatsLevel=0 不触发）
+  if (_lastStatsLevel > 0 && s.level > _lastStatsLevel) {
+    const lvNum = document.getElementById('statsLv');
+    if (lvNum) {
+      lvNum.classList.remove('shc-pulse');
+      void (lvNum as HTMLElement).offsetWidth;
+      lvNum.classList.add('shc-pulse');
+    }
+  }
+  _lastStatsLevel = s.level;
+}
+
+// tab 切换（事件委托）
+function switchStatsTab(name: string): void {
+  if (name === _activeStatsTab) return; // 悬停重复触发护栏：流光只在真实切换时播放
+  _activeStatsTab = name;
+  let activeBtn: HTMLElement | null = null;
+  document.querySelectorAll('.scs-tab').forEach(b => {
+    const on = (b as HTMLElement).dataset.tab === name;
+    b.classList.toggle('scs-active', on);
+    if (on) activeBtn = b as HTMLElement;
+  });
+  document.querySelectorAll('.scs-panel').forEach(p => {
+    (p as HTMLElement).style.display =
+      (p as HTMLElement).classList.contains('scs-' + name) ? '' : 'none';
+  });
+  // 流光滑轨滑移到激活 tab（2026-11-11：底部光轨 + 每次切换单次高光扫过）
+  // DOM 桩 harness 无 querySelector → getElementById（滑轨 id=scsTabGlider）
+  const glider = document.getElementById('scsTabGlider');
+  if (glider && activeBtn) {
+    glider.style.left = (activeBtn as HTMLElement).offsetLeft + 'px';
+    glider.style.width = (activeBtn as HTMLElement).offsetWidth + 'px';
+    // 单次流光：随滑移扫一道（替代常驻无限扫）
+    glider.classList.remove('scs-shine');
+    void glider.offsetWidth;
+    glider.classList.add('scs-shine');
+  }
+  // 等级 tab 打开动画重触发（2026-11-11 个性化）：环充能 + 进度条生长
+  if (name === 'level') {
+    const ring = document.getElementById('shcRingFg') as SVGCircleElement | null;
+    if (ring) {
+      ring.style.transition = 'none';
+      ring.style.strokeDashoffset = '75.4';
+      void ring.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        ring.style.transition = 'stroke-dashoffset 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+        ring.style.strokeDashoffset = String(_ringTarget);
+      });
+    }
+    const fill = document.getElementById('shcFill');
+    if (fill) {
+      fill.style.transition = 'none';
+      fill.style.width = '0%';
+      void fill.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        fill.style.transition = 'width 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
+        fill.style.width = _fillPct + '%';
+      });
+    }
+  }
+}
+
+// 绑定 tab 点击事件（statsFooter 内事件委托）
+const statsFooterEl = document.getElementById('statsFooter');
+if (statsFooterEl) {
+  statsFooterEl.addEventListener('click', (e: Event) => {
+    const tab = (e.target as HTMLElement).closest('.scs-tab');
+    if (tab) switchStatsTab((tab as HTMLElement).dataset.tab || 'level');
+  });
+
+  // tab 悬停切换（2026-11-11 小M：免点选，鼠标位置直接切换）+ 初始流光定位
+  // DOM 桩 harness 无 querySelector → getElementById + children 索引（id=scsTabs 子元素：[滑轨, 等级, 今日, 趋势]）
+  const tabsEl = document.getElementById('scsTabs') as HTMLElement | null;
+  if (tabsEl) {
+    tabsEl.addEventListener('mouseover', (e: Event) => {
+      const tab = (e.target as HTMLElement).closest('.scs-tab') as HTMLElement | null;
+      if (tab && tab.dataset.tab && tab.dataset.tab !== _activeStatsTab) {
+        switchStatsTab(tab.dataset.tab);
+      }
+    });
+    const gliderInit = document.getElementById('scsTabGlider');
+    const firstTab = tabsEl.children[1] as HTMLElement | undefined;
+    if (gliderInit && firstTab) {
+      gliderInit.style.left = firstTab.offsetLeft + 'px';
+      gliderInit.style.width = firstTab.offsetWidth + 'px';
+    }
+  }
+  // 点击徽章 toggle 弹窗（2026-11-05 小M：hover 经过间隙时弹窗消失无法点击）
+  const badgeEl = document.getElementById('statsBadge');
+  if (badgeEl) {
+    badgeEl.addEventListener('click', (e: Event) => {
+      // v4.1 修复（2026-11-10 小M：弹窗 tab 无法切换根因）：tab 点击放行到
+      // statsFooter 委托——此前 stopPropagation 在 badge 层吞掉事件，
+      // switchStatsTab 永不执行，且误 toggle 弹窗开关
+      if ((e.target as HTMLElement).closest('.scs-tab')) return;
+      e.stopPropagation();
+      badgeEl.classList.toggle('stats-click-open');
+    });
+    // 点击弹窗外关闭
+    document.addEventListener('click', (e: Event) => {
+      if (!badgeEl.contains(e.target as Node)) {
+        badgeEl.classList.remove('stats-click-open');
+      }
+    });
+    // 鼠标离开徽章/弹窗 → 自动关闭（2026-11-11：hover 即开即走）
+    badgeEl.addEventListener('mouseleave', () => {
+      badgeEl.classList.remove('stats-click-open');
+    });
+  }
+}
+
+// 启动静默推送消费：主进程 did-finish-load 后推一次（面板徽章数据就绪）
+if (window.clipboardAPI && typeof (window.clipboardAPI as unknown as { onStatsSummary?: unknown }).onStatsSummary === 'function') {
+  (window.clipboardAPI as unknown as { onStatsSummary: (cb: (s: { level: number; title: string; nextNeed: number; progress: number; todayCopy: number; todayPaste: number; streakCurrent: number; streakBest: number; totalCopy?: number }) => void) => void }).onStatsSummary(applyStatsSummary);
 }
 
 // ========== 自动打标签：筛选条与设置（2026-09-09） ==========
@@ -559,11 +799,14 @@ function renderTagFilter(): void {
     ...tagRulesCache.filter(r => present.has(r.id) && r.enabled && (!enabled || enabled.has(r.id))).map(r => r.id),
   ];
   if (ids.length === 0) {
+    // R2 过渡（2026-11-02）：hidden 直切改 class 过渡（120ms max-height 收起）
     tagFilterEl.hidden = true;
+    tagFilterEl.classList.add('collapsed');
     tagFilterEl.innerHTML = '';
     return;
   }
   tagFilterEl.hidden = false;
+  tagFilterEl.classList.remove('collapsed');
   tagFilterEl.innerHTML = ''; // 全量重建
   const mkChip = (id: string | null, label: string): HTMLButtonElement => {
     const chip = document.createElement('button');
@@ -635,7 +878,7 @@ async function refresh(): Promise<void> {
 // 杜绝「列表被过滤但看不到搜索框」的隐形过滤不一致。不隐藏窗口。
 const headerEl = document.getElementById('header')!;
 const searchBtn = document.getElementById('searchBtn')!;
-let searchOpen = false; // header 搜索展开态
+let searchOpen = false; // 2026-10-30 v3.1：搜索迁出 header（Content 常驻），展开态状态机退役
 
 /** 光标移到输入框末尾（Ctrl+F 语义：已有词仅重新聚焦，不清词） */
 function setCursorToEnd(): void {
@@ -652,11 +895,7 @@ function setCursorToEnd(): void {
  *   false = 仅视觉展开（重显自洽规则），绝不抢焦点、不触发 setSearchActive。
  */
 async function openSearch({ focus = true }: { focus?: boolean } = {}): Promise<void> {
-  if (!searchOpen) {
-    searchOpen = true;
-    headerEl.classList.add('search-open');
-    syncHeaderExpanded(); // 搜索展开锁定展开高度（约束 4：hover 状态机让位）
-  }
+  // 常驻搜索（2026-10-30 v3.1）：无展开态，直达聚焦链路
   if (!focus) return;
   // 先等主进程 setFocusable(true)+focus() 完成，再做 DOM 聚焦（不夺焦架构的时序要求）
   try {
@@ -671,17 +910,13 @@ async function openSearch({ focus = true }: { focus?: boolean } = {}): Promise<v
  * blurSearch + setSearchActive(false) 恢复自动隐藏倒计时（与主进程双保险链路一致）。
  */
 function collapseSearch(): void {
-  if (!searchOpen && searchQuery === '') return; // 幂等短路（blur 重入不再重复走 IPC）
-  searchOpen = false;
+  // 常驻搜索语义（2026-10-30 UI v3）：只清词恢复未过滤列表，不收起不夺焦
+  if (searchQuery === '') return; // 幂等短路
   searchQuery = '';
-  headerEl.classList.remove('search-open');
   searchInput.value = '';
   refresh(); // 列表回到未过滤态（async，fire-and-forget）
-  // 输入框若仍持焦则主动失焦（真实 DOM：已失焦时 .blur() 不再派发 blur 事件，无重入）
-  searchInput.blur();
   window.clipboardAPI.blurSearch();
   window.clipboardAPI.setSearchActive(false);
-  syncHeaderExpanded(); // 搜索关闭后回归 hover 判定（约束 4）
 }
 
 /**
@@ -694,7 +929,7 @@ function handleSearchEscape(e: KeyboardEvent): void {
   // 回切后引爆）。keyCode 27 兼容旧派发路径。
   if (e.key !== 'Escape' && e.keyCode !== 27) return;
   if (e.isComposing) return;
-  if (!searchOpen) return;
+
   if (typeof e.preventDefault === 'function') e.preventDefault();
   collapseSearch();
 }
@@ -710,28 +945,28 @@ searchInput.addEventListener('focus', () => {
   window.clipboardAPI.setSearchActive(true);
 });
 
-// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
-// 例外：blur 落在搜索图标上（pointerdown preventDefault 失效时的兜底），
-// 由图标 click toggle 接管，避免「blur 先收起、click 再展开」竞态。
-// 失焦 → 收起即清词（collapseSearch 内部完成 blurSearch + setSearchActive(false)）。
-// 例外一：blur 落在搜索图标上（pointerdown preventDefault 失效时的兑底）。
-// 例外二（2026-09-10 实机 BUG2「任意输入都收起」）：IME 组合、窗口失活、
-// setFocusable(true⇄false) 激活切换都会在输入框持焦期间派发 blur，但 DOM 焦点
-// 实际未转移（activeElement 仍是输入框或仍在 header 内）——这类「伪 blur」不收起，
-// 避免打字/输入法过程被误清词。真实焦点转移（activeElement 离开 header）才收起；
-// 鼠标点击 header 外的非焦点区由 document click-outside 处理器兑底收起。
+// 失焦（2026-10-30 UI v3 常驻搜索）：仅解除「输入中」挂起，词保留不清；
+// 清词只走 Esc / 图标两条路径（collapseSearch）。
 searchInput.addEventListener('blur', () => {
-  if (document.activeElement === searchBtn) return;
-  if (document.activeElement === searchInput) return;
-  if (document.activeElement && headerEl.contains(document.activeElement)) return;
-  collapseSearch();
+  // 常驻搜索（2026-10-30 UI v3）：失焦仅挂起解除，词保留（清词只走 Esc/图标）
+  window.clipboardAPI.blurSearch();
+  window.clipboardAPI.setSearchActive(false);
 });
 
+
 searchInput.addEventListener('input', () => {
+  // 输入回显同步保留在防抖之外（perf-opt.dom.test.js S1 守卫：searchQuery
+  // 赋值必须即时，否则输入框与过滤态脱钩）
   searchQuery = searchInput.value;
-  const shown = filterHistory(fullHistory);
-  renderHistory(listEl, shown, renderHandlers, renderCtx);
-  updateStats();
+  // 搜索防抖（2026-11-02 性能优化 T1）：每键敲击不触发全量过滤+DOM 重建，
+  // 停顿 150ms 后统一执行（setTimeout 系，perf-opt harness 假计时器可测）
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null;
+    const shown = filterHistory(fullHistory);
+    renderHistory(listEl, shown, renderHandlers, renderCtx);
+    updateStats();
+  }, 150);
 });
 
 // Esc：输入框持焦时直接接住；document 级兕底覆盖「展开但未持焦」（重显自洽态）。
@@ -759,12 +994,8 @@ searchBtn.addEventListener('pointerdown', (e) => {
 });
 
 searchBtn.addEventListener('click', (e) => {
-  e.stopPropagation(); // 不冒泡到「header 外点击收起」逻辑
-  if (searchOpen && document.activeElement === searchInput) {
-    collapseSearch();
-  } else {
-    openSearch();
-  }
+  e.stopPropagation(); // 不冒泡（旧 header 外点击收起已移除，保留防联动）
+  openSearch(); // 常驻搜索：图标即聚焦入口（2026-10-30 UI v3）
 });
 
 // 面板任意处按下 → 按需启用键盘焦点（2026-09-10 实机 BUG1「Ctrl+F 不响应」修复）：
@@ -777,13 +1008,8 @@ document.addEventListener('pointerdown', () => {
   window.clipboardAPI.focusSearch();
 });
 
-// 点击 header 外区域收起（展开但未持焦态的主要收起路径；持焦态由 blur 先行收起，
-// 此处幂等）。header 内点击（含 pin/menu/输入框/图标本身）不在此收起。
-document.addEventListener('click', (e) => {
-  if (!searchOpen) return;
-  if (headerEl.contains(e.target as Node)) return;
-  collapseSearch();
-});
+// 常驻搜索（2026-10-30 UI v3）：点击外部不再收起（旧 click-outside 收起监听移除）
+
 
 // 实机 BUG（2026-09-17）：搜索结果条目无法点击展开/复制，点击后搜索框关闭。
 // 根因：点击条目 mousedown → 输入框 blur → collapseSearch 同步 refresh() 全量
@@ -856,6 +1082,10 @@ function bttUpdate(): void {
 
 listEl.addEventListener('scroll', () => {
   bttUpdate();
+  // 分页自动加载（R1）：滚到距底 120px 且存在哨兵时追加下一批（renderer.ts 导出钩子）
+  const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 120;
+  const sentinel = listEl.querySelector<HTMLElement>('[data-load-more]');
+  if (nearBottom && sentinel) sentinel.click(); // 复用「加载更多」委托路径（renderer.ts 内 pageRendered 累加）
 }, { passive: true });
 
 // 列表内容重建（历史更新/搜索/标签筛选）改变 scrollHeight → 重算环进度；
@@ -1043,7 +1273,7 @@ const headerHoverUi = (typeof createHeaderHoverUi === 'function' &&
 function syncHeaderExpanded(): void {
   if (!headerHoverUi) return;
   // 2026-09-30：二级菜单已取消（功能迁托盘），菜单强制展开分支随之移除
-  const force = searchOpen;
+  const force = false; // 搜索迁出 header（2026-10-30 v3.1）：hover 状态机独立驱动
   headerHoverUi.applyHover(force || headerHoverFromMain);
 }
 
@@ -1070,8 +1300,8 @@ if (window.clipboardAPI && typeof window.clipboardAPI.onModifierPassthrough === 
   window.clipboardAPI.onModifierPassthrough((active) => {
     if (active) document.body.classList.add('mod-pass');
     else document.body.classList.remove('mod-pass');
-    const hintP = document.getElementById('hint');
-    if (hintP) hintP.innerHTML = active ? t('passthroughHint') : t('hintHtml');
+    // 穿透文案写 hintTextEl（徽章嵌入后与前三处同根因：整写 #hint 销毁内嵌徽章 DOM）
+    if (hintTextEl) hintTextEl.innerHTML = active ? t('passthroughHint') : t('hintHtml');
   });
 }
 

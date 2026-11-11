@@ -46,6 +46,9 @@ interface StorageItem {
   width?: number;
   height?: number;
   tags?: string[];
+  /** 置顶标记（2026-11-11 FR3）：随加密持久化链路落盘，重启保留 */
+  pinned?: boolean;
+  pinnedAt?: number;
   /** 展开状态持久化到 item 对象：列表重渲染传入同一引用，状态不丢 */
   _expanded?: boolean;
 }
@@ -125,18 +128,44 @@ class HistoryStorage {
   }
 
   /**
-   * 加密一个字符串 → hex 字符串存储（便于 JSON 序列化）
+   * 密文编码（2026-11-03 静态纯函数，node:test 直测）：Buffer → 'b64:'+base64。
+   * safeStorage 是 electron 运行时 API 不可直测，编解码层抽出即为可测缝。
    */
-  encryptString(plain: string): string {
-    const buf = safeStorage.encryptString(plain);
-    return buf.toString('hex');
+  static encodeCipher(buf: Buffer): string {
+    return 'b64:' + buf.toString('base64');
   }
 
   /**
-   * 解密 hex 密文 → 原始字符串
+   * 密文解码（三态）：① 'b64:' 前缀 → base64；② 无前缀纯偶长 hex → 存量格式
+   * 兼容（2026-11-03 前磁盘数据）；③ 其余（明文 JSON 等）→ 抛 unrecognized，
+   * 调用方（load）既有 catch 走明文兜底——行为与改造前一致。
    */
-  decryptString(hex: string): string {
-    const buf = Buffer.from(hex, 'hex');
+  static decodeCipher(s: string): Buffer {
+    if (s.startsWith('b64:')) {
+      return Buffer.from(s.slice(4), 'base64');
+    }
+    if (s.length > 0 && s.length % 2 === 0 && /^[0-9a-f]+$/i.test(s)) {
+      return Buffer.from(s, 'hex');
+    }
+    throw new Error(`unrecognized cipher encoding (len=${s.length})`);
+  }
+
+  /**
+   * 加密一个字符串 → 带编码标记的密文字符串（2026-11-03 hex→base64：
+   * hex 每字节膨胀 2 字符=100%，base64 仅 ~33%；实测主历史文件 2.38MB
+   * 真实数据 ~1.2MB。`b64:` 前缀区分新格式，存量 hex 经 decodeCipher 兼容读取，
+   * 首次 save 全量重写自然迁移。）
+   */
+  encryptString(plain: string): string {
+    const buf = safeStorage.encryptString(plain);
+    return HistoryStorage.encodeCipher(buf);
+  }
+
+  /**
+   * 解密封文字符串 → 原始字符串（编码识别见 decodeCipher；三态：b64:/存量 hex/抛错）
+   */
+  decryptString(cipher: string): string {
+    const buf = HistoryStorage.decodeCipher(cipher);
     return safeStorage.decryptString(buf);
   }
 
@@ -458,6 +487,37 @@ class HistoryStorage {
    */
   setAltPassTipShown(): void {
     this._writeConfig({ altPassTipShown: true });
+  }
+
+  /** 桌宠舞台位置（P0 spike）：缺省 null = 从未拖拽过（用默认右下定位） */
+  getPetPosition(): { x: number; y: number } | null {
+    const raw = this._readConfig().petPosition;
+    if (
+      raw && typeof raw === 'object' && !Array.isArray(raw) &&
+      typeof (raw as Record<string, unknown>).x === 'number' &&
+      typeof (raw as Record<string, unknown>).y === 'number'
+    ) {
+      return { x: (raw as { x: number }).x, y: (raw as { y: number }).y };
+    }
+    return null;
+  }
+
+  /** 拖拽结束回写桌宠位置（合并写入） */
+  setPetPosition(pos: { x: number; y: number }): void {
+    if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+    this._writeConfig({ petPosition: { x: pos.x, y: pos.y } });
+  }
+
+  /** 桌宠缩放系数（2026-10-14 大小可调）：缺省 1 = 基准档 */
+  getPetScale(): number {
+    const v = this._readConfig().petScale;
+    return typeof v === 'number' && isFinite(v) && v > 0 ? v : 1;
+  }
+
+  /** 缩放系数回写（合并写入） */
+  setPetScale(scale: number): void {
+    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) return;
+    this._writeConfig({ petScale: scale });
   }
 }
 

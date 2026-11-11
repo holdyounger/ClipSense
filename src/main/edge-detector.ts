@@ -29,6 +29,9 @@ interface EdgeScreenApi {
   getDisplayNearestPoint: (point: EdgePoint) => EdgeDisplay;
 }
 
+// 弹出链路计时起点（2026-10-29 切换卡顿取证）：_showWindow 置位，_beginShowTransition 消费
+let __showT0 = 0;
+
 /** electron Display 子集（本模块消费 workArea/workAreaSize） */
 interface EdgeDisplay {
   workArea: EdgeRect;
@@ -90,7 +93,7 @@ const {
   HEADER_DRAG_RESUME_MS: number;
 };
 const { computeOpacity } = require('./window-opacity') as {
-  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number }) => number;
+  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number; passthroughActive?: boolean; passthroughOpacity?: number }) => number;
 };
 const { WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_HALF_WIDTH } = require('./window-dims') as {
   WINDOW_WIDTH: number;
@@ -114,6 +117,8 @@ class EdgeDetector {
   triggerHeight: number;
   hideDelay: number;
   checkInterval: number;
+  /** 桌宠唤出后面板未首次进入前挂起自动隐藏（2026-10-29 双击粘贴修复） */
+  _petAwaitPanelEnter: boolean;
   _lastIsOverPanel: boolean;
   _lastDraggedPos: { x: number; y: number } | null;
   _hiddenAtPos: { x: number; y: number } | null;
@@ -141,12 +146,21 @@ class EdgeDetector {
   _onHidden: (() => void) | null = null;
   /** 弹出回调（setOnShown 注入） */
   _onShown: (() => void) | null = null;
+  /** Alt 穿透确认边沿回调（index.ts 注入，桌宠舞台联动；null = 无接线） */
+  _onModifierEdge: ((active: boolean) => void) | null = null;
+  /** 非贴边模式下抑制贴边条回归（setTriggerSuppressed 写入；默认 false = 现行为） */
+  _triggerSuppressed: boolean = false;
+  /** 隐藏模式（2026-10-13 桌宠 P0）：pet/hidden 停用贴边热区唤出；轮询恒运行
+   * （Alt 穿透探针 tick、面板可见期自动隐藏、透明度同步都依赖这条 100ms 心跳） */
+  _mode: 'edge' | 'pet' | 'hidden' = 'edge';
   /** 修饰键（Alt）全局键态探针（index.ts 注入 koffi GetAsyncKeyState；null=未注入，功能禁用） */
   _modProbe: (() => boolean) | null;
   /** 穿透链路取证日志句柄（index.ts 注入，落盘 userData；null=不落盘） */
   _modDiag: ((msg: string) => void) | null;
   /** 穿透状态机（纯逻辑：防抖 + 边沿生成，modifier-passthrough；键位无关，探针决定键位） */
   _modPass: ReturnType<typeof createModifierPassthrough>;
+  /** 自定义穿透档位（2026-11-02 托盘菜单）：null=未设置走 OPACITY_PASSTHROUGH 默认 */
+  _passthroughOpacity: number | null = null;
 
   constructor(mainWindow: EdgeMainWindow, triggerWindow: EdgeTriggerWindow | null = null) {
     this.mainWindow = mainWindow;
@@ -165,6 +179,7 @@ class EdgeDetector {
     this.hideDelay = 3000;       // 鼠标离开后 3s 隐藏
     this.checkInterval = 100;
     /** 与 KeySense 一致：记录最近一次鼠标是否在面板内，避免边界事件抖动误隐藏 */
+    this._petAwaitPanelEnter = false;
     this._lastIsOverPanel = false;
     this._lastDraggedPos = null;
     this._hiddenAtPos = null;
@@ -246,6 +261,21 @@ class EdgeDetector {
   setModifierProbe(probe: (() => boolean) | null, diag?: (msg: string) => void): void {
     this._modProbe = typeof probe === 'function' ? probe : null;
     this._modDiag = typeof diag === 'function' ? diag : null;
+  }
+
+  /** Alt 穿透确认边沿回调注入（桌宠舞台联动，P0 spike） */
+  setOnModifierEdge(callback: ((active: boolean) => void) | null): void {
+    this._onModifierEdge = typeof callback === 'function' ? callback : null;
+  }
+
+  /** 非贴边模式（桌宠/纯隐藏）抑制贴边条回归：面板隐藏动画不再弹出触发条 */
+  setTriggerSuppressed(suppressed: boolean): void {
+    this._triggerSuppressed = suppressed;
+  }
+
+  /** 切换隐藏模式：仅影响贴边热区唤出与贴边条回归；轮询/穿透/自动隐藏不受影响 */
+  setMode(mode: 'edge' | 'pet' | 'hidden'): void {
+    this._mode = mode;
   }
 
   start(): void {
@@ -348,7 +378,8 @@ class EdgeDetector {
       // V1.0.4：舞台窗口固定 24px 后，唤出热区不再等于物理窗口——仍按屏缘
       // triggerWidth(6px) 锚定（条体静止可见区），避免 18px 预留区误触发热区。
       let triggerBounds: EdgeRect | null = null;
-      if (!this.isWindowVisible && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+      if (this._mode === 'edge' // pet/hidden 模式：贴边热区失效（桌宠命中/显式唤出接管）
+        && !this.isWindowVisible && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
         const tb = this.triggerWindow.getBounds();
         const anchoredLeft = this.triggerWindow._edge === 'left';
         triggerBounds = {
@@ -384,8 +415,15 @@ class EdgeDetector {
         }
         if (this.isWindowVisible) {
           this._lastIsOverPanel = isOverPanel;
-          if (!isOverPanel) this.onMouseLeaveDebounced();
-          else this._cancelHideTimer();
+          if (!isOverPanel) {
+            // 桌宠唤出后面板未进入过：不启动隐藏计时（进入面板后恢复正常语义）
+            if (!this._petAwaitPanelEnter) this.onMouseLeaveDebounced();
+          } else {
+            this._petAwaitPanelEnter = false;
+            this._cancelHideTimer();
+          }
+
+
         }
       }
 
@@ -416,7 +454,8 @@ class EdgeDetector {
       // 键态必须主进程轮询 GetAsyncKeyState：面板 WS_EX_NOACTIVATE 不夺焦，用户按
       // Alt 时焦点在他处，渲染层 keydown/keyup 不可达（paste-bridge 同坑已证）。
       // 100ms 轮询 + 状态机 2 拍防抖；确认边沿才动 setIgnoreMouseEvents。
-      if (this._modProbe && this.isWindowVisible && !this._isHiding) {
+      // 桌宠模式下面板隐藏（isWindowVisible=false）时探针仍需 tick：驱动舞台穿透
+      if (this._modProbe && (this.isWindowVisible || this._mode === 'pet') && !this._isHiding) {
         const { active, changed } = this._modPass.tick({ isDown: this._modProbe });
         if (changed) {
           if (this._modDiag) this._modDiag(`[S3] 状态机确认边沿 → active=${active}`);
@@ -435,6 +474,9 @@ class EdgeDetector {
           if (this.mainWindow && !this.mainWindow.isDestroyed()) {
             try { this.mainWindow.webContents.send('modifier-passthrough', active); } catch (_) { /* 销毁竞态 */ }
           }
+          // Alt 穿透视觉反馈（2026-11-02 快速通道，小M 提出）：穿透激活 → 面板降 0.5，
+          // 释放恢复原值。边沿翻转立即重算推送（不等下一拍倒计时/180ms 过渡由渲染层 CSS 承担）
+          this._syncWindowOpacity();
           if (active) {
             // 穿透瞬间面板必须 inert：清 header hover 状态机并回推 false，
             // 防止「按住 Alt 前光标已悬停 header → 穿透后 header 卡在展开态」。
@@ -445,6 +487,10 @@ class EdgeDetector {
             }
           }
           console.log(`[EdgeDetector] Alt 穿透 ${active ? '开启（鼠标事件完全穿透）' : '关闭'}`);
+          // 桌宠联动（P0 spike）：确认边沿广播 index.ts，由其驱动 petStage 穿透
+          if (this._onModifierEdge) {
+            try { this._onModifierEdge(active); } catch (_) { /* 回调异常不阻断 */ }
+          }
         }
       }
     } catch (err) {
@@ -453,8 +499,14 @@ class EdgeDetector {
   }
 
   _showWindow(display?: EdgeDisplay): void {
+    __showT0 = performance.now(); // 切换卡顿取证
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-    if (this.isWindowVisible && !this._showAnimationId) return;
+    if (this.isWindowVisible && !this._showAnimationId) {
+      // 自愈对账（2026-10-29 单击失效修复）：标记可见但窗口实际隐藏 =
+      // 有外部 hide()（如切桌宠模式）绕过了本模块——复位标记继续弹出
+      if (!this.mainWindow.isVisible()) this.isWindowVisible = false;
+      else return;
+    }
 
     // 同步置可见标记：原先在异步 prepare 回调里才置 true，
     // 轮询的 100ms 空窗期内鼠标若静止在触发条热区上，会用 getBounds()（隐藏窗口也能取到）
@@ -594,11 +646,15 @@ class EdgeDetector {
    */
   _beginShowTransition(gen: number, edge: string): void {
     if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    console.log('[Perf] summon prepare→show ' + (performance.now() - __showT0).toFixed(1) + 'ms');
     this.mainWindow.showInactive();
     this._appliedOpacity = null; // 滑出期间透明度残值作废，按当前状态重设（首帧即正确）
     this._syncWindowOpacity();
     this._lastIsOverPanel = false;
-    // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
+// 桌宠唤出时鼠标在桌宠上：挂起自动隐藏直到首次进入面板，
+// 否则面板出生即带 3s 自毁，双击粘贴变成与隐藏计时赛跑（2026-10-29）
+    this._petAwaitPanelEnter = (this._mode === 'pet');
+        // 弹出在静止光标下方时，Windows 不会给新可见窗口补发 WM_MOUSEMOVE，
     // 渲染层 mouseenter 不触发、OS hover 命中不刷新 → 顶部按钮点击无响应
     // （移出再移回才恢复）。合成 mousemove 已足够（1px 抖动已移除，勿恢复）。
     this._forceCursorHoverRefresh();
@@ -607,6 +663,7 @@ class EdgeDetector {
     // 隐藏态 rAF 未被节流（backgroundThrottling:false），双 rAF 等效 ~2 帧。
     const startIn = () => {
       if (gen !== this._showGeneration) return; // 锁已被 stop() 清除
+      console.log('[Perf] summon →slide-in ' + (performance.now() - __showT0).toFixed(1) + 'ms');
       this.mainWindow.webContents.executeJavaScript(
         `window.__clipSenseSlide && window.__clipSenseSlide('in','${edge}')`
       ).catch(() => {});
@@ -750,7 +807,7 @@ class EdgeDetector {
       `window.__clipSenseHeaderSnap && window.__clipSenseHeaderSnap()`
     ).catch(() => {});
     this.mainWindow.hide();
-    if (this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+    if (!this._triggerSuppressed && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
       this.triggerWindow.setBounds({
         x: Math.round(triggerX),
         y: Math.round(y),
@@ -895,6 +952,9 @@ class EdgeDetector {
       isCountingDown: this.isCountingDown && this._hideDeadline != null,
       remainingMs: this._hideDeadline ? this._hideDeadline - Date.now() : 0,
       totalMs: this.hideDelay,
+      // Alt 穿透（2026-11-02）：穿透激活 → 降档（默认 0.5，托盘可调；取小值口径见 window-opacity.ts）
+      passthroughActive: this._modPass.isActive(),
+      passthroughOpacity: this._passthroughOpacity ?? undefined,
     });
     this._applyWindowOpacity(target);
   }
@@ -933,6 +993,18 @@ class EdgeDetector {
   /**
    * 设置窗口固定状态
    */
+  /** 设置穿透档位（2026-11-02 托盘菜单）：立即重算推送；null 回落默认 */
+  setPassthroughOpacity(v: number | null): void {
+    this._passthroughOpacity = v;
+    this._appliedOpacity = null;
+    this._syncWindowOpacity();
+  }
+
+  /** 读取穿透档位（托盘单选态）；null=默认 */
+  getPassthroughOpacity(): number | null {
+    return this._passthroughOpacity;
+  }
+
   setPinned(pinned: boolean): void {
     this.isPinned = Boolean(pinned);
     this._appliedOpacity = null;
@@ -1000,6 +1072,21 @@ class EdgeDetector {
     // 的 isOverPanel 实时判定（它用 getBounds 算，不受快捷键路径影响）。
   }
 
+  /**
+   * 外部直接 hide 的状态对账（2026-10-29 切桌宠单击失效修复）：
+   * _applyHideMode 走 mainWindow.hide() 绕过 _hideWindow 动画链，
+   * isWindowVisible 残留 true → 下次 forceShow 被「已可见」守卫早退。
+   * 仅复位内存状态，零窗口操作零动画。
+   */
+  notifyExternalHide(): void {
+    this._cancelHideTimer();
+    this._cancelHideAnimation();
+    if (this._showAnimationId && this._showAnimationId !== 'pending') clearTimeout(this._showAnimationId);
+    this._showAnimationId = null;
+    this._showGeneration++; // 作废在途 prepare/show 链
+    this._isHiding = false;
+    this.isWindowVisible = false;
+  }
   forceShow(display: EdgeDisplay | null = null): void {
     this._cancelHideAnimation();
     if (!display) {

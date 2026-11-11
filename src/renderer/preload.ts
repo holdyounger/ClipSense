@@ -96,6 +96,8 @@ const clipboardAPI = {
     ipcRenderer.invoke('copy-item', id) as Promise<IpcResult>,
   copyItemPath: (id: string): Promise<IpcResult> =>
     ipcRenderer.invoke('copy-item-path', id) as Promise<IpcResult>,
+  toggleItemPin: (id: string): Promise<IpcResult> =>
+    ipcRenderer.invoke('toggle-pin', id) as Promise<IpcResult>,
   openPath: (path: string): Promise<IpcResult> =>
     ipcRenderer.invoke('open-path', path) as Promise<IpcResult>,
   getTagRules: (): Promise<unknown> => ipcRenderer.invoke('get-tag-rules'),
@@ -161,6 +163,10 @@ const clipboardAPI = {
   // 渲染层仅做视觉反馈（body.mod-pass + hint 文案），逻辑权威在主进程
   onModifierPassthrough: (callback: (active: boolean) => void): void =>
     subscribe<boolean>('modifier-passthrough', callback),
+  // 统计与等级模块（2026-11-05 spec §3.1）：复制/粘贴埋点驱动推送汇总，
+  // 渲染层辅助行徽章 + hover 展开卡消费（背景统计，零主动采集）
+  onStatsSummary: (callback: (summary: unknown) => void): void =>
+    subscribe<unknown>('stats:summary', callback),
   // 语言切换（2026-09-30 二级菜单取消后迁托盘）：托盘 _switchLang 推送新语言
   onLangChanged: (callback: (lang: string) => void): void =>
     subscribe<string>('lang-changed', callback),
