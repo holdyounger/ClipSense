@@ -17,7 +17,13 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const tagUtils = require('../dist/common/tag-utils.js');
 const { extractLinks } = require('../dist/common/link-utils.js');
-const { BATTERY } = require('../temp/tag-v2-validation-20260910/battery');
+// v2 样本电池夹具：temp/ 在 .gitignore（本地一次性校验资产，方案 §6 产出），不入库。
+// CI / 新 clone 无此文件 → 缺失时置 null，电池 describe 节整体 skip（见下方守卫），
+// 其余识别管线用例不依赖 temp/，全量可跑。
+let BATTERY = null;
+try {
+  BATTERY = require('../temp/tag-v2-validation-20260910/battery');
+} catch (_) { /* 夹具缺失：CI / 新环境，电池节跳过 */ }
 const ClipboardMonitor = require('../dist/main/clipboard-monitor.js');
 
 const { computeTags, luhnCheck, MAX_TAGS, TAG_PRIORITY } = tagUtils;
@@ -428,6 +434,11 @@ describe('性能冒烟', () => {
 // ==================== v2 样本电池（方案 §6 验收 1：64 样本转入，命中率 ≥98%） ====================
 
 describe('v2 样本电池（temp/tag-v2-validation-20260910，64 样本转入）', () => {
+  // 夹具缺失守卫：显式 skip 一条占位用例保留「该节存在」的可见性，随后整节退出。
+  if (!BATTERY) {
+    test('v2 样本电池夹具缺失，整节跳过（temp/ 为本地 gitignored 校验资产）', { skip: true }, () => {});
+    return;
+  }
   const positives = BATTERY.filter(s => s.cat !== 'negative' && s.cat !== 'gap');
   const negatives = BATTERY.filter(s => s.cat === 'negative');
   const gaps = BATTERY.filter(s => s.cat === 'gap');
