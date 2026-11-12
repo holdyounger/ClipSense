@@ -102,6 +102,8 @@ jobs:
     name: Build (macOS)
     needs: test
     runs-on: macos-latest
+    permissions:
+      contents: write
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
