@@ -12,7 +12,8 @@
     "test": "node --test tests/*.test.js",
     "build": "npm run build:ts && electron-builder",
     "build:win": "npm run build:ts && electron-builder --win",
-    "gen:icon": "node scripts/gen-icon.js"
+    "gen:icon": "node scripts/gen-icon.js",
+    "build:mac": "npm run build:ts && electron-builder --mac"
   },
   "keywords": [
     "clipboard",
@@ -53,6 +54,35 @@
     },
     "nsis": {
       "include": "build/installer.nsh"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "darkModeSupport": true,
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSHumanReadableCopyright": "MIT License",
+        "NSAppleEventsUsageDescription": "ClipSense 需要控制其他应用以完成自动粘贴。"
+      }
+    },
+    "dmg": {
+      "title": "ClipSense ${version}"
     }
   }
 }

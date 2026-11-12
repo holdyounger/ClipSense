@@ -1,6 +1,7 @@
 node_modules/
 build/*
 !build/installer.nsh
+!build/icon.icns
 dist/
 out/
 *.log
