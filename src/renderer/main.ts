@@ -52,9 +52,16 @@ interface TagQueryResult {
   invalid: boolean;
 }
 
+/** 平台判定与按键文案（macOS 用 ⌘） */
+const APP_IS_MAC = window.clipboardAPI.platform === 'darwin';
+const APP_COPY_KEY = APP_IS_MAC ? '⌘C' : 'Ctrl+C';
+const APP_ALT_KEY = APP_IS_MAC ? 'Option' : 'Alt';
+
 /** preload contextBridge 暴露的 clipboardAPI 全量契约 */
 interface Window {
   clipboardAPI: {
+    /** 运行平台（darwin / win32 / linux） */
+    platform: string;
     getHistory: () => Promise<MainHistoryItem[]>;
     copyItem: (id: string) => Promise<{ ok?: boolean; error?: string }>;
     copyItemPath: (id: string) => Promise<{ ok?: boolean; error?: string }>;
@@ -980,7 +987,8 @@ searchInput.addEventListener('keydown', handleSearchEscape);
 //    已有词时仅重新聚焦（光标到末尾），不清词。
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' || e.keyCode === 27) handleSearchEscape(e);
-  if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF' && !e.isComposing) {
+  if ((APP_IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey
+    && e.code === 'KeyF' && !e.isComposing) {
     if (typeof e.preventDefault === 'function') e.preventDefault();
     openSearch();
   }
@@ -1432,7 +1440,7 @@ function closeWelcomeOverlay(persistent: boolean): void {
         btnText: '开始使用',
         persistent: true,
         textHtml: st.showAltPassTip
-          ? '复制任意内容（Ctrl+C），它会自动出现在下方列表。<br>双击列表条目可粘贴回原窗口；悬停顶部可展开搜索。<br><b>新功能：按住 <kbd>Alt</kbd> 时鼠标将穿透本面板，可直接点击下方的窗口；松开恢复。</b>'
+          ? `复制任意内容（${APP_COPY_KEY}），它会自动出现在下方列表。<br>双击列表条目可粘贴回原窗口；悬停顶部可展开搜索。<br><b>新功能：按住 <kbd>${APP_ALT_KEY}</kbd> 时鼠标将穿透本面板，可直接点击下方的窗口；松开恢复。</b>`
           : undefined,
       });
     } else if (st.showAltPassTip) {
@@ -1441,7 +1449,7 @@ function closeWelcomeOverlay(persistent: boolean): void {
         version: `v${st.version}`,
         btnText: '知道了',
         persistent: true,
-        textHtml: '按住 <kbd>Alt</kbd> 时，鼠标点击/滚轮将穿透面板直达下层窗口，松开恢复正常。<br>适合不收起面板的前提下操作背后的应用。',
+        textHtml: `按住 <kbd>${APP_ALT_KEY}</kbd> 时，鼠标点击/滚轮将穿透面板直达下层窗口，松开恢复正常。<br>适合不收起面板的前提下操作背后的应用。`,
       });
     }
   } catch (err) {

@@ -55,7 +55,6 @@ interface IndexWebContents {
  */
 interface IndexMainWindow {
   isDestroyed: () => boolean;
-  setAlwaysOnTop: (flag: boolean) => void;
   getBounds: () => IndexBounds;
   isVisible: () => boolean;
   isMinimized: () => boolean;
@@ -69,6 +68,10 @@ interface IndexMainWindow {
   setBounds: (bounds: IndexBounds) => void;
   setMinimumSize: (minWidth: number, minHeight: number) => void;
   setIgnoreMouseEvents: (ignore: boolean) => void;
+  isFocused: () => boolean;
+  blur: () => void;
+  setVisibleOnAllWorkspaces: (visible: boolean, options?: { visibleOnFullScreen?: boolean }) => void;
+  setAlwaysOnTop: (flag: boolean, level?: string) => void;
   removeMenu: () => void;
   loadFile: (filePath: string) => unknown;
   loadURL: (url: string) => unknown;
@@ -165,7 +168,7 @@ interface IndexFocusTrackerApi {
   _trackedAt: number;
 }
 
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell, powerMonitor } = require('electron') as {
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell, powerMonitor, dialog } = require('electron') as {
   app: any;
   BrowserWindow: any;
   globalShortcut: any;
@@ -180,6 +183,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, sc
   screen: any;
   shell: any;
   powerMonitor: any;
+  dialog: any;
 };
 // 置顶保活配套（2026-10-14，对照网易云桌宠取证）：禁用 Windows 遮挡计算，防止置顶
 // 透明小窗被 Chromium 判「被完全遮挡」后停渲染/降帧（桌宠动画莫名停帧第一嫌疑）。
@@ -226,6 +230,7 @@ function _modDiag(line: string): void {
 }
 
 function _isAltPhysicallyDown(): boolean {
+  if (process.platform === 'darwin') return _isMacOptionDown();
   if (process.platform !== 'win32') return false;
   try {
     if (!_modUser32) {
@@ -254,6 +259,36 @@ function _isAltPhysicallyDown(): boolean {
     return false;
   }
 }
+// macOS：CGEventSourceFlagsState 读取 Option 物理键态（读取不需要辅助功能授权）
+let _modMacFlags: (() => number) | null = null;
+let _modMacBindLogged = false;
+function _isMacOptionDown(): boolean {
+  try {
+    if (!_modMacFlags) {
+      const koffi = require('koffi');
+      const cg = koffi.load('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+      const fn = cg.func('uint64 CGEventSourceFlagsState(int32 stateID)') as (state: number) => number;
+      _modMacFlags = () => fn(0);
+      console.log('[AltPass] macOS CGEventSourceFlagsState 绑定成功（Option 键态）');
+      _modDiag('[S1] macOS CGEventSourceFlagsState 绑定成功');
+    }
+    // kCGEventFlagMaskAlternate = 0x00080000（左/右 Option 同位）
+    const down = (_modMacFlags() & 0x00080000) !== 0;
+    if (down !== _lastRawMod) {
+      _lastRawMod = down;
+      _modDiag(`[S2] CGEventSourceFlagsState 变化 → down=${down}`);
+    }
+    return down;
+  } catch (err) {
+    if (!_modMacBindLogged) {
+      _modMacBindLogged = true;
+      console.log('[AltPass] macOS 键态探针绑定失败，穿透禁用:', (err as Error).message);
+      _modDiag(`[S1] macOS 绑定失败: ${(err as Error).message}`);
+    }
+    return false;
+  }
+}
+
 // 尽早启动 Crashpad：覆盖主/渲染/GPU/native 崩溃，本地 .dmp 不上传（先于 app ready）
 crashDump.startCrashReporter();
 
@@ -266,6 +301,8 @@ class ClipboardSpikeApp {
   pasteBridge: PasteBridgeInstance | null = null;   // init() 创建（.js 为 undefined，null 同 falsy 语义）
   focusTracker: IndexFocusTrackerApi | null = null; // 同上
   edgeDetector: EdgeDetectorInstance | null;
+  /** macOS 辅助功能引导只弹一次（避免连点重复弹窗） */
+  _accessibilityPrompted = false;
   // 桌宠（P0 spike，2026-10-13）：舞台窗口与模式状态（_applyHideMode 驱动，PRD-桌宠系统 V0.2）
   petStage: PetStageWindow | null = null;
   _petModeOn: boolean = false;
@@ -348,6 +385,11 @@ class ClipboardSpikeApp {
     });
 
     this.mainWindow!.loadFile(path.join(__dirname, '../renderer/index.html'));
+    // macOS：跨 Space 常驻 + 浮动层级置顶（全屏应用之上仍可唤出；不占 Dock/Cmd+Tab）
+    if (process.platform === 'darwin') {
+      this.mainWindow!.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      this.mainWindow!.setAlwaysOnTop(true, 'floating');
+    }
     // 2026-09-10 焦点模型回切：不再强制 NOACTIVATE——实机三轮验证不夺焦模型
     // 与搜索键盘交互（Ctrl+F/打字/输入法）根本冲突。双击粘贴的焦点恢复由
     // PasteBridge 原子恢复+注入承担。如需回滚：恢复下一行调用即可。
@@ -407,6 +449,10 @@ class ClipboardSpikeApp {
     `)}`);
     // 舞台多余 18px 不拦截点击：唤出判定走主进程轮询（OS 光标 vs 屏缘 6px 热区），
     // 与窗口命中无关；纯点击穿透，下层窗口在贴边条区域正常可交互。
+    if (process.platform === 'darwin') {
+      this.triggerWindow!.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      this.triggerWindow!.setAlwaysOnTop(true, 'floating');
+    }
     this.triggerWindow!.setIgnoreMouseEvents(true);
     // did-finish-load 触发时舞台窗口已同步创建（赋值先于 loadURL 返回）；! 收窄闭包内访问
     this.triggerWindow!.webContents.on('did-finish-load', () => {
@@ -442,6 +488,9 @@ class ClipboardSpikeApp {
     let icon = nativeImage.createFromPath(iconPath);
     if (process.platform === 'win32') {
       icon = icon.resize({ width: 16, height: 16 });
+    } else if (process.platform === 'darwin') {
+      // macOS 菜单栏：18×18（系统按 Retina 缩放；彩色图标不启用 template 模式）
+      icon = icon.resize({ width: 18, height: 18 });
     }
     // 兜底：图标加载失败时用空图标（避免崩溃）
     if (icon.isEmpty()) {
@@ -570,7 +619,11 @@ class ClipboardSpikeApp {
       { type: 'separator' },
       { label: '退出', click: () => app.exit(0) },
     ]));
-    this.tray!.on('click', () => this.toggleWindow());
+    // macOS：setContextMenu 后左键单击即弹出菜单（原生行为），再绑 toggle 会同时
+    // 开关面板，语义冲突；因此仅在 Windows/Linux 上保留左键切换面板。
+    if (process.platform !== 'darwin') {
+      this.tray!.on('click', () => this.toggleWindow());
+    }
   }
 
   /** 读托盘语言单选态（storage config.lang，缺省 zh-CN） */
@@ -1482,6 +1535,19 @@ class ClipboardSpikeApp {
       const copied = this.monitor.copyToClipboard(item);
       if (!copied) return { ok: false, error: '写入系统剪贴板失败' };
 
+      // macOS：面板持焦时先让出焦点——系统把前台归还给上一个应用，⌘V 才会落到目标。
+      // blur 后仍持焦（极少数场景）则 hide 兜底，保证注入不回到面板自身。
+      if (process.platform === 'darwin' && this.mainWindow && !this.mainWindow.isDestroyed()) {
+        if (this.mainWindow.isFocused()) {
+          this.mainWindow.blur();
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          if (this.mainWindow.isFocused()) {
+            this.mainWindow.hide();
+            await new Promise((resolve) => setTimeout(resolve, 80));
+          }
+        }
+      }
+
       // 取目标句柄（16:34 根因修复）：双击瞬间重新抓前台；fgNow 被自身/瞬态过滤时
       // 回退 tracked（焦点模型回切后 tracked 由 focus-search 抢焦前 refresh 保持新鲜，
       // 2026-09-11 双击粘贴回归修复）。
@@ -1496,7 +1562,8 @@ class ClipboardSpikeApp {
       // 初始化顺序保证调用时已创建（早调用与 .js 同点 TypeError）；! 为类型收窄
       let result = this.pasteBridge!.pasteTo(restoreHwnd);
       // CopyQ 同款降级：Ctrl+V 被吞（RDP/远程桌面等场景）时尝试 Shift+Insert。
-      if (!result.ok && restoreHwnd && result.error !== 'restore-denied' && result.error !== 'modifiers-held') {
+      if (!result.ok && restoreHwnd && process.platform !== 'darwin'
+        && result.error !== 'restore-denied' && result.error !== 'modifiers-held') {
         console.warn(`[Spike] Ctrl+V 失败(${result.error || 'unknown'})，降级 Shift+Insert 重试`);
         result = this.pasteBridge!.pasteTo(restoreHwnd, { key: 'shift-insert' });
       }
@@ -1509,6 +1576,8 @@ class ClipboardSpikeApp {
         // 粘贴失败时面板保持显示：用户可直接重试或改用单击复制，不打断操作流
         console.warn(`[Spike] 选中条目粘贴失败: ${result.error}`);
         _modDiag(`[Paste] FAILED error=${result.error} restored=${result.restored || ''}`);
+        // macOS：未授权「辅助功能」时 CGEvent 注入被系统静默丢弃，需显式引导
+        if (result.error === 'accessibility-required') this._promptAccessibility();
       } else {
         console.log(`[Spike] 已粘贴选中条目: ${item.type} ${item.preview} (restored=${result.restored})`);
         _modDiag(`[Paste] OK restored=${result.restored}`);
@@ -2029,6 +2098,28 @@ class ClipboardSpikeApp {
     }
   }
 
+  /**
+   * macOS：辅助功能未授权时的引导。
+   * CGEventPost 在未授权时无异常也无返回码，只能靠 AXIsProcessTrusted 提前判定并提示。
+   */
+  _promptAccessibility(): void {
+    if (this._accessibilityPrompted) return;
+    this._accessibilityPrompted = true;
+    dialog.showMessageBox({
+      type: 'warning',
+      title: '需要「辅助功能」权限',
+      message: 'ClipSense 需要「辅助功能」权限才能自动粘贴',
+      detail: '打开「系统设置 → 隐私与安全性 → 辅助功能」，勾选 ClipSense（开发模式为 Electron）后重试。授权后无需重启应用。',
+      buttons: ['打开系统设置', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then((result: { response: number }) => {
+      if (result.response === 0) {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+      }
+    }).catch(() => {});
+  }
+
   async init() {
     this.createWindow();
     this.initTray();
@@ -2219,12 +2310,24 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
   app.whenReady().then(async () => {
+    // macOS：菜单栏常驻工具形态——隐藏 Dock 图标（等同 Windows skipTaskbar；
+    // 打包配置里的 LSUIElement 也会兜底，开发模式靠 runtime API）
+    if (process.platform === 'darwin' && app.dock) {
+      try { app.dock.hide(); } catch (_) { /* 无 dock（headless/CI）时忽略 */ }
+    }
     await spikeApp.init();
   });
 }
 
 app.on('window-all-closed', () => {
   // 有托盘，保持后台；spike 也允许通过托盘退出
+});
+
+app.on('activate', () => {
+  // macOS：点击 Dock 图标（若可见）时唤出面板
+  if (spikeApp.mainWindow && !spikeApp.mainWindow.isDestroyed()) {
+    spikeApp.mainWindow.show();
+  }
 });
 
 app.on('before-quit', () => {

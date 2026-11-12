@@ -19,11 +19,17 @@ type I18nDict = Record<string, I18nValue>;
 /** 支持的语言代码 */
 type LangCode = 'zh-CN' | 'en';
 
+/** 平台相关按键文案：macOS 用 ⌘ / ⌥，其余平台用 Ctrl / Alt */
+const UI_IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '');
+const UI_COPY_KEY = UI_IS_MAC ? '⌘C' : 'Ctrl+C';
+const UI_HOTKEY = UI_IS_MAC ? '⌥V' : 'Alt+V';
+const UI_ALT_KEY = UI_IS_MAC ? 'Option' : 'Alt';
+
 const I18N: Record<LangCode, I18nDict> = {
   'zh-CN': {
     title: 'ClipSense',
-    hintHtml: '现在复制任意文本（Ctrl+C），会自动出现在下方列表<br><small>全局快捷键 <kbd>Alt+V</kbd> 唤出窗口</small>',
-    hintSmallHtml: '<small>全局快捷键 <kbd>Alt+V</kbd> 唤出窗口</small>',
+    hintHtml: `现在复制任意文本（${UI_COPY_KEY}），会自动出现在下方列表<br><small>全局快捷键 <kbd>${UI_HOTKEY}</kbd> 唤出窗口</small>`,
+    hintSmallHtml: `<small>全局快捷键 <kbd>${UI_HOTKEY}</kbd> 唤出窗口</small>`,
     empty: '暂无剪贴板历史',
     noMatch: (q: string) => `未找到匹配 “${q}” 的条目`,
     clearSearch: () => '清除搜索',
@@ -60,7 +66,7 @@ const I18N: Record<LangCode, I18nDict> = {
     yesterday: '昨天',
     backTop: '返回顶部',
     // Ctrl 按住透传（2026-10-13）：透传期间 hint 提示
-    passthroughHint: '已按住 Alt：鼠标点击将穿透窗口，作用于下层应用',
+    passthroughHint: `已按住 ${UI_ALT_KEY}：鼠标点击将穿透窗口，作用于下层应用`,
     searchPlaceholder: '搜索历史内容... 支持 date:昨天 和 #标签',
     searchBtn: '搜索',
     statCount: (n: number) => `${n} 项` as string,
@@ -97,8 +103,8 @@ const I18N: Record<LangCode, I18nDict> = {
   },
   en: {
     title: 'ClipSense',
-    hintHtml: 'Copy any text (Ctrl+C) and it will appear below<br><small>Global shortcut <kbd>Alt+V</kbd> toggles the window</small>',
-    hintSmallHtml: '<small>Global shortcut <kbd>Alt+V</kbd> toggles the window</small>',
+    hintHtml: `Copy any text (${UI_COPY_KEY}) and it will appear below<br><small>Global shortcut <kbd>${UI_HOTKEY}</kbd> toggles the window</small>`,
+    hintSmallHtml: `<small>Global shortcut <kbd>${UI_HOTKEY}</kbd> toggles the window</small>`,
     empty: 'No clipboard history yet',
     noMatch: (q: string) => `No items matching “${q}”`,
     clearSearch: () => 'Clear search',
@@ -134,7 +140,7 @@ const I18N: Record<LangCode, I18nDict> = {
     today: 'Today',
     yesterday: 'Yesterday',
     backTop: 'Back to top',
-    passthroughHint: 'Alt held: clicks pass through to the window below',
+    passthroughHint: `${UI_ALT_KEY} held: clicks pass through to the window below`,
     searchPlaceholder: 'Search history... date:yesterday, #tag',
     searchBtn: 'Search',
     statCount: (n: number) => `${n} items` as string,

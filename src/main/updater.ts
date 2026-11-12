@@ -70,6 +70,8 @@ interface ElectronNetApi {
 interface ElectronApi {
   app?: ElectronAppApi;
   net?: ElectronNetApi;
+  /** macOS 安装包（.dmg）用系统方式打开 */
+  shell?: { openPath: (filePath: string) => Promise<string> };
 }
 
 let _electron: ElectronApi | null = null;
@@ -134,12 +136,17 @@ export function parseTagName(tag: unknown): string {
  * @returns { name, downloadUrl }；无匹配返回 null
  */
 export function pickInstallerAsset(
-  assets: ReleaseAsset[] | null | undefined
+  assets: ReleaseAsset[] | null | undefined,
+  platform: string = 'win32'
 ): { name: string; downloadUrl: string } | null {
   if (!Array.isArray(assets)) return null;
-  const found = assets.find(
-    (a) => a && typeof a.name === 'string' && /ClipSense.*Setup.*\.exe$/i.test(a.name)
-  );
+  const isName = (a: ReleaseAsset, re: RegExp): a is ReleaseAsset =>
+    !!a && typeof a.name === 'string' && re.test(a.name);
+  // macOS：优先 .dmg（拖拽安装），退回 .zip（解压即用）；Windows 保持 NSIS .exe
+  const found = platform === 'darwin'
+    ? assets.find((a) => isName(a, /ClipSense.*\.dmg$/i))
+      || assets.find((a) => isName(a, /ClipSense.*\.zip$/i))
+    : assets.find((a) => isName(a, /ClipSense.*Setup.*\.exe$/i));
   if (!found) return null;
   const name: string = found.name;
   const downloadUrl: string = found.browser_download_url;
@@ -188,14 +195,16 @@ function readBody(res: ElectronIncomingMessage): Promise<string> {
 /**
  * 从下载 URL 提取目标临时文件名（优先版本号段：ClipSense-update-<version>.exe）
  */
-export function tempFileNameFromUrl(url: string): string {
+export function tempFileNameFromUrl(url: string, platform: string = 'win32'): string {
   try {
     const name = path.basename(new URL(url).pathname);
+    const macExt = /\.(dmg|zip)$/i.exec(name);
+    const ext = platform === 'darwin' && macExt ? macExt[0].toLowerCase() : '.exe';
     const m = name.match(/(\d+\.\d+\.\d+)/);
-    if (m) return `ClipSense-update-${m[1]}.exe`;
-    if (/\.exe$/i.test(name)) return name;
+    if (m) return `ClipSense-update-${m[1]}${ext}`;
+    if (/\.(exe|dmg|zip)$/i.test(name)) return name;
   } catch { /* URL 解析失败走兜底 */ }
-  return `ClipSense-update-${Date.now()}.exe`;
+  return `ClipSense-update-${Date.now()}.${platform === 'darwin' ? 'dmg' : 'exe'}`;
 }
 
 /**
@@ -249,8 +258,16 @@ export async function fetchLatestVersionFallback(): Promise<string> {
  * BUG2 降级通道：按 electron-builder 命名惯例枚举安装包直链候选。
  * （latest.yml 记录连字符命名「ClipSense-Setup-x.y.z.exe」；部分构建产物为空格命名）
  */
-export function assetUrlCandidates(version: string): string[] {
+export function assetUrlCandidates(version: string, platform: string = 'win32'): string[] {
   const base = 'https://github.com/holdyounger/ClipSense/releases/download';
+  if (platform === 'darwin') {
+    // electron-builder mac 默认命名：ClipSense-<version>-<arch>.dmg
+    return [
+      `${base}/v${version}/ClipSense-${version}-arm64.dmg`,
+      `${base}/v${version}/ClipSense-${version}-x64.dmg`,
+      `${base}/v${version}/ClipSense-${version}.dmg`,
+    ];
+  }
   return [
     `${base}/v${version}/ClipSense-Setup-${version}.exe`,
     `${base}/v${version}/${encodeURIComponent(`ClipSense Setup ${version}.exe`)}`,
@@ -305,7 +322,7 @@ export async function checkForUpdate(): Promise<CheckUpdateResult> {
         const currentVersion = getAppVersion();
         if (fbVersion) {
           if (compareVersion(fbVersion, currentVersion) > 0) {
-            for (const candidate of assetUrlCandidates(fbVersion)) {
+            for (const candidate of assetUrlCandidates(fbVersion, process.platform)) {
               if (await probeAssetUrl(candidate)) {
                 return {
                   ok: true, hasUpdate: true, latestVersion: fbVersion, currentVersion,
@@ -341,7 +358,7 @@ export async function checkForUpdate(): Promise<CheckUpdateResult> {
     return { ok: true, hasUpdate: false, latestVersion, currentVersion, reason: 'up-to-date' };
   }
 
-  const asset = pickInstallerAsset(release.assets as ReleaseAsset[] | null | undefined);
+  const asset = pickInstallerAsset(release.assets as ReleaseAsset[] | null | undefined, process.platform);
   if (!asset) {
     return { ok: true, hasUpdate: false, latestVersion, currentVersion, reason: 'no-installer-asset' };
   }
@@ -414,7 +431,7 @@ export async function downloadUpdate(
   } catch {
     tempDir = os.tmpdir();
   }
-  const filePath = path.join(tempDir, tempFileNameFromUrl(downloadUrl));
+  const filePath = path.join(tempDir, tempFileNameFromUrl(downloadUrl, process.platform));
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -478,6 +495,23 @@ export function installUpdate(filePath: string): InstallResult {
     fs.accessSync(filePath, fs.constants.F_OK);
   } catch {
     return { ok: false, error: '安装包不存在或已被清理' };
+  }
+
+  // macOS：安装包是 .dmg——交给系统挂载，由用户拖入「应用程序」完成覆盖；
+  // 不做静默替换（无签名自动更新链路），也不自动退出应用。
+  if (process.platform === 'darwin') {
+    try {
+      const shell = electronApi()?.shell;
+      if (shell) {
+        shell.openPath(filePath).catch(() => {});
+      } else {
+        const child = spawn('open', [filePath], { detached: true, stdio: 'ignore' });
+        child.unref();
+      }
+    } catch (err) {
+      return { ok: false, error: `打开安装包失败: ${(err as Error).message}` };
+    }
+    return { ok: true };
   }
 
   // NSIS 静默安装会先检测运行中的应用；本进程退出与安装器启动存在竞态，

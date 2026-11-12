@@ -693,7 +693,9 @@ class EdgeDetector {
  * 且它在滑入动画首帧注入 1px 位移，本身即一次可见抖动。
    */
   _forceCursorHoverRefresh(): void {
-    if (process.platform !== 'win32') return;
+    // macOS 同款问题：窗口出现在静止光标下方时 CoreAnimation 不补发 mouseenter，
+    // 顶部按钮 hover 命中不刷新（移出再移回才恢复）。合成 mousemove 两平台通用。
+    if (process.platform !== 'win32' && process.platform !== 'darwin') return;
     try {
       const point = screen.getCursorScreenPoint();
       const b = this.mainWindow.getBounds();

@@ -894,8 +894,11 @@ describe('K. Alt 按住穿透：渲染层接线（推送 → body.mod-pass + hin
     assert.match(main, /mod-pass/, 'body class 切换');
 
     const i18n = readRoot('src/renderer/i18n.ts');
-    assert.ok(i18n.includes("passthroughHint: '已按住 Alt"), '中文文案（Alt）');
-    assert.ok(i18n.includes("passthroughHint: 'Alt held"), '英文文案（Alt）');
+    // macOS 适配（2026-11-11）：穿透键位文案平台化（Windows Alt / macOS Option），
+    // 断言改为锁定模板字面量 + 平台映射常量，保持「两语文案存在」的回归锁意图
+    assert.ok(i18n.includes('passthroughHint: `已按住 ${UI_ALT_KEY}'), '中文文案（平台化 Alt/Option）');
+    assert.ok(i18n.includes('passthroughHint: `${UI_ALT_KEY} held'), '英文文案（平台化 Alt/Option）');
+    assert.ok(i18n.includes("const UI_ALT_KEY = UI_IS_MAC ? 'Option' : 'Alt'"), '平台键位映射');
 
     const css = readRoot('src/renderer/main.css');
     assert.match(css, /body\.mod-pass \.hint/, '穿透态 hint 视觉反馈样式');

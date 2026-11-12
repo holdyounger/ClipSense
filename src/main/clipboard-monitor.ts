@@ -319,6 +319,15 @@ class ClipboardMonitor {
       }
     } catch (e) { /* 忽略，尝试下一方式 */ }
 
+    // 方式 1b：macOS public.file-url（Finder 复制的 file:// URL，单/多行）
+    try {
+      const urlBuf = clipboard.readBuffer('public.file-url');
+      if (urlBuf && urlBuf.length > 0) {
+        const entries = this._parseFileUriText(urlBuf.toString('utf8').trim());
+        if (entries.length > 0) return entries;
+      }
+    } catch (e) { /* 忽略，尝试下一方式 */ }
+
     // 方式 2：text/uri-list（macOS/Linux）
     const raw = clipboard.readText();
     if (raw) {
@@ -653,13 +662,37 @@ class ClipboardMonitor {
           return true;
         }
         case 'file': {
-          // Explorer 需要 CF_HDROP / FileNameW，单纯写入 URI 文本只会粘贴成路径字符串。
           const paths = (item.files || [])
             .map(file => file.path)
             .filter((path): path is string => typeof path === 'string' && path.length > 0);
           if (paths.length === 0 && item.path) paths.push(item.path);
           if (paths.length === 0) return false;
 
+          // macOS：Finder 与多数应用读 public.file-url（单文件）或 NSFilenamesPboardType
+          // （多文件 plist 数组）。写纯文本只会粘贴成路径字符串。
+          if (process.platform === 'darwin') {
+            if (paths.length === 1) {
+              clipboard.writeBuffer(
+                'public.file-url',
+                Buffer.from(`file://${encodeURI(paths[0])}`, 'utf8')
+              );
+            } else {
+              const escapeXml = (v: string): string =>
+                v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              const plist = '<?xml version="1.0" encoding="UTF-8"?>'
+                + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                + '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                + '<plist version="1.0"><array>'
+                + paths.map((p) => `<string>${escapeXml(p)}</string>`).join('')
+                + '</array></plist>';
+              clipboard.writeBuffer('NSFilenamesPboardType', Buffer.from(plist, 'utf8'));
+            }
+            // 注意：Electron 每次 write* 都会清空其他格式，不能再追加 writeText，
+            // 否则会把刚写入的文件格式冲掉（粘贴退化成路径字符串）。
+            return true;
+          }
+
+          // Windows：Explorer 需要 CF_HDROP / FileNameW，单纯写入 URI 文本只会粘贴成路径字符串。
           // FileNameW 是 Windows 文件拖放/复制使用的 UTF-16LE 路径列表格式。
           const fileNameW = Buffer.from(`${paths.join('\0')}\0\0`, 'utf16le');
           clipboard.writeBuffer('FileNameW', fileNameW);

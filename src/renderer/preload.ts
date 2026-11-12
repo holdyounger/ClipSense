@@ -89,6 +89,8 @@ function subscribe<T>(
 
 /** 剪贴板 API 完整契约（先组装为常量再整体 expose——与 .js 内联字面量行为等价） */
 const clipboardAPI = {
+  /** 运行平台（渲染层用于 ⌘/Ctrl 文案与快捷键判定；sandbox preload 提供 process.platform） */
+  platform: process.platform,
   // ========== 历史 ==========
   getHistory: (): Promise<PreloadHistoryItem[]> =>
     ipcRenderer.invoke('get-history') as Promise<PreloadHistoryItem[]>,

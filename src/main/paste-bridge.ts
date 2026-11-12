@@ -25,6 +25,22 @@ const BUSY_WAIT_MS = 25;
 /** 等用户松开修饰键的上限（CopyQ 模型） */
 const MODIFIER_WAIT_MS = 1500;
 
+// ==================== macOS 常量（CoreGraphics 事件注入） ====================
+/** 当前平台判定（模块级缓存，避免热路径重复读 process.platform） */
+const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
+/** macOS 虚拟键码：V（kVK_ANSI_V） */
+const MAC_VK_V = 0x09;
+/** CGEventFlags：Command / Shift / Control / Option */
+const CG_FLAG_COMMAND = 0x00100000;
+const CG_FLAG_SHIFT = 0x00020000;
+const CG_FLAG_CONTROL = 0x00040000;
+const CG_FLAG_ALTERNATE = 0x00080000;
+/** kCGHIDEventTap：把事件投递到 HID 层（等同真实按键） */
+const CG_HID_EVENT_TAP = 0;
+/** kCGEventSourceStateCombinedSessionState：读取全局修饰键状态 */
+const CG_SOURCE_STATE_COMBINED = 0;
+
 // user32 常量
 const SW_RESTORE = 9;
 const SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2001;
@@ -147,6 +163,43 @@ const TRANSIENT_CLASSES = new Set([
   'MSCTFIME UI', 'Default IME', 'IME', 'CyberHelper',
 ]);
 
+/** macOS CoreGraphics 函数集（koffi 惰性绑定；签名与 dylib 导出一一对应） */
+interface MacFfi {
+  CGEventSourceCreate: (state: number) => unknown;
+  CGEventCreateKeyboardEvent: (src: unknown, vk: number, down: boolean) => unknown;
+  CGEventSetFlags: (ev: unknown, flags: number) => void;
+  CGEventPost: (tap: number, ev: unknown) => void;
+  CGEventSourceFlagsState: (state: number) => number;
+  AXIsProcessTrusted: () => boolean;
+  CFRelease: (obj: unknown) => void;
+}
+
+let _mac: MacFfi | null = null;
+
+/**
+ * macOS 惰性绑定：CoreGraphics（键态读取 / 键盘事件注入）+ ApplicationServices
+ * （AXIsProcessTrusted：辅助功能授权探测——未授权时 CGEventPost 会被系统静默丢弃）。
+ */
+function _bindMac(): void {
+  if (_mac) return;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const koffi = require('koffi') as KoffiModule;
+  const cg = koffi.load('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics') as KoffiLib;
+  const cf = koffi.load('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation') as KoffiLib;
+  const ax = koffi.load('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices') as KoffiLib;
+  _mac = {
+    CGEventSourceCreate: cg.func('void* CGEventSourceCreate(int32 stateID)'),
+    CGEventCreateKeyboardEvent: cg.func('void* CGEventCreateKeyboardEvent(void* source, uint16 virtualKey, bool keyDown)'),
+    CGEventSetFlags: cg.func('void CGEventSetFlags(void* event, uint64 flags)'),
+    CGEventPost: cg.func('void CGEventPost(uint32 tap, void* event)'),
+    CGEventSourceFlagsState:
+      cg.func('uint64 CGEventSourceFlagsState(int32 stateID)') as unknown as (state: number) => number,
+    AXIsProcessTrusted: ax.func('bool AXIsProcessTrusted()') as unknown as () => boolean,
+    CFRelease: cf.func('void CFRelease(void* obj)'),
+  };
+  console.log('[PasteBridge] macOS CoreGraphics 绑定成功（CGEvent / 修饰键 / AX 授权）');
+}
+
 /** captureForegroundVerbose 返回（带判定原因，供诊断与过滤） */
 interface CaptureVerboseResult {
   hwnd: number;
@@ -180,7 +233,8 @@ class PasteBridge {
   /** 惰性绑定入口 */
   private _ensure(): void {
     if (!this._ready) {
-      _bindUser32();
+      if (IS_MAC) _bindMac();
+      else _bindUser32();
       this._ready = true;
     }
   }
@@ -192,7 +246,9 @@ class PasteBridge {
    * @returns hwnd；仍无前台返回 0
    */
   captureForegroundRetry(maxMs = 120): number {
-    if (process.platform !== 'win32') return 0;
+    // macOS：目标由「面板失焦归还前台」确定，1 表示存在可粘贴目标（无需句柄）
+    if (IS_MAC) return 1;
+    if (!IS_WIN) return 0;
     try {
       this._ensure();
       if (!_user32 || !_kernel32) return 0;
@@ -232,7 +288,8 @@ class PasteBridge {
   captureForegroundVerbose(): CaptureVerboseResult {
     const fail = (reason: string, extra: Partial<CaptureVerboseResult> = {}): CaptureVerboseResult =>
       ({ hwnd: 0, reason, ...extra });
-    if (process.platform !== 'win32') return fail('non-win32');
+    if (IS_MAC) return { hwnd: 1, reason: 'mac-focus-release' };
+    if (!IS_WIN) return fail('non-win32');
     try {
       this._ensure();
       if (!_user32 || !_kernel32) return fail('not-bound');
@@ -269,7 +326,8 @@ class PasteBridge {
    * @returns hwnd；失败/被过滤/非 win32 返回 0
    */
   captureForeground(): number {
-    if (process.platform !== 'win32') return 0;
+    if (IS_MAC) return 1; // 见 captureForegroundRetry
+    if (!IS_WIN) return 0;
     try {
       this._ensure();
       if (!_user32 || !_kernel32) return 0;
@@ -335,7 +393,8 @@ class PasteBridge {
    * 目标句柄是否仍然有效（可见的顶层窗口）
    */
   isAlive(hwnd: number): boolean {
-    if (!hwnd || process.platform !== 'win32') return false;
+    if (IS_MAC) return hwnd > 0;
+    if (!hwnd || !IS_WIN) return false;
     try {
       this._ensure();
       if (!_user32) return false;
@@ -352,6 +411,7 @@ class PasteBridge {
    * @returns true=已全部松开；false=超时仍有按住（放弃注入更安全）
    */
   private _waitForModifiersReleased(): boolean {
+    if (IS_MAC) return this._waitMacModifiersReleased();
     const start = Date.now();
     while (Date.now() - start < MODIFIER_WAIT_MS) {
       let any = false;
@@ -382,7 +442,8 @@ class PasteBridge {
    * @param opts.key 缺省 ctrl-v
    */
   pasteTo(hwnd: number, opts: PasteToOptions = {}): PasteToResult {
-    if (process.platform !== 'win32') {
+    if (IS_MAC) return this._pasteMac(opts);
+    if (!IS_WIN) {
       return { ok: false, error: 'non-win32' };
     }
     try {
@@ -507,6 +568,71 @@ class PasteBridge {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  }
+
+  /**
+   * macOS：是否已获得「辅助功能」授权。
+   * CGEventPost 在未授权时被系统静默丢弃（无异常、无返回码），必须显式探测。
+   */
+  isAccessibilityTrusted(): boolean {
+    if (!IS_MAC) return true;
+    try {
+      this._ensure();
+      return _mac ? !!_mac.AXIsProcessTrusted() : false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * macOS 粘贴：调用方已让面板失焦（blur/hide），向当前前台应用投递 ⌘V。
+   * 目标窗口的「身份」由系统焦点归还保证，不依赖窗口句柄。
+   */
+  private _pasteMac(opts: PasteToOptions): PasteToResult {
+    try {
+      this._ensure();
+      if (!_mac) return { ok: false, error: 'not-bound' };
+      if (!_mac.AXIsProcessTrusted()) return { ok: false, error: 'accessibility-required' };
+      if (!this._waitMacModifiersReleased()) {
+        console.log('[PasteBridge] macOS 修饰键 1500ms 内未松开，放弃注入');
+        return { ok: false, error: 'modifiers-held' };
+      }
+      const src = _mac.CGEventSourceCreate(CG_SOURCE_STATE_COMBINED);
+      const down = _mac.CGEventCreateKeyboardEvent(src, MAC_VK_V, true);
+      const up = _mac.CGEventCreateKeyboardEvent(src, MAC_VK_V, false);
+      if (!down || !up) {
+        if (down) _mac.CFRelease(down);
+        if (up) _mac.CFRelease(up);
+        if (src) _mac.CFRelease(src);
+        return { ok: false, error: 'event-create-failed' };
+      }
+      _mac.CGEventSetFlags(down, CG_FLAG_COMMAND);
+      _mac.CGEventSetFlags(up, CG_FLAG_COMMAND);
+      _mac.CGEventPost(CG_HID_EVENT_TAP, down);
+      this._sleep(12);
+      _mac.CGEventPost(CG_HID_EVENT_TAP, up);
+      _mac.CFRelease(down);
+      _mac.CFRelease(up);
+      if (src) _mac.CFRelease(src);
+      console.log('[PasteBridge] pasteTo(mac) 完成: ⌘V 已投递');
+      return { ok: true, restored: opts.key === 'shift-insert' ? 'mac-shift-insert' : 'mac-focus-release' };
+    } catch (err) {
+      console.warn('[PasteBridge] pasteTo(mac) 失败:', (err as Error).message);
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /** macOS：轮询 CGEventSourceFlagsState，等待所有修饰键松开（防 ⌥ 唤出后键位污染） */
+  private _waitMacModifiersReleased(): boolean {
+    const start = Date.now();
+    const mask = CG_FLAG_COMMAND | CG_FLAG_SHIFT | CG_FLAG_CONTROL | CG_FLAG_ALTERNATE;
+    while (Date.now() - start < MODIFIER_WAIT_MS) {
+      if (!_mac) return true;
+      const flags = _mac.CGEventSourceFlagsState(CG_SOURCE_STATE_COMBINED);
+      if ((flags & mask) === 0) return true;
+      this._sleep(15);
+    }
+    return false;
   }
 
   /** SendInput 组合键：modifier down → key down → key up → modifier up（4 条 INPUT 一帧） */
