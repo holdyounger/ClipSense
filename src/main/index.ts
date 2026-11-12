@@ -588,7 +588,9 @@ window.__clipSenseBarHover = function (on) {
       {
         // 调试模式（2026-11-05 小M「调试模式不生效」修复）：petStage DevTools 手动开关——
         // dev 模式自动开（did-finish-load 路径），打包版/生产模式下经此开关排查桌宠渲染问题
+        // 2026-11-12 小M：调试模式仅限开发（未打包）——打包版不展示（发布包不带调试入口）
         label: '调试模式（主面板 DevTools）',
+        visible: !app.isPackaged,
         type: 'checkbox',
         checked: this._petDebugMode,
         click: (menuItem: { checked: boolean }) => {
@@ -608,7 +610,9 @@ window.__clipSenseBarHover = function (on) {
         },
       },
       {
+        // 2026-11-12 小M：调试模式仅限开发（未打包）——打包版不展示（发布包不带调试入口）
         label: '调试模式（桌宠 DevTools）',
+        visible: !app.isPackaged,
         type: 'checkbox',
         checked: this._petDebugMode,
         click: (menuItem: { checked: boolean }) => {
@@ -1392,6 +1396,8 @@ window.__clipSenseBarHover = function (on) {
     // F12 调试切换（2026-11-05 小M「调试模式不生效」辅助）：切换主面板 DevTools，
     // 无需进托盘翻菜单。生产模式同样可用（排查需要）。
     globalShortcut.register('F12', () => {
+      // 2026-11-12 小M：调试快捷键仅限开发（未打包）——发布版不带调试入口
+      if (app.isPackaged) return;
       const mw = this.mainWindow;
       if (!mw || mw.isDestroyed()) return;
       // isDevTC：DevTools 是否已开（webContents.capturePage 不可靠，用 devToolsWebContents 判定）
