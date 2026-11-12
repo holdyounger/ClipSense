@@ -139,7 +139,7 @@ jobs:
 
       - name: Build Electron app (macOS)
         shell: bash
-        run: npm run build:mac
+        run: npm run build:mac -- --publish onTagOrDraft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
