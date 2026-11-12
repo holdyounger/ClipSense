@@ -5,6 +5,24 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
+
+## macOS 平台适配（开发中，基于 v1.0.15）
+
+### ✨ 新增
+
+- **macOS 原生运行**：粘贴链路改用 CoreGraphics `CGEvent`（koffi FFI）注入 `⌘V`；`CGEventSourceFlagsState` 实现 `Option` 键态探针（Alt 穿透同款能力）；未授权「辅助功能」时弹窗引导并直达系统设置
+- **菜单栏工具形态**：`LSUIElement` + `app.dock.hide()`，面板/触发条跨 Space 常驻（含全屏应用之上），`floating` 层级置顶
+- **文件剪贴板适配**：单文件写 `public.file-url`，多文件写 `NSFilenamesPboardType`；读取侧新增 `public.file-url` 分支（macOS 会规范化为 `text/uri-list`）
+- **更新链路适配**：Release 资产优先匹配 `.dmg`（退回 `.zip`）；安装改为系统挂载 dmg 由用户拖入应用程序
+- **打包与 CI**：`build:mac` 产出 arm64/x64 双架构 dmg+zip（`build/icon.icns`、`extendInfo`）；GitHub Actions 新增 `build-macos` job，Release 同步上传两平台产物
+- **平台化文案**：渲染层按平台显示 `⌘C/⌥V`（macOS）或 `Ctrl+C/Alt+V`；搜索快捷键 macOS 为 `⌘F`
+
+### 🧪 验证
+
+- `npx tsc --noEmit` 通过；单测 510 通过（tag-utils 1 例为既有 `temp/` fixture 缺失，与本次无关）
+- 开发版与打包版均在本机 macOS 实跑：窗口/边缘唤出/剪贴板监听/全局快捷键/钥匙串加密/Option 探针正常
+- `npm run build:mac` 成功产出 arm64+x64 dmg/zip；包内 `LSUIElement=true`、koffi darwin 原生模块完整
+
 ## v1.0.15（2026-11-11）—— 置顶功能 + 统计弹窗 HUD 打磨批次
 
 ### ✨ 新功能
