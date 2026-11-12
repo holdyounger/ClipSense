@@ -134,6 +134,8 @@ class EdgeDetector {
   isCountingDown: boolean;
   _hiddenCompletedAt: number;
   _wasOverTrigger: boolean;
+  /** 触发条 hover 反馈去重态(2026-11-11 mac 原生化:把手点亮) */
+  _barHoverLast: boolean;
   _suppressTriggerUntilLeave: boolean;
   _mouseLeaveDebounceId: NodeJS.Timeout | null;
   isPinned: boolean;
@@ -207,6 +209,7 @@ class EdgeDetector {
     this._hiddenCompletedAt = 0;
     /** 防抖状态：隐藏后光标仍停在触发条上时，需先离开再进入才唤出 */
     this._wasOverTrigger = false;
+    this._barHoverLast = false;
     this._suppressTriggerUntilLeave = false;
     /** mouse-leave 防抖定时器：面板内快速划过子元素时不误启动倒计时 */
     this._mouseLeaveDebounceId = null;
@@ -394,6 +397,17 @@ class EdgeDetector {
         point.y >= triggerBounds.y && point.y < triggerBounds.y + triggerBounds.height
       );
 
+      // 贴边条 hover 反馈（2026-11-11 mac 原生化）：光标进入/离开热区时通知
+      // 触发条点亮/回暗。macOS 把手脚本消费 __clipSenseBarHover；Windows 注入
+      // 脚本未定义该方法时表达式短路静默跳过，零副作用。
+      const barHover = isOverTrigger === true;
+      if (barHover !== this._barHoverLast && this.triggerWindow && !this.triggerWindow.isDestroyed()) {
+        this._barHoverLast = barHover;
+        this.triggerWindow.webContents.executeJavaScript(
+          `window.__clipSenseBarHover && window.__clipSenseBarHover(${barHover ? 'true' : 'false'})`
+        ).catch(() => {});
+      }
+
       if (isOverTrigger) {
         // 隐藏刚完成时鼠标往往仍停在边缘（触发条位置）。要求「离开触发条后再进入」
         // 才允许唤出，避免隐藏后立刻弹回（bounce）。
@@ -519,6 +533,7 @@ class EdgeDetector {
     // → 固定按钮/菜单点不动（18:21 实验证实的机制）。
     this._suppressTriggerUntilLeave = false;
     this._wasOverTrigger = false;
+    this._barHoverLast = false; // 触发条隐藏即清 hover 态，防残留点亮
 
     // 弹出即进入 header hover 抑制窗口（400ms）：唤出瞬间光标常停在 header 区，
     // 立即展开会造成「弹出即抖动」（约束 4）。
@@ -794,13 +809,18 @@ class EdgeDetector {
     // triggerWindow 只占据可见触发条本身，透明区域不会成为命中热区。
     // V1.0.4 抽屉舞台：物理窗口固定 restWidth + travel（24px），条体锚定屏缘；
     // 静止态可见条 6px，多余 18px 为抽屉拉出预留空间且点击穿透。
-    const stageWidth = DRAWER.restWidth + DRAWER.travel;
+    // macOS（2026-11-11 原生化二轮）：无真抽屉动画，舞台收窄为 14px
+    // （把手 4 + 边距 2 + 脉冲扩宽余量 8）——透明失效场景白框面积最小化；
+    // Windows 保持 24px 抽屉舞台不变。
+    const stageWidth = process.platform === 'darwin' ? 26 : DRAWER.restWidth + DRAWER.travel;
     const triggerX = targetEdge === 'right'
       ? triggerDisplay.workArea.x + triggerDisplay.workAreaSize.width - stageWidth
       : triggerDisplay.workArea.x;
     // 高度与主面板静止态 header 一致：贴边热区只有 header 部分
     //（方案 A：_headerHeight 常量化 40 + 钳制 ≤44，滑出时 hover 态强制复位）。
-    const triggerHeight = this._headerHeight || this.triggerHeight;
+    // macOS(2026-11-11 原生化三轮):胶囊把手比例更修长,固定 56px;
+    // Windows 维持 header 对齐不变。
+    const triggerHeight = process.platform === 'darwin' ? 56 : (this._headerHeight || this.triggerHeight);
     // 滑出即收起 header（约束 4「面板即将收起」规则：跳过收起补间直接 snap），
     // 并复位 hover 状态机，防止下次弹出前残留 true。
     this._headerHover.reset();

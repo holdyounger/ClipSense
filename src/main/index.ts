@@ -395,13 +395,16 @@ class ClipboardSpikeApp {
     // PasteBridge 原子恢复+注入承担。如需回滚：恢复下一行调用即可。
     // this._applyNoActivate(this.mainWindow);
 
-    // 独立的边缘触发条窗口。窗口本身只有 6px 宽、与 header 同高，命中区域与可见条完全一致。
+    // 独立的边缘触发条窗口。Windows: 24px 抽屉舞台；macOS(2026-11-11 原生化):
+    // 14px 舞台(把手 4 + 边距 2 + 脉冲扩宽余量 8),样式/脚本/窗口参数按平台分支。
+    const isMacBar = process.platform === 'darwin';
+    const MAC_STAGE_WIDTH = 26; // 胶囊 18 + 边距 4 + 悬停退让 2 + 光晕余量 2
     this.triggerWindow = new BrowserWindow({
       // V1.0.4 抽屉舞台（2026-09-17 动画卡顿+闪烁优化）：物理窗口固定 24px
       // = DRAWER.restWidth(6) + DRAWER.travel(18)，动画全程零 resize——
       // transparent 窗口 setBounds 触发 DWM 表面重分配，是实机「弹出动画
       // 卡顿 + 闪烁一次」的根因。多余 18px 点击穿透（见下方 setIgnoreMouseEvents）。
-      width: DRAWER.restWidth + DRAWER.travel,
+      width: isMacBar ? MAC_STAGE_WIDTH : DRAWER.restWidth + DRAWER.travel,
       height: 56,
       frame: false,
       transparent: true,
@@ -410,18 +413,62 @@ class ClipboardSpikeApp {
       resizable: false,
       skipTaskbar: true,
       show: false,
-      focusable: false,
+      // macOS（2026-11-11 实机修复「小白框」）：focusable:false 在 darwin 走
+      // NSPanel 路径，透明舞台在 NSPanel 上渲染白底。改普通窗口：showInactive
+      // 不夺焦 + setIgnoreMouseEvents(true) 点击穿透，行为等价；显式关阴影
+      // 与系统圆角。Windows 保持 focusable:false 不变（抽屉舞台焦点模型）。
+      focusable: !isMacBar,
+      ...(isMacBar ? { hasShadow: false, roundedCorners: false } : {}),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
       },
     });
+    // 贴边条平台化样式与脚本（2026-11-11 mac 原生化）：mac 走低饱和半透明把手 +
+    // 呼吸脉冲；Windows 保留原渐变辉光条与真抽屉动画（buildTriggerScript 原样消费）。
+    // 注入字符串约束同 trigger-anim：不得含反引号 / ${（宿主为模板字面量）。
+    const barCss = isMacBar
+      ? `/* macOS 原生克制风（2026-11-11）：低饱和半透明把手，热区 hover 点亮加宽；
+   新内容动画走呼吸脉冲（见脚本覆盖段），真抽屉视觉元素隐藏。 */
+#cavity, #bead { display:none; }
+#bar { position:fixed; top:6px; bottom:6px; right:4px; left:auto; width:18px; border-radius:9px; background:rgba(255,255,255,.55); box-shadow:0 1px 4px rgba(0,0,0,.12), inset 0 0 0 .5px rgba(255,255,255,.6); opacity:.18; display:flex; align-items:center; justify-content:center; transform-origin:right center; transition:opacity .25s ease, transform .25s ease, box-shadow .25s ease, background .25s ease; will-change:opacity, transform; }
+#bar::after { content:'›'; font-size:15px; font-weight:600; color:rgba(60,60,67,.45); margin-right:1px; transition:color .22s ease, transform .22s ease; }
+#bar.left::after { content:'‹'; margin-right:0; margin-left:1px; }
+#bar.right { left:auto; right:4px; }
+#bar.left { right:auto; left:4px; }
+#bar.hover { opacity:1; background:rgba(255,255,255,.9); transform:translateX(-2px); box-shadow:0 2px 8px rgba(0,0,0,.16), inset 0 0 0 .5px rgba(255,255,255,.8); }
+#bar.hover::after { color:rgba(94,92,230,.9); transform:translateX(-1px); }
+@keyframes clipSenseBarPulse { 0% { opacity:.18; } 16% { opacity:1; background:rgba(255,255,255,.9); box-shadow:0 0 0 2px rgba(94,92,230,.35), 0 2px 10px rgba(94,92,230,.25); } 50% { opacity:.9; box-shadow:0 0 0 1.5px rgba(94,92,230,.22), 0 2px 8px rgba(94,92,230,.15); } 100% { opacity:.18; } }
+#bar.pulse { animation:clipSenseBarPulse 1.1s ease; }
+@keyframes clipSenseChevPulse { 0%,100% { transform:translateX(0); color:rgba(60,60,67,.45); } 16% { transform:translateX(-4px); color:rgba(94,92,230,.95); } 50% { transform:translateX(-1px); color:rgba(94,92,230,.7); } }
+#bar.pulse::after { animation:clipSenseChevPulse 1.1s ease; }`
+      : `#bar { position:fixed; top:0; bottom:0; left:0; width:6px; background:linear-gradient(180deg,#a29bfe,#6c5ce7); border-radius:0 6px 6px 0; box-shadow:0 0 8px rgba(108,92,231,.8); }
+#bar.right { left:auto; right:0; border-radius:6px 0 0 6px; transform-origin:right center; }
+#bar.left { left:0; border-radius:0 6px 6px 0; transform-origin:left center; }`;
+    const barScriptOverride = isMacBar
+      ? `/* macOS 原生化覆盖：新内容到达 = 呼吸亮起（替代真抽屉动画）+ 热区 hover 反馈。
+   协议不变：__clipSenseBarPulse() 无参、__clipSenseBarStop 复位、连续触发重放。 */
+window.__clipSenseBarPulse = function () {
+  var bar = document.getElementById('bar');
+  if (!bar) return;
+  if (window.__clipSenseBarStop) window.__clipSenseBarStop();
+  bar.classList.remove('pulse');
+  void bar.offsetWidth;
+  bar.classList.add('pulse');
+  window.__clipSenseBarStop = function () {
+    bar.classList.remove('pulse');
+    window.__clipSenseBarStop = null;
+  };
+};
+window.__clipSenseBarHover = function (on) {
+  var bar = document.getElementById('bar');
+  if (bar) bar.classList.toggle('hover', !!on);
+};`
+      : '';
     this.triggerWindow!.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`
       <!doctype html><html><head><style>
         html,body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; }
-        #bar { position:fixed; top:0; bottom:0; left:0; width:6px; background:linear-gradient(180deg,#a29bfe,#6c5ce7); border-radius:0 6px 6px 0; box-shadow:0 0 8px rgba(108,92,231,.8); }
-        #bar.right { left:auto; right:0; border-radius:6px 0 0 6px; transform-origin:right center; }
-        #bar.left { left:0; border-radius:0 6px 6px 0; transform-origin:left center; }
+        ${barCss}
         /* 新条目动画·贴边态 V0.5「真抽屉」（2026-09-12，小M 核定）：
            新内容到达 = 抽屉拉开 → 内容塞入 → 抽屉推回关上（三段状态迁移，
            「关好了」=「已收纳」的确认感）。窗口静止 6px（命中区决策不变），
@@ -445,6 +492,7 @@ class ClipboardSpikeApp {
         // 关键帧与回放器由主进程 trigger-anim.js 预积分生成（buildTriggerScript）：
         // __clipSenseBarPulse() 协议不变（无参调用，连续重触发由 __clipSenseBarStop 复位）。
         ${buildTriggerScript()}
+        ${barScriptOverride}
       </script></body></html>
     `)}`);
     // 舞台多余 18px 不拦截点击：唤出判定走主进程轮询（OS 光标 vs 屏缘 6px 热区），
