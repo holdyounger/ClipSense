@@ -1602,7 +1602,26 @@ window.__clipSenseBarHover = function (on) {
       // fgNow=0 是窗口切换真空态（合法瞬态），用 captureForegroundRetry 忙等重试。
       const fgNow = this.pasteBridge ? this.pasteBridge.captureForegroundRetry() : 0;
       const trackedHwnd = this.focusTracker ? this.focusTracker.getHwnd() : 0;
-      const restoreHwnd = fgNow > 0 ? fgNow : trackedHwnd;
+      // 双 0 兑底（2026-11-11 守护用例锁定）：唤出时前台=桌面/任务栏且 tracked 过期/为 0
+      // → Z 序下探面板正下方压着的顶层窗口（Ditto 同款），命中回写 tracked 供同显示周期复用
+      let restoreHwnd = fgNow > 0 ? fgNow : trackedHwnd;
+      if (!restoreHwnd && this.mainWindow && !this.mainWindow.isDestroyed() && this.pasteBridge) {
+        try {
+          const hb = this.mainWindow.getNativeWindowHandle();
+          const panelHwnd = Number(hb.readBigUInt64LE(0));
+          const below = this.pasteBridge.captureBelow(panelHwnd);
+          if (below > 0) {
+            restoreHwnd = below;
+            if (this.focusTracker) {
+              this.focusTracker._targetHwnd = below;
+              this.focusTracker._trackedAt = Date.now();
+            }
+            console.log(`[Spike] paste target z-fallback: below=${below}`);
+          }
+        } catch { /* 下探失败维持 0 */ }
+      }
+      // 无目标短路（不白跑注入）
+      if (!restoreHwnd) return { ok: false, error: 'no-target' };
       console.log(`[Spike] paste target: fgNow=${fgNow} tracked=${trackedHwnd} -> use=${restoreHwnd}`);
       _modDiag(`[Paste] target fgNow=${fgNow} tracked=${trackedHwnd} use=${restoreHwnd}`);
 
@@ -2136,8 +2155,15 @@ window.__clipSenseBarHover = function (on) {
         }
       } catch { /* 回退失败保持 0 */ }
       if (fb > 0) _modDiag(`[Paste] capture z-fallback hwnd=${fb}`);
-      ft._targetHwnd = 0;
-      ft._trackedAt = 0;
+      // 修复（2026-11-11 守护用例锁定）：fb 命中时必须写回 tracked，否则「唤出时前台=桌面/任务栏」
+      // 场景 tracked 恒 0 → 双击无目标必失效；此前 fb 只落日志、随后被无条件清零
+      if (fb > 0) {
+        ft._targetHwnd = fb;
+        ft._trackedAt = Date.now();
+      } else {
+        ft._targetHwnd = 0;
+        ft._trackedAt = 0;
+      }
     }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.executeJavaScript(

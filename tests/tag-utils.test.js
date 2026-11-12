@@ -433,7 +433,7 @@ describe('性能冒烟', () => {
 
 // ==================== v2 样本电池（方案 §6 验收 1：64 样本转入，命中率 ≥98%） ====================
 
-describe('v2 样本电池（temp/tag-v2-validation-20260910，64 样本转入）', () => {
+describe('v2 样本电池（temp/tag-v2-validation-20260910，64 样本转入）', { skip: !BATTERY }, () => {
   // 夹具缺失守卫：显式 skip 一条占位用例保留「该节存在」的可见性，随后整节退出。
   if (!BATTERY) {
     test('v2 样本电池夹具缺失，整节跳过（temp/ 为本地 gitignored 校验资产）', { skip: true }, () => {});

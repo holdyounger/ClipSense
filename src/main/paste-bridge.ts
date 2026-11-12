@@ -504,7 +504,9 @@ class PasteBridge {
           const fgTidVal = _user32.GetWindowThreadProcessId(fgHwnd, null);
           const tgtTidVal = _user32.GetWindowThreadProcessId(hwnd, null);
           let attached = false;
-          if (fgTidVal && tgtTidVal && fgTidVal !== tgtTidVal) {
+          // 自附加守卫（2026-11-11 守护用例锁定）：fg 线程就是自身线程时 AttachThreadInput 自我附加
+          // 会死锁输入队列——跳过附加（同线程无需附加即可操作焦点）
+          if (fgTidVal && tgtTidVal && fgTidVal !== tgtTidVal && fgTidVal !== selfTid) {
             attached = !!_user32.AttachThreadInput(fgTidVal, selfTid, true);
           }
           try {
