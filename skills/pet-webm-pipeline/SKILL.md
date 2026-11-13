@@ -10,7 +10,10 @@ ClipSense 桌宠（Electron 透明窗口，`<video>` 直接渲染 WebM alpha）�
 ## 适用范围与边界
 
 - **本 Skill 主流程（稳定、可复用）**：给定绿幕视频，完成 抠像 → 编码 →（可选）部署 → 验证。确定性步骤，只依赖 Python/OpenCV + ffmpeg。
-- **绿幕视频怎么来（AIGC 环节）**：依赖外部视频生成服务与本地浏览器，属环境相关步骤，流程与提示词模板见 [references/greenscreen-source.md](references/greenscreen-source.md)。不要把外部服务凭证、账号登录态、机器特定逻辑写进仓库。
+- **绿幕视频怎么来（AIGC 环节）**：依赖外部视频生成服务与本地浏览器，属环境相关步骤。两条路：
+  1. **手动**：流程与提示词模板见 [references/greenscreen-source.md](references/greenscreen-source.md)（单条生成）。
+  2. **批量脚本**：`scripts/pet-generate/a01-batch.ps1`（CDP 驱动 Edge 驱动片刻网 aiclipmaxx 批量提交/下载，动作清单在 `a01-actions.json`，参考图 `docs/pet-characters/a01-greenscreen.png`）——前置：Edge 带远程调试端口 9222 并已登录站点；用法见脚本头部注释。批产出接下方部署步。
+  环境相关步骤**不得把外部服务凭证、账号登录态、机器特定逻辑写进仓库**（脚本只用 CDP 通用命令，不含登录态）。
 
 ## 执行步骤
 

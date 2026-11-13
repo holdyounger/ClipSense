@@ -198,12 +198,14 @@ let cursorNX = 0.5;
 // 动作引擎状态
 const POOLS = {
   idle: ['d1', 'd2', 'd3', 'd4'],
-  // 单一形象收口（2026-10-28）：p6-p8/p10/p11/p13 仍是 0486b7d 旧参数化形象，
-  // 与混元比熊混播会「变身」——点击池收敛到 p1-p5 比熊五连，待 AIGC 资产替换后恢复全集
-  click: ['p1', 'p2', 'p3', 'p4', 'p5'],
+  // AIGC 资产替换完成（2026-11-13 小M：22 个网易格式素材经 Skill 全量重制）——
+  // 点击池恢复全集 p1-p13（10 个动作，旧参数化形象排除注释随之退役）
+  click: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p10', 'p11', 'p13'],
   hover: ['z1', 'z2', 'z3'],
   drag: ['t1'],              // 网易语义修正（2026-10-15 小M）：t1=拖拽动作，拖拽期间循环播放
   react: ['heart1'],
+  light: ['light'],          // 彩蛋动作：光效（2026-11-13 动作管理适配 22 素材全集）
+  song: ['light0song'],      // 彩蛋动作：唱歌
 };
 let current = '';            // 当前动作名
 let state = 'idle';          // idle | action
@@ -219,7 +221,9 @@ function pick(arr, avoid) {
 // 动作库 blob 预载（本地 fs，14MB，<1s）
 const BLOBS = {};
 function preloadBlobs() {
-  const all = [].concat(POOLS.idle, POOLS.click, POOLS.hover, POOLS.drag, POOLS.react);
+  // 动作管理全集（2026-11-13）：light / song 彩蛋池同样要预载，否则 BLOBS[name]
+  // 不存在，play() 在 `if (!BLOBS[name]) return` 静默返回，点彩蛋叶不播任何动作。
+  const all = [].concat(POOLS.idle, POOLS.click, POOLS.hover, POOLS.drag, POOLS.react, POOLS.light, POOLS.song);
   let ok = 0;
   for (const name of all) {
     try {
@@ -474,11 +478,12 @@ window.addEventListener('mouseup', function (e) {
   pressing = false;
   if (moved) { moved = false; ipcRenderer.send('pet:drag-end', e.screenX, e.screenY); if (mode === 'live2d' && window.__petLive2dAction) window.__petLive2dAction('idle'); else if (mode === 'vrm' && window.__vrmAPI) window.__vrmAPI.action('idle'); else playIdle(performance.now()); }
   else if (wasClick) {
-    // 切换卡顿优化（2026-10-29）：先唤出面板、延迟 420ms 再播反应动作——
-    // 旧时序 react 视频换源/解码/交叉淡入与面板 prepare+滑入同帧竞争 GPU/合成器，
-    // 是「桌宠切主界面卡顿」的渲染侧主因（面板动画本身是 transform+opacity，很轻）
+    // 动作/窗口解耦（2026-11-13）：默认只播反应动作，不弹主面板（主进程
+    // pet:summon 守卫按 petClickSummon 拦截）；面板改由 Alt+V / 托盘 / 贴边热区唤出。
+    // 原先为错开「面板滑入」与 react 视频解码而设的 420ms 延迟，在不弹面板后
+    // 已无收益，改为立即播放，点击反馈跟手。
     ipcRenderer.send('pet:summon');
-    setTimeout(function () { triggerReact(); }, 420);
+    triggerReact();
   }
 });
 ['mousedown','mouseup','contextmenu'].forEach(function (evtName) {
@@ -646,9 +651,15 @@ function renderInteractSub() {
     }
   } else {
     interactLeaves = [
-      { key: 'click', ang: 245, icon: '👆', hint: '点击动作', value: 'click' },
-      { key: 'hover', ang: 180, icon: '👋', hint: '挥手动作', value: 'hover' },
-      { key: 'heart', ang: 115, icon: '❤️', hint: '爱心', value: 'heart' },
+      // 防遮挡终案 v3（2026-11-13 小M：二级菜单遮宠形象 + e2e 三档双镜像验证）：
+      // 互动扇整体上移——扇心改锚「猫顶上方 20px」（R=95 上弧 5 叶），叶片悬浮在形象上方零遮挡；
+      // 旧方案（低位叶/外推半径）在 0.7× 小窗档无解（猫占窗底 210px，下弧无安全位），几何推导见 e2e
+      // 叶序（右展镜像）：click 290° / hover 250° / song 210° / light 170° / heart 130°，R=95 固定
+      { key: 'click', ang: 290, icon: '👆', hint: '点击动作', value: 'click', radius: 95 },
+      { key: 'hover', ang: 250, icon: '👋', hint: '挥手动作', value: 'hover', radius: 95 },
+      { key: 'song', ang: 210, icon: '🎵', hint: '唱歌', value: 'song', radius: 95 },
+      { key: 'light', ang: 170, icon: '💡', hint: '光效', value: 'light', radius: 95 },
+      { key: 'heart', ang: 130, icon: '❤️', hint: '爱心', value: 'heart', radius: 95 },
     ];
   }
   applyLayout();
@@ -755,7 +766,8 @@ ctxMenu.addEventListener('click', function (e) {
   e.stopPropagation();
   if (ctxLevel === 'main') {
     const k = leaf.dataset.leaf;
-    if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon'); }
+    // 显式入口带 force=true：不受「点击桌宠时唤出面板」开关影响
+    if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon', true); }
     else if (k === 'mode') renderModeSub();
     else if (k === 'react') renderInteractSub(); // Bug3：点互动 → 动作点播二级扇
     else if (k === 'skill') {
@@ -795,6 +807,8 @@ ctxMenu.addEventListener('click', function (e) {
     } else if (opt === 'click') { playAction('click'); }
     else if (opt === 'hover') { playAction('hover'); }
     else if (opt === 'heart') { playAction('react'); }
+    else if (opt === 'light') { playAction('light'); }  // 彩蛋：光效（2026-11-13 动作管理适配）
+    else if (opt === 'song') { playAction('song'); }    // 彩蛋：唱歌
   } else if (ctxLevel === 'mode') {
     const opt = leaf.dataset.opt;
     if (!opt) return;

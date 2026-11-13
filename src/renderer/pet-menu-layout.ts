@@ -22,6 +22,8 @@ export interface LeafSpec {
   icon: string;
   hint: string;
   value?: string;
+  /** 自定义半径（2026-11-13 形象工坊防遮挡：低位叶外推 R_SUB→95 推出猫矩形） */
+  radius?: number;
 }
 
 /** 布局输入 */
@@ -50,6 +52,10 @@ export interface LeafLayout {
   y: number;
   size: number;
   selected: boolean;
+  /** 落位角（度，e2e 防遮挡守护用：叶矩形推算）2026-11-13 */
+  ang: number;
+  /** 落位半径（同上；back=0，自定义半径叶 = radius×k）2026-11-13 */
+  r: number;
 }
 
 /** 布局输出 */
@@ -151,15 +157,27 @@ export function computeLayout(input: LayoutInput): LayoutResult {
 
   const leaves: LeafLayout[] = specs.map((spec) => {
     const isBack = (spec as { backAtParent?: boolean }).backAtParent === true;
-    const r = isBack ? 0 : effRSub; // back 居环心（2026-10-15：父叶位与内圈 180° 叶仅距 26px < 叶径 32px，重叠实证；居中返回钮距选项叶恒为 R_SUB，几何不可能重叠）
+    // 自定义半径优先（2026-11-13 形象工坊防遮挡）：低位叶（115° 朝窗底）在猫竖直带内，
+    // R_SUB=62 必压猫——调用方可按叶标 radius 外推（95 实证全 clear，双镜像验证）
+    // 自定义半径不乘 k（2026-11-13 e2e 0.7× 实证）：猫主体 CAT_H=210 为固定物理像素，
+    // 不随档位缩放 → 外推半径也必须是固定物理像素，乘 k 反而在小窗档失推
+    let r = isBack ? 0 : ((spec as { radius?: number }).radius ? (spec as { radius?: number }).radius! : effRSub);
     const size = isBack ? effLeaf : effSubLeaf;
     const szHalf = size / 2;
     const ang = spec.ang * (Math.PI / 180);
-    const x = cx + mx * r * Math.cos(ang) - szHalf;
-    const y = cy + my * r * Math.sin(ang) - szHalf;
+    let x = cx + mx * r * Math.cos(ang) - szHalf;
+    let y = cy + my * r * Math.sin(ang) - szHalf;
+    // 外推叶出窗底钆制（2026-11-13 e2e 1.3× 档实证）：radius×k 外推后叶矩形越窗底 →
+    // 沿半径回拉到窗底内侧（保留外推防遮挡语义，仅消除出窗）
+    if ((spec as { radius?: number }).radius && y + size > winH - MARGIN) {
+      const maxY = (winH - MARGIN - size) - cy; // 叶心可达的最大半径投影
+      const rr = maxY / Math.sin(ang);
+      if (rr > 0 && rr < r) { r = rr; x = cx + mx * r * Math.cos(ang) - szHalf; y = cy + my * r * Math.sin(ang) - szHalf; }
+    }
     const selected = level === 'mode' && spec.value === mode;
     return {
       key: spec.key, icon: spec.icon, hint: spec.hint, value: spec.value,
+      ang: spec.ang, r, // e2e 防遮挡守护：导出落位极坐标（2026-11-13）
       x: Math.round(x), y: Math.round(y), size, selected,
     };
   });

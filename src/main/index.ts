@@ -322,6 +322,10 @@ class ClipboardSpikeApp {
   _petStageCreatedOnce: boolean = false; // 舞台是否曾创建（区分启动首次 vs 运行期切 pet，2026-11-04 Bug1）
   statsStore: InstanceType<typeof StatsModule.StatsStore> | null = null; // 统计与等级模块（2026-11-05 spec）
   _petDebugMode: boolean = false; // 桌宠调试模式（DevTools 开关，config 持久化）
+  /** 点击桌宠是否同时唤出主面板（2026-11-13 动作/窗口解耦开关）。
+   *  缺省 false：单击桌宠只播反应动作，不弹主面板窗口。显式入口（Alt+V / 托盘 /
+   *  贴边热区 / 右键「显示面板」）不受此开关影响；托盘可重新勾选恢复旧行为。 */
+  _petClickSummon: boolean = false;
   _petCtxOpen: boolean = false;            // 右键菜单打开中（全窗可交互，渲染层 mouseleave 关闭）
   _petCtxPollId: ReturnType<typeof setInterval> | null = null;
   _petCtxHold: boolean = false; // 临时验证用：true 时失焦轮询暂停
@@ -565,6 +569,17 @@ window.__clipSenseBarHover = function (on) {
         ],
       },
       {
+        // 动作/窗口解耦（2026-11-13）：关掉后单击桌宠只播反应动作，不再弹出主面板窗口
+        label: '点击桌宠时唤出面板',
+        type: 'checkbox',
+        checked: this._petClickSummon,
+        click: (menuItem: { checked: boolean }) => {
+          this._petClickSummon = menuItem.checked;
+          try { this.storage._writeConfig({ petClickSummon: menuItem.checked }); } catch (_) { }
+          _modDiag('[Pet] petClickSummon=' + menuItem.checked);
+        },
+      },
+      {
         label: '桌宠大小',
         submenu: [
           { label: '小（0.7×）', type: 'radio', checked: Math.abs(this._getPetScale() - 0.7) < 0.05, click: () => this._setPetScalePreset(0.7) },
@@ -617,6 +632,9 @@ window.__clipSenseBarHover = function (on) {
         checked: this._petDebugMode,
         click: (menuItem: { checked: boolean }) => {
           this._petDebugMode = menuItem.checked;
+          // 窗口弹出治理（2026-11-13）：旧实现漏写回 config，取消勾选后舞台重载
+          // 仍会按 config.petDebugMode=true 自动 openDevTools → 又跳出一个窗口。
+          try { this.storage._writeConfig({ petDebugMode: menuItem.checked }); } catch (_) { }
           const w = this.petStage;
           if (w && !w.isDestroyed()) {
             if (menuItem.checked) {
@@ -840,8 +858,10 @@ window.__clipSenseBarHover = function (on) {
       // 调试模式判定（2026-11-05 小M「调试模式不生效」）：dev 构建（isPackaged=false）
       // 或 config.petDebugMode=true（托盘开关）均自动打开 petStage DevTools
       // npm start 不自动开 petStage DevTools（2026-11-05 小M）；托盘开关/F12 手动控制
-      let dbg = false;
-      try { dbg = this.storage._readConfig().petDebugMode === true; } catch (_) {}
+      // 单一来源（2026-11-13 窗口弹出治理）：_petDebugMode 在 init() 由 config 初始化，
+      // 托盘开关同时写回内存 + config。旧实现此处直接读 config，而「桌宠 DevTools」
+      // 托盘项取消勾选时不写回 config → 舞台每次重载仍自动弹一个 detach DevTools 窗口。
+      const dbg = this._petDebugMode;
       if (dbg) {
         try { win.webContents.openDevTools({ mode: 'detach' }); _modDiag('[PetStage] DevTools opened (config)'); } catch (_) {}
       }
@@ -1876,7 +1896,15 @@ window.__clipSenseBarHover = function (on) {
       } catch (_) { /* 销毁竞态静默 */ }
     });
     // 左键点击：唤出面板（等价贴边热区；Alt+V 同链路）
-    ipcMain.on('pet:summon', () => {
+    // 动作/窗口解耦（2026-11-13）：petClickSummon=false 时单击桌宠仍播 heart1 反应动作
+    // （渲染层 mouseup 独立调用 triggerReact），只是不再唤出主面板窗口；面板改由
+    // Alt+V / 托盘「显示/隐藏」/ 贴边热区唤出。托盘「点击桌宠时唤出面板」可实时切换。
+    ipcMain.on('pet:summon', (_event: unknown, force?: boolean) => {
+      // force=true 来自用户显式入口（右键「显示面板」），不受自动解耦开关限制。
+      if (force !== true && !this._petClickSummon) {
+        _modDiag('[Pet] summon suppressed by petClickSummon=false');
+        return;
+      }
       if (this.edgeDetector) this.edgeDetector.forceShow();
     });
     // 右键：原生上下文菜单
@@ -2308,6 +2336,16 @@ window.__clipSenseBarHover = function (on) {
     }, 5000);
     // 大小可调（2026-10-14）：启动时应用持久化缩放系数（默认 1）
     this._petScale = this._getPetScale();
+    // 窗口行为开关（2026-11-13）：点击桌宠是否唤出主面板 + 调试 DevTools 是否自动弹出。
+    // 统一由 config 初始化，保证托盘 checkbox 显示态与实际行为一致（旧实现
+    // _petDebugMode 恒 false 起步、did-finish-load 却直读 config，二者失配）。
+    try {
+      const cfg = this.storage._readConfig();
+      // 缺省「不弹」：只有配置里显式 true 才恢复点击唤出面板，避免历史配置缺键时
+      // 又退回「点一下就弹主面板 + 桌宠被遮半截」的旧行为。
+      this._petClickSummon = cfg.petClickSummon === true;
+      this._petDebugMode = cfg.petDebugMode === true;
+    } catch (_) { /* 读配置失败保持缺省值 */ }
     this._applyHideMode();
 
     // 异常快照接线（2026-10-11）：渲染进程/子进程异常落盘；原生崩溃的 .dmp 由 Crashpad 接管
