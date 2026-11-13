@@ -46,10 +46,10 @@ const BASE = { winW: VIEW_W, winH: VIEW_H, dirH: 'l', dirV: 'u', mode: 'pet', sc
 describe('布局引擎：主扇基准（猫居中）', () => {
   const r = computeLayout({ ...BASE, level: 'main', catX: 121, catY: 185 });
 
-  test('输出 3 叶（mode/react/quit，2026-11-04 R5 修正：react 互动叶保留）、全部在窗内（核心不变量）', () => {
-    assert.strictEqual(r.leaves.length, 3);
+  test('输出 4 叶（mode/react/skill/quit，2026-11-13 形象工坊叶加入）、全部在窗内（核心不变量）', () => {
+    assert.strictEqual(r.leaves.length, 4);
     const keys = r.leaves.map((l) => l.key).sort();
-    assert.deepStrictEqual(keys, ['mode', 'quit', 'react'], '主扇应为 mode/react/quit，实际: ' + keys.join(','));
+    assert.deepStrictEqual(keys, ['mode', 'quit', 'react', 'skill'], '主扇应为 mode/react/skill/quit，实际: ' + keys.join(','));
     assert.ok(inBounds(r, VIEW_W, VIEW_H), JSON.stringify(r.leaves.map((l) => [l.key, l.x, l.y])));
   });
 

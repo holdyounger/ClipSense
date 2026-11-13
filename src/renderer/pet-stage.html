@@ -758,6 +758,11 @@ ctxMenu.addEventListener('click', function (e) {
     if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon'); }
     else if (k === 'mode') renderModeSub();
     else if (k === 'react') renderInteractSub(); // Bug3：点互动 → 动作点播二级扇
+    else if (k === 'skill') {
+      // 形象工坊（2026-11-13 小M）：引导用户用 pet-webm-pipeline Skill 生成自己的桌宠形象
+      closeCtx();
+      ipcRenderer.invoke('pet:open-skill');
+    }
     else if (k === 'quit') {
       pendingConfirm = 'quit';
       cmQ.textContent = '确定退出桌宠？';

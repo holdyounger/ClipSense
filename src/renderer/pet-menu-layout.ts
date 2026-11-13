@@ -74,7 +74,8 @@ const MARGIN = 4;
 const MAIN_LEAVES: LeafSpec[] = [
   { key: 'mode', ang: 210, icon: '🐱', hint: '模式' },
   { key: 'react', ang: 160, icon: '❤️', hint: '互动' },
-  { key: 'quit', ang: 110, icon: '⏻', hint: '退出' },
+  { key: 'skill', ang: 110, icon: '🎨', hint: '形象工坊' },
+  { key: 'quit', ang: 60, icon: '⏻', hint: '退出' },
 ];
 
 /** 模式二级 3 叶（绕主扇心内圈，250/180/110） */

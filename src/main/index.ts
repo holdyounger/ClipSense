@@ -1438,6 +1438,24 @@ window.__clipSenseBarHover = function (on) {
     // 用默认浏览器打开 URL（协议白名单：仅 http/https）
     // 安全：shell.openExternal 对未过滤协议可能拉起任意已注册 handler，
     // file:/javascript:/自定义协议一律拒绝。
+    // 形象工坊（2026-11-13 小M）：桌宠菜单 🎨 入口 → 用系统浏览器打开仓库内的
+    // pet-webm-pipeline Skill 文档（用户按 Skill 生成自己的桌宠形象素材）
+    ipcMain.handle('pet:open-skill', async () => {
+      try {
+        const skillPath = path.join(__dirname, '../../skills/pet-webm-pipeline/SKILL.md');
+        const skillUrl = 'https://github.com/holdyounger/ClipSense/blob/main/skills/pet-webm-pipeline/SKILL.md';
+        // 本地存在则优先开本地文件（离线可用）；异常回落 GitHub 在线版
+        if (fs.existsSync(skillPath)) {
+          await shell.openExternal('file:///' + skillPath.replace(/\\/g, '/'));
+        } else {
+          await shell.openExternal(skillUrl);
+        }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    });
+
     ipcMain.handle('open-external', async (event, rawUrl) => {
       if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
         return { ok: false, error: 'URL 为空' };

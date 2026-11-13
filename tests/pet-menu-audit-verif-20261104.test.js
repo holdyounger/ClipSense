@@ -340,22 +340,23 @@ async function bootLive2dOk(opts = {}) {
 
 // ==================== A1 主扇 3 叶 DOM 完整性 ====================
 
-describe('A1 主扇 3 叶 DOM 完整性（R5/R2 二次修正后契约）', () => {
+describe('A1 主扇 4 叶 DOM 完整性（2026-11-13 形象工坊叶加入）', () => {
   for (const c of SCALE_CASES) {
-    test(`${c.name}（窗口 ${c.win}px）：3 叶 mode/react/quit、无 summon 叶、icon 正确`, async () => {
+    test(`${c.name}（窗口 ${c.win}px）：4 叶 mode/react/skill/quit、无 summon 叶、icon 正确`, async () => {
       const { h } = await bootLive2dOk();
       h.window.innerWidth = c.win;
       h.window.innerHeight = c.win;
       h.ipc.emit('pet:ctx-show', {}, { mode: 'pet', scale: c.scale, winW: c.win, winH: c.win });
       const menu = h.doc.getElementById('ctxMenu');
       const leaves = menu.querySelectorAll('.leaf') || [];
-      assert.strictEqual(leaves.length, 3, `实际叶: ${leaves.map((l) => l.dataset.leaf).join(',')}`);
+      assert.strictEqual(leaves.length, 4, `实际叶: ${leaves.map((l) => l.dataset.leaf).join(',')}`);
       const keys = leaves.map((l) => l.dataset.leaf).sort();
-      assert.deepStrictEqual(keys, ['mode', 'quit', 'react']);
+      assert.deepStrictEqual(keys, ['mode', 'quit', 'react', 'skill']);
       assert.ok(!keys.includes('summon'), 'summon 叶必须不存在（R5 已删）');
       const byKey = Object.fromEntries(leaves.map((l) => [l.dataset.leaf, l]));
       assert.strictEqual(byKey.mode.textContent, '🐱');
       assert.strictEqual(byKey.react.textContent, '❤️');
+      assert.strictEqual(byKey.skill.textContent, '🎨');
       assert.strictEqual(byKey.quit.textContent, '⏻');
       // 叶全部在窗内（DOM 层复核纯函数契约）
       for (const l of leaves) {
