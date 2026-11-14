@@ -1933,7 +1933,9 @@ window.__clipSenseBarHover = function (on) {
         const cur = screen.getCursorScreenPoint();
         const bb = w2.getBounds();
         const outside = cur.x < bb.x || cur.x > bb.x + bb.width || cur.y < bb.y || cur.y > bb.y + bb.height;
-        if (outside) {
+        // 2026-11-15 小M：自动关闭临时停用（调试期叶出窗导致误关，devtools 无法排查）；修复后再启用
+        const autoCloseEnabled = false;
+        if (outside && autoCloseEnabled) {
           this._petCtxOpen = false;
           if (this._petCtxPollId) { clearInterval(this._petCtxPollId); this._petCtxPollId = null; }
           const saved2 = this._petCtxSaved;
