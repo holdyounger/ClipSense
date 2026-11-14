@@ -136,14 +136,14 @@ export function computeLayout(input: LayoutInput): LayoutResult {
   if (!sub) {
     specs = MAIN_LEAVES;
   } else if (level === 'interact') {
-    // interact 二级扇（2026-11-05 Bug3）：back 锚 react 叶位（160°），动作叶由调用方注入
-    const parent = MAIN_LEAVES.find((l) => l.key === 'react')!;
+    // interact 二级扇（2026-11-05 Bug3）：动作叶由调用方注入；
+    // back 不再居环心（2026-11-15 小M 截图：环心=猫脸中央，↩ 盖脸）——外推至左弧 230°（R88 自适应半径），
+    // 与 hover 250° 差 20°（弦距 33px > 叶径 22，不撞），落在猫头顶上方左区不遮主体
     const back: LeafSpec & { value?: string; backAtParent?: boolean } = {
       key: 'back',
-      ang: parent.ang,
+      ang: 230,
       icon: '↩',
       hint: '返回',
-      backAtParent: true,
     };
     specs = [back].concat(input.interactLeaves || []);
   } else {
