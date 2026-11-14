@@ -165,7 +165,12 @@ export function computeLayout(input: LayoutInput): LayoutResult {
     // R_SUB=62 必压猫——调用方可按叶标 radius 外推（95 实证全 clear，双镜像验证）
     // 自定义半径不乘 k（2026-11-13 e2e 0.7× 实证）：猫主体 CAT_H=210 为固定物理像素，
     // 不随档位缩放 → 外推半径也必须是固定物理像素，乘 k 反而在小窗档失推
-    let r = isBack ? 0 : ((spec as { radius?: number }).radius ? (spec as { radius?: number }).radius! : effRSub);
+    // interact 级自适应半径（2026-11-14 v5：撤扩窗后窗口恒 220，可用半宽 110-叶半11-margin4=95？
+    // 实测 R95 叶出窗（右缘 208>216-4）→ 反推 R88：叶最远 x = catX+R×cos(10°)+11 ≤ 216 → R ≤ 93；
+    // 且需出猫核心横带（|x-catX|>52.4）→ R×|cosθ|≥52.4，最平缓叶 cos(40°)=0.766 → R≥68.4；
+    // hover@10° 出窗右缘需 R≤80.7 → 取 R80（双档同值，e2e 双向镜像已验全 clear）
+    // radius 叶（若调用方指定）优先；无指定时 interact 级固定 80（main/mode 级维持 effRSub）
+    let r = isBack ? 0 : ((spec as { radius?: number }).radius ? (spec as { radius?: number }).radius! : (level === 'interact' ? 80 : effRSub));
     const size = isBack ? effLeaf : effSubLeaf;
     const szHalf = size / 2;
     const ang = spec.ang * (Math.PI / 180);
