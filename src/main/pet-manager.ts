@@ -75,6 +75,8 @@ function normalizeHideMode(v: unknown): HideMode {
 function clampPetPosition(x: number, y: number, display: PetDisplay, scale: number = 1): { x: number; y: number } {
   const wa = display.workArea;
   const dim = stageSizeFor(scale);
+  // 拖拽保底 LEAF 可见（2026-10-15 语义：用户故意把猫拖到屏幕边缘藏起来是合法用法，拖不丢）；
+  // 互动菜单打开时的可见性由 expand-ctx 的临时拉回保障（2026-11-15 v5.1）
   const minX = wa.x - dim.W + STAGE.LEAF;
   const maxX = wa.x + wa.width - STAGE.LEAF;
   const minY = wa.y - dim.H + STAGE.LEAF;

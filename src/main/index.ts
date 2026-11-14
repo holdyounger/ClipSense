@@ -1948,6 +1948,27 @@ window.__clipSenseBarHover = function (on) {
       }, 120);
       try { win.webContents.send('pet:ctx-show', { mode: this._getHideMode(), scale: this._getPetScale() }); } catch (_) {}
     });
+    // 形象工坊扩窗 v5.2（2026-11-15 小M 三症状根治）：互动叶出屏不可见不可点 + 鼠标出窗误关
+    // ① 互动菜单打开时若窗口部分出屏 → 先拉回屏内（60% 可见），再扩窗 260 给 R95 扇空间
+    // ② 菜单关闭（close-ctx）还原用户拖拽位置（藏猫体验保留）；自动关闭已停用（调试期）
+    ipcMain.on('pet:expand-ctx', () => {
+      const win = this.petStage;
+      if (!win || win.isDestroyed()) return;
+      const b = win.getBounds();
+      if (this._petCtxOpen) return; // 已在菜单态
+      const { screen } = require('electron');
+      const display = screen.getDisplayMatching(b);
+      const wa = display.workArea;
+      const dim = { W: 260, H: 260 };
+      // 拉回：窗口至少 60% 在工作区内（叶/猫主体可见）
+      const keep = 0.6;
+      const nx = Math.min(Math.max(b.x, wa.x - dim.W * (1 - keep)), wa.x + wa.width - dim.W * keep);
+      const bottomY = Math.min(Math.max(b.y + b.height, wa.y + dim.H * keep), wa.y + wa.height);
+      this._petCtxSaved = { x: b.x, y: b.y, width: b.width, height: b.height };
+      this._petCtxOpen = true;
+      this._setPetBoundsAnchored(nx, bottomY, 260);
+      this._applyPetIgnore();
+    });
     ipcMain.on('pet:close-ctx', () => {
       const win = this.petStage;
       const saved = this._petCtxSaved;

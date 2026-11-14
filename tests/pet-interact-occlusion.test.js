@@ -43,11 +43,11 @@ const SCALES = [
   { name: '1.3×', scale: 1.3 },
 ];
 
-describe('互动二级扇防遮挡 v5（220 真实窗口径：猫主体 = 底部居中 138×210 竖直带）', () => {
+describe('互动二级扇防遮挡 v5.2（扩窗 260 口径：窗口拉回屏内 ≥60% + 猫主体 138×210 竖直带）', () => {
   for (const c of SCALES) {
     for (const dirH of ['l', 'r']) {
-      test(`${c.name} dir=${dirH}：5 叶左右弧全 clear——不压猫核心、不出 220 窗、互不重叠`, () => {
-        const W = WIN, H = WIN;
+      test(`${c.name} dir=${dirH}：5 叶左右弧全 clear——不压猫核心、不出 260 窗、互不重叠`, () => {
+        const W = 260, H = 260; // v5.2 扩窗尺寸（pet:expand-ctx 拉回+扩窗后）
         const catX = W / 2;
         const catTop = H - CAT_H;
         const catRect = { x: catX - CAT_W * 0.3, y: catTop, w: CAT_W * 0.6, h: CAT_H }; // 形象主体核心区（60% 横带）

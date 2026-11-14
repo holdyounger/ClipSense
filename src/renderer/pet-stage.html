@@ -632,6 +632,9 @@ var live2dMotionCount = 9;   // 模块级：live2d 加载后由 motionManager de
 var live2dMotionNames = [];  // 模块级：动作显示名（hint 用），model3.json 无 displayName 时回落「动作 N」
 function renderInteractSub() {
   ctxLevel = 'interact';
+  // 形象工坊扩窗 v5.2（2026-11-15 小M 三症状）：互动扇需 ≥228 空间且窗口须屏内——
+  // 请求主进程拉回+扩窗 260×260（close-ctx 还原藏猫位）
+  ipcRenderer.send('pet:expand-ctx');
   if (mode === 'live2d') {
     var n = live2dMotionCount;
     // 左弧约束二次修正（2026-11-05 小M：动作叶挡住形象主体）：原 245-i*65 全圆包裹
