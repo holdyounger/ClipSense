@@ -117,8 +117,12 @@ export function computeLayout(input: LayoutInput): LayoutResult {
   const effSubLeaf = Math.round(SUB_LEAF * Math.max(0.6, k));
 
   // 主扇心 = 猫向展开方向偏移 (effRMain-10)，包络钳制（叶横/纵伸出 R+half）
+  // 扇心偏移（main/mode 级：向展开侧外移 R_MAIN-10，让叶环抱猫）；
+  // interact 级（2026-11-14 v4 防遮挡）：不偏——扇心即猫中心，R95 左右弧叶才能出猫核心横带
+  // （偏 66 后左弧叶 x=64+72=136 落回核心横带内，右弧叶 258 出窗——e2e 双向实证）
+  const heartOffset = level === 'interact' ? 0 : (effRMain - 10);
   const cx = clamp(
-    input.catX - mx * (effRMain - 10),
+    input.catX - mx * heartOffset,
     MARGIN + effRMain,
     Math.max(MARGIN + effRMain, winW - MARGIN)
   );

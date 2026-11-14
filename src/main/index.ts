@@ -1038,10 +1038,10 @@ window.__clipSenseBarHover = function (on) {
   }
 
   /** 底边锚定的 setBounds（x 同参；y 按新高度上移，窗口底边保持在原位） */
-  _setPetBoundsAnchored(x: number, bottomY: number): void {
+  _setPetBoundsAnchored(x: number, bottomY: number, forceSize?: number): void {
     if (!this.petStage || this.petStage.isDestroyed()) return;
-    const { w, h } = this._petStageSize();
-    this.petStage.setBounds({ x: Math.round(x), y: Math.round(bottomY - h), width: w, height: h });
+    const size = forceSize ?? this._petStageSize().w;
+    this.petStage.setBounds({ x: Math.round(x), y: Math.round(bottomY - size), width: size, height: size });
   }
 
   _applyPetIgnore(): void {
@@ -1946,6 +1946,19 @@ window.__clipSenseBarHover = function (on) {
       }, 120);
       try { win.webContents.send('pet:ctx-show', { mode: this._getHideMode(), scale: this._getPetScale() }); } catch (_) {}
     });
+    // 形象工坊扩窗（2026-11-14 小M：二级菜单出屏）：互动扇 R=95 需 ≥228 空间，
+    // 恒 220 窗不够 → 扩窗 260×260（底边锚定，窗口长大向上）；close-ctx 走既有 saved 还原
+    ipcMain.on('pet:expand-ctx', () => {
+      const win = this.petStage;
+      if (!win || win.isDestroyed()) return;
+      const b = win.getBounds();
+      if (b.width >= 260 && b.height >= 260) return; // 已扩或本就够大
+      this._petCtxSaved = { x: b.x, y: b.y, width: b.width, height: b.height };
+      this._petCtxOpen = true;
+      this._setPetBoundsAnchored(b.x, b.y + b.height, 260);
+      this._applyPetIgnore();
+    });
+
     ipcMain.on('pet:close-ctx', () => {
       const win = this.petStage;
       const saved = this._petCtxSaved;
@@ -2346,6 +2359,10 @@ window.__clipSenseBarHover = function (on) {
       this._petClickSummon = cfg.petClickSummon === true;
       this._petDebugMode = cfg.petDebugMode === true;
     } catch (_) { /* 读配置失败保持缺省值 */ }
+    // 启动审计：把两个窗口弹出相关开关的落地值写进诊断日志，避免「改了但没生效」
+    // 只能靠肉眼猜（2026-11-13 复现：config 缺键 + 缺省 true 导致开关形同虚设）。
+    _modDiag('[Pet] init flags: petClickSummon=' + this._petClickSummon
+      + ' petDebugMode=' + this._petDebugMode + ' petScale=' + this._petScale);
     this._applyHideMode();
 
     // 异常快照接线（2026-10-11）：渲染进程/子进程异常落盘；原生崩溃的 .dmp 由 Crashpad 接管

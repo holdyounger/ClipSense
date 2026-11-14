@@ -632,6 +632,9 @@ var live2dMotionCount = 9;   // 模块级：live2d 加载后由 motionManager de
 var live2dMotionNames = [];  // 模块级：动作显示名（hint 用），model3.json 无 displayName 时回落「动作 N」
 function renderInteractSub() {
   ctxLevel = 'interact';
+  // 形象工坊防遮挡扩窗（2026-11-14 小M：二级菜单出屏）：互动扇 R=95 需 ≥228 空间，
+  // 恒 220 窗不够 → 请求主进程扩窗 260×260（底边锚定），close-ctx 还原
+  ipcRenderer.send('pet:expand-ctx');
   if (mode === 'live2d') {
     var n = live2dMotionCount;
     // 左弧约束二次修正（2026-11-05 小M：动作叶挡住形象主体）：原 245-i*65 全圆包裹
@@ -651,15 +654,17 @@ function renderInteractSub() {
     }
   } else {
     interactLeaves = [
-      // 防遮挡终案 v3（2026-11-13 小M：二级菜单遮宠形象 + e2e 三档双镜像验证）：
-      // 互动扇整体上移——扇心改锚「猫顶上方 20px」（R=95 上弧 5 叶），叶片悬浮在形象上方零遮挡；
-      // 旧方案（低位叶/外推半径）在 0.7× 小窗档无解（猫占窗底 210px，下弧无安全位），几何推导见 e2e
-      // 叶序（右展镜像）：click 290° / hover 250° / song 210° / light 170° / heart 130°，R=95 固定
-      { key: 'click', ang: 290, icon: '👆', hint: '点击动作', value: 'click', radius: 95 },
-      { key: 'hover', ang: 250, icon: '👋', hint: '挥手动作', value: 'hover', radius: 95 },
-      { key: 'song', ang: 210, icon: '🎵', hint: '唱歌', value: 'song', radius: 95 },
+      // 防遮挡 v4（2026-11-14 小M：二级菜单出屏——e2e 口径修正后重构）：
+      // 真实桌宠窗口恒 220×220，v3 上弧出窗顶（扇心 cy=catTop-20 在 220 窗内为负）。v4 改扩窗方案：
+      // 打开互动菜单时主进程扩窗 260×260（底边锚定），扇心回猫中心(130,130)，
+      // R=95 左右弧分布——猫占满窗竖带，上弧物理无空间，故改走左右两侧：
+      // click 40° / hover 10°（右弧）+ song 140° / light 170° / heart 200°（左弧），
+      // 双弧叶 x 全部出猫核心横带（e2e 扩窗口径已验）
+      { key: 'click', ang: 40, icon: '👆', hint: '点击动作', value: 'click', radius: 95 },
+      { key: 'hover', ang: 10, icon: '👋', hint: '挥手动作', value: 'hover', radius: 95 },
+      { key: 'song', ang: 140, icon: '🎵', hint: '唱歌', value: 'song', radius: 95 },
       { key: 'light', ang: 170, icon: '💡', hint: '光效', value: 'light', radius: 95 },
-      { key: 'heart', ang: 130, icon: '❤️', hint: '爱心', value: 'heart', radius: 95 },
+      { key: 'heart', ang: 200, icon: '❤️', hint: '爱心', value: 'heart', radius: 95 },
     ];
   }
   applyLayout();

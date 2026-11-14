@@ -22,7 +22,10 @@ const { extractLinks } = require('../dist/common/link-utils.js');
 // 其余识别管线用例不依赖 temp/，全量可跑。
 let BATTERY = null;
 try {
-  BATTERY = require('../temp/tag-v2-validation-20260910/battery');
+  // battery.js 导出的是 { BATTERY }（见其末行 module.exports），历史版本曾直接导出数组；
+  // 同时兼容两种形态，避免 require 到对象后调用 .filter 抛错导致整节 fail。
+  const batteryModule = require('../temp/tag-v2-validation-20260910/battery');
+  BATTERY = Array.isArray(batteryModule) ? batteryModule : batteryModule.BATTERY;
 } catch (_) { /* 夹具缺失：CI / 新环境，电池节跳过 */ }
 const ClipboardMonitor = require('../dist/main/clipboard-monitor.js');
 
