@@ -35,3 +35,4 @@ pet-render-log.txt
 src/renderer/pet-hunyuan-opt.glb
 pet-moves/*.webm.before-*
 src/renderer/pet-moves/*.before*
+diag-stage*.js
