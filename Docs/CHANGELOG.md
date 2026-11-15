@@ -5,7 +5,7 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
-## v1.0.17（2026-11-15）—— 形象工坊 + 动作管理适配批次（Skill 生态首版）
+## v1.0.18（2026-11-15）—— 形象工坊 + 动作管理适配批次（Skill 生态首版）
 
 ### ✨ 新功能
 
