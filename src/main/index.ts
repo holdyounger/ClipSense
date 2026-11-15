@@ -204,7 +204,7 @@ const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tr
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
-const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computeCtxPullBack } = require('./pet-manager') as typeof import('./pet-manager');
 const StatsModule = require('./stats') as typeof import('./stats');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
@@ -1948,26 +1948,23 @@ window.__clipSenseBarHover = function (on) {
       }, 120);
       try { win.webContents.send('pet:ctx-show', { mode: this._getHideMode(), scale: this._getPetScale() }); } catch (_) {}
     });
-    // 形象工坊扩窗 v5.2（2026-11-15 小M 三症状根治）：互动叶出屏不可见不可点 + 鼠标出窗误关
-    // ① 互动菜单打开时若窗口部分出屏 → 先拉回屏内（60% 可见），再扩窗 260 给 R95 扇空间
-    // ② 菜单关闭（close-ctx）还原用户拖拽位置（藏猫体验保留）；自动关闭已停用（调试期）
+    // 互动菜单拉回 v5.3（2026-11-15，修 v5.2 死代码 + 互动二级菜单出屏不可点）：
+    // 根因：本处理器原以 `if (this._petCtxOpen) return;` 早退——真实链路「右键开主扇
+    // （open-ctx 已置 _petCtxOpen=true）→ 点互动才发 expand-ctx」守卫恒真，拉回从未执行。
+    // v5.3 纯移动拉回（v4 教训：扩窗改窗口几何 → left:50%/bottom:0 锚定的猫必移动+叶错位，
+    // 窗口几何是渲染层锚定的根不可动）：尺寸不变，只把越出 workArea 的部分拉回屏内；
+    // 不覆写 _petCtxSaved（open-ctx 已存用户拖拽位，close-ctx 原样还原）。
     ipcMain.on('pet:expand-ctx', () => {
       const win = this.petStage;
       if (!win || win.isDestroyed()) return;
       const b = win.getBounds();
-      if (this._petCtxOpen) return; // 已在菜单态
       const { screen } = require('electron');
       const display = screen.getDisplayMatching(b);
-      const wa = display.workArea;
-      const dim = { W: 260, H: 260 };
-      // 拉回：窗口至少 60% 在工作区内（叶/猫主体可见）
-      const keep = 0.6;
-      const nx = Math.min(Math.max(b.x, wa.x - dim.W * (1 - keep)), wa.x + wa.width - dim.W * keep);
-      const bottomY = Math.min(Math.max(b.y + b.height, wa.y + dim.H * keep), wa.y + wa.height);
-      this._petCtxSaved = { x: b.x, y: b.y, width: b.width, height: b.height };
-      this._petCtxOpen = true;
-      this._setPetBoundsAnchored(nx, bottomY, 260);
-      this._applyPetIgnore();
+      const pulled = computeCtxPullBack(b, display);
+      if (pulled.moved) {
+        win.setBounds({ x: pulled.x, y: pulled.y, width: b.width, height: b.height });
+        _modDiag(`[Pet] expand-ctx 拉回屏内: (${b.x},${b.y}) -> (${pulled.x},${pulled.y})`);
+      }
     });
     ipcMain.on('pet:close-ctx', () => {
       const win = this.petStage;

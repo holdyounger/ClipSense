@@ -5,6 +5,23 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
+## v1.0.17（2026-11-15）—— 形象工坊 + 动作管理适配批次（Skill 生态首版）
+
+### ✨ 新功能
+
+- **形象工坊入口**：桌宠环形菜单新增 🎨 叶，点击打开 pet-webm-pipeline Skill 文档（本地 file:// 优先，回落 GitHub 在线版）——用户可按 Skill 生成自己的桌宠形象（绿幕视频 → 抠像 → VP9 透明 WebM → 一键替换）
+- **Skill 生态首版入库**：`skills/pet-webm-pipeline/`（SKILL.md + 绿幕源生成模板 + 验证清单）与 `scripts/pet-generate/`（a01-batch.ps1 CDP 批量生成 + a01-actions.json 13 动作提示词清单 + 绿幕参考图）、`scripts/pet_pipeline/`（抠像/编码/部署脚本四件套）
+- **22 素材动作管理适配**：点击池恢复全集 p1-p13（10 个动作，AIGC 替换后旧排除注释退役）；互动菜单新增 💡 光效 / 🎵 唱歌两个彩蛋动作叶（light/light0song 首次接入）
+
+### 🛠 修复
+
+- **互动二级菜单出屏**（v5.2 扩窗方案死代码实锤）：expand-ctx 处理器 `_petCtxOpen` 早退守卫恒真，拉回/扩窗从未执行——v5.3 撤扩窗改纯移动拉回（computeCtxPullBack 纯函数：越屏部分拉回工作区，窗口几何零变化），pet-manager 导出 + 守护测试 9 断言
+- **双击粘贴目标决策三处缺陷**（守护测试入网首日抓获）：_diagCapture Z 序回退只落日志不写回 tracked（「唤出时前台=桌面」场景双击必失效）；simulate-input 双 0 无兜底；pasteTo AttachThreadInput 自附加死锁风险——三处全修，守护用例入网
+
+### 🔧 改进
+
+- tag v2 样本电池 describe 显式 skip（夹具缺失时 CI 干净环境不再 fail）
+- 防遮挡 e2e 口径更新（220 真实窗口径 + 拉回架构适配）
 
 ## v1.0.16（2026-11-12）—— macOS 平台适配（首个跨平台版本）
 

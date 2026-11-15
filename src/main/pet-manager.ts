@@ -118,4 +118,25 @@ function computePetIgnore(state: { altActive?: boolean; ctxOpen?: boolean; curso
 function shouldDeferPetStage(opts: { petMode: boolean; panelVisible: boolean }): boolean {
   return !!opts.petMode && !!opts.panelVisible;
 }
-export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage };
+/**
+ * 互动菜单拉回（2026-11-15 v5.3 纯移动，修 v5.2 死代码 + 出屏不可点）：
+ * v5.2 的拉回+扩窗从未生效——expand-ctx 处理器以 _petCtxOpen 早退，而真实链路
+ * 「右键开主扇 → 点互动才发 expand-ctx」中菜单态已置位，守卫恒真。
+ * v5.3 撤扩窗（v4 教训：改窗口几何 → left:50%/bottom:0 锚定的猫必移动+叶错位），
+ * 只做纯移动：把越出 workArea 的部分拉回屏内，窗口尺寸不变。
+ * 返回 moved=false 表示窗口已完整屏内（调用方可跳过 setBounds）。
+ */
+function computeCtxPullBack(
+  bounds: StageBounds,
+  display: PetDisplay,
+): { x: number; y: number; moved: boolean } {
+  const wa = display.workArea;
+  const maxX = Math.max(wa.x, wa.x + wa.width - bounds.width);
+  const maxY = Math.max(wa.y, wa.y + wa.height - bounds.height);
+  const x = Math.round(Math.min(Math.max(bounds.x, wa.x), maxX));
+  const y = Math.round(Math.min(Math.max(bounds.y, wa.y), maxY));
+  const moved = x !== bounds.x || y !== bounds.y;
+  return { x, y, moved };
+}
+
+export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage, computeCtxPullBack };

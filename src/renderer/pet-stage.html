@@ -1,12 +1,16 @@
 <!doctype html>
 <!-- pet-stage.html - 桌宠舞台渲染层（v10·完整动作库 + 交互，2026-10-14）
-     当前素材：14 个混元比熊动作（pet-moves/，VP9 alpha WebM，单一形象收口）；
-     p6-p8/p10/p11/p13/light 系仍是 0486b7d 旧参数化形象，未接线（待 AIGC 资产替换）：
+     当前素材：22 个动作（pet-moves/，VP9 alpha WebM，768x768 / 24fps / 124 帧）。
+     2026-11-15 全部统一为同一只白色比熊 + 浅蓝围巾形象，任意切换零跳变：
+       d1-d4 / p1-p5 / z1-z3 / t1 / heart1 为 AIGC 生成素材；
+       p6/p7/p8/p10/p11/p13/light/light0song 按 a01-actions.json 语义由 AIGC 素材
+       零积分派生（ffmpeg 镜像/变速，无生成模型调用），规格与角色几何完全一致：
        d1-d4   待机组（随机轮播，随机间隔切换——「拟真风格，4种动画」）
        p1-p13  互动组（左键点击随机播放一个，播完回待机）
        z1-z3 反馈组（鼠标悬停触发，7s 冷却）；t1 拖拽动作（拖拽期间循环）
        heart1  新条目入库反应（pet:react IPC）
-     加载：Node fs 读入全部 blob（14MB 内存，src 切换零延迟，无网络/合成器开销）。
+     加载：Node fs 读入全部 blob（约 10MB 内存，src 切换零延迟，无网络/合成器开销）；
+           启动一次性预载，运行中替换磁盘素材须重启进程才生效。
      交互模型对齐网易 desktoppet.onMouseEvent：hover/click 驱动动作切片。
      协议不变：paint-ready / pet:cursor-hit / pet:drag-* / pet:summon / pet:context-menu /
      pet:react / pet:scale（滚轮+托盘+右键三入口大小可调）。
@@ -218,7 +222,7 @@ function pick(arr, avoid) {
   return pool[Math.floor(Math.random() * pool.length)] || arr[0];
 }
 
-// 动作库 blob 预载（本地 fs，14MB，<1s）
+// 动作库 blob 预载（本地 fs，约 10MB，<1s）
 const BLOBS = {};
 function preloadBlobs() {
   // 动作管理全集（2026-11-13）：light / song 彩蛋池同样要预载，否则 BLOBS[name]
@@ -632,8 +636,9 @@ var live2dMotionCount = 9;   // 模块级：live2d 加载后由 motionManager de
 var live2dMotionNames = [];  // 模块级：动作显示名（hint 用），model3.json 无 displayName 时回落「动作 N」
 function renderInteractSub() {
   ctxLevel = 'interact';
-  // 形象工坊扩窗 v5.2（2026-11-15 小M 三症状）：互动扇需 ≥228 空间且窗口须屏内——
-  // 请求主进程拉回+扩窗 260×260（close-ctx 还原藏猫位）
+  // 互动拉回 v5.3（2026-11-15，修 v5.2 死代码：expand-ctx 处理器 _petCtxOpen 早退致拉回永不执行）：
+  // 请求主进程纯移动拉回屏内（窗口几何不动——v4 教训：扩窗致猫移动+叶错位）；
+  // close-ctx 仍还原用户拖拽位（藏猫体验保留）
   ipcRenderer.send('pet:expand-ctx');
   if (mode === 'live2d') {
     var n = live2dMotionCount;
@@ -904,7 +909,7 @@ function spriteTick(now) {
 }
 
 // ==================== Live2D 渲染后端（2026-11-03 T1/T2/T3，spec-桌宠Live2D后端） ====================
-// 启动链第一环（A1 拍板：维持 spec 语义——live2d 不依赖 webm blobs，成功时省 14MB 预载）；
+// 启动链第一环（A1 拍板：维持 spec 语义——live2d 不依赖 webm blobs，成功时省 约 10MB 预载）；
 // 回退链 live2d → webm → sprite（6s 超时；C1-C4 可观测契约见 tests/live2d-backend.dom.test.js）。
 // 交互映射（BongoCat 范式最小集）：全屏 mousemove → FocusController 眼神跟随（A3 口径）；
 // cursorHit/body-rect 走模型包围盒（vrm video-rect-0 教训 ：322 不重演）。

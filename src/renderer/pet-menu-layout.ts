@@ -169,8 +169,16 @@ export function computeLayout(input: LayoutInput): LayoutResult {
     // 实测 R95 叶出窗（右缘 208>216-4）→ 反推 R88：叶最远 x = catX+R×cos(10°)+11 ≤ 216 → R ≤ 93；
     // 且需出猫核心横带（|x-catX|>52.4）→ R×|cosθ|≥52.4，最平缓叶 cos(40°)=0.766 → R≥68.4；
     // hover@10° 出窗右缘需 R≤80.7 → 取 R80（双档同值，e2e 双向镜像已验全 clear）
-    // radius 叶（若调用方指定）优先；无指定时 interact 级固定 80（main/mode 级维持 effRSub）
-    let r = isBack ? 0 : ((spec as { radius?: number }).radius ? (spec as { radius?: number }).radius! : (level === 'interact' ? 80 : effRSub));
+    // radius 叶（若调用方指定）优先；无指定时 interact 级半径随档位缩放（v5.4 修 R80 固定标定）、
+    // main/mode 级维持 effRSub。
+    // v5.4（2026-11-15 小M 截图「三个角显示不全」）：真实窗口 = 220×scale（index.ts
+    // _petStageSize），猫 = 210×scale（applyScale）——窗口与猫都随档位缩放，固定 R80 在
+    // scale<1 档必然出窗（0.7× 实测 3 叶出窗、0.5× 全出，兜底平移推到窗角）。
+    // 半径 80×scale 与 scale=1 标定（双缘全 clear、弦距 > 叶径）完全等比，任意档位同时
+    // 满足「窗内」与「出猫核心横带」（两者几何都 ×s 缩放）。钳入应用档位域
+    // [0.5, 2.2]（pet-manager SCALE_MIN/MAX）。自定义 radius 叶仍为固定物理像素（调用方标定）。
+    const interactR = Math.round(80 * clamp(input.scale, 0.5, 2.2));
+    let r = isBack ? 0 : ((spec as { radius?: number }).radius ? (spec as { radius?: number }).radius! : (level === 'interact' ? interactR : effRSub));
     const size = isBack ? effLeaf : effSubLeaf;
     const szHalf = size / 2;
     const ang = spec.ang * (Math.PI / 180);
