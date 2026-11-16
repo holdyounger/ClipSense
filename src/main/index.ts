@@ -86,6 +86,29 @@ interface IndexTriggerWindow extends IndexMainWindow {
 }
 
 /** 桌宠舞台窗口（P0 spike）：主窗口面 + forward 语义的穿透开关 + getPosition（拖拽/持久化） */
+interface MenuWindowWindow {
+  isDestroyed: () => boolean;
+  hide: () => void;
+  close: () => void;
+  showInactive: () => void;
+  isVisible: () => boolean;
+  /** 2026-11-16：drag-and-drop 带内重顶，确保盖过桌宠窗 */
+  moveTop: () => void;
+  setAlwaysOnTop: (flag: boolean, level?: 'screen-saver' | 'drag-and-drop') => void;
+  isAlwaysOnTop: () => boolean;
+  getBounds: () => { x: number; y: number; width: number; height: number };
+  setBounds: (b: { x: number; y: number; width: number; height: number }) => void;
+  webContents: {
+    send: (channel: string, payload?: unknown) => void;
+    /** 首开防竞态：loadFile 异步，isLoading 时挂 did-finish-load 再下发载荷（2026-11-15） */
+    isLoading: () => boolean;
+    once: (event: string, listener: (...args: any[]) => void) => void;
+    /** 2026-11-16 诊断强化：load 生命周期取证 */
+    getURL: () => string;
+    on: (event: string, listener: (...args: any[]) => void) => void;
+  };
+}
+
 interface PetStageWindow {
   isDestroyed: () => boolean;
   hide: () => void;
@@ -328,6 +351,14 @@ class ClipboardSpikeApp {
   _petClickSummon: boolean = false;
   _petCtxOpen: boolean = false;            // 右键菜单打开中（全窗可交互，渲染层 mouseleave 关闭）
   _petCtxPollId: ReturnType<typeof setInterval> | null = null;
+  menuWindow: MenuWindowWindow | null = null; // 互动二级菜单独立窗（2026-11-15 L3 pet-menu-window，懒创建）
+  _menuShownAt: number = 0;
+  _menuWinPollId: ReturnType<typeof setInterval> | null = null; // 菜单窗出界关闭轮询（2026-11-16 主进程接管）
+  _menuWinReveal: (() => void) | null = null; // 菜单窗显示回调（loadFile promise / did-finish-load 双路触发）
+  /** v14.3：猫心相对桌宠窗左上角的局部偏移，拖拽时据此换算新猫心 → 菜单跟随重排。 */
+  _menuCatOffsetInPet: { x: number; y: number } | null = null;
+  /** v14.3：拖拽期间的菜单跟随节流时间戳（30Hz，与桌宠 drag-move 同频）。 */
+  _menuReflowAt: number = 0;
   _petCtxHold: boolean = false; // 临时验证用：true 时失焦轮询暂停
   _altRescueId: ReturnType<typeof setInterval> | null = null; // Alt 残留自愈轮询（2026-10-15）
   _petCtxDir: { dirH: 'l' | 'r'; dirV: 'u' | 'd' } = { dirH: 'l', dirV: 'u' }; // 菜单打开期间的固定边方向（2026-10-15）
@@ -1038,6 +1069,247 @@ window.__clipSenseBarHover = function (on) {
   }
 
   /** 底边锚定的 setBounds（x 同参；y 按新高度上移，窗口底边保持在原位） */
+  /** 互动菜单窗隐藏（2026-11-15 L3 pet-menu-window） */
+  _hideMenuWindow(): void {
+    if (this.menuWindow && !this.menuWindow.isDestroyed()) this.menuWindow.hide();
+  }
+
+  /** 互动菜单窗会话收尾（2026-11-15 接线补全）：隐菜单窗 + 桌宠侧菜单态同步收尾
+   *  （pet:ctx-hide 清渲染层态；还原拖拽位 + 穿透语义，与 pet:close-ctx 同语义） */
+  _closeMenuSession(): void {
+    // 销毁式关闭（2026-11-16 小M「第二次展开点不动」根因修复）：原 hide 复用——
+    // Windows 透明无边框窗 hide→showInactive 循环后鼠标命中区域失效（Electron 已知
+    // 问题类别），第二次展开看得见点不动。改 close() 销毁，第二次必走已实测可点击的
+    // 新建路径（loadFile 有 did-finish-load/promise/did-fail-load/1.5s 四路 reveal 保险）。
+    if (this.menuWindow && !this.menuWindow.isDestroyed()) this.menuWindow.close();
+    this.menuWindow = null;
+    this._menuWinReveal = null;
+    if (this._menuWinPollId) { clearInterval(this._menuWinPollId); this._menuWinPollId = null; }
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    try { win.webContents.send('pet:ctx-hide'); } catch (_) { /* 销毁竞态 */ }
+    const saved = this._petCtxSaved;
+    this._petCtxSaved = null;
+    this._petCtxOpen = false;
+    if (this._petCtxPollId) { clearInterval(this._petCtxPollId); this._petCtxPollId = null; }
+    if (saved) win.setBounds(saved);
+    this._applyPetIgnore();
+  }
+
+  /** 互动菜单窗懒创建（透明环形窗，尺寸随环半径自适应，drag-and-drop 置顶带，不夺焦）
+   *  2026-11-16 诊断强化：全量挂载 load 生命周期诊断（did-fail-load / render-process-gone /
+   *  renderer console-message 转发落盘）——09:56 实测「互动点击后菜单窗渲染进程已创建
+   *  （no-sandbox renderer client-id 7 与点击时刻吻合）但 did-finish-load 从未触发 →
+   *  reveal 永不执行 → 窗口永 show:false」。此前 load 失败完全静默，无法取证。 */
+  _ensureMenuWindow(): void {
+    if (this.menuWindow && !this.menuWindow.isDestroyed()) return;
+    const mw = new BrowserWindow({
+      width: 240,
+      height: 240,
+      transparent: true,
+      frame: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      resizable: false,
+      show: false,
+      backgroundColor: '#00000000',
+      webPreferences: {
+        backgroundThrottling: false,
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
+      },
+    });
+    // 置顶等级 'drag-and-drop'（2026-11-16 小M「菜单不可见」第三根因）：桌宠窗同为
+    // 'screen-saver' 带，同级带内 petStage 的显隐/置顶自愈会把它顶到菜单窗之上——
+    // 菜单窗（130×130）与桌宠窗（112×115）中心重合，被盖即全盲。drag-and-drop 是
+    // Electron 最高置顶等级，严格高于 screen-saver，免疫桌宠侧任何重申。
+    mw.setAlwaysOnTop(true, 'drag-and-drop');
+    // load 生命周期诊断（先挂监听再 loadFile，杜绝事件先于监听的竞态）
+    mw.webContents.on('did-finish-load', () => {
+      _modDiag('[MenuWin] did-finish-load isLoading=' + mw.webContents.isLoading());
+      try { this._menuWinReveal?.(); } catch (_) { /* reveal 内部自有诊断 */ }
+    });
+    mw.webContents.on('did-fail-load', (_e: unknown, code: number, desc: string, url: string) => {
+      _modDiag(`[MenuWin] did-fail-load code=${code} desc=${desc} url=${url}`);
+    });
+    mw.webContents.on('render-process-gone', (_e: unknown, details: { reason: string }) => {
+      _modDiag(`[MenuWin] render-process-gone reason=${details && details.reason}`);
+    });
+    mw.webContents.on('console-message', (_e: unknown, level: number, message: string) => {
+      _modDiag(`[MenuWin:console:L${level}] ${String(message).split('\n').join(' | ').slice(0, 300)}`);
+    });
+    // loadFile promise 直接触发 reveal（2026-11-16 第二保险）：不依赖 webContents 事件派发
+    mw.loadFile(path.join(__dirname, '../renderer/menu-window.html'))
+      .then(() => {
+        _modDiag('[MenuWin] loadFile promise resolved');
+        try { this._menuWinReveal?.(); } catch (_) { /* reveal 内部自有诊断 */ }
+      })
+      .catch((err: unknown) => _modDiag(`[MenuWin] loadFile promise REJECTED: ${err instanceof Error ? err.message : String(err)}`));
+    this.menuWindow = mw; // v5.4 缺失实锤（小M：菜单全不可见）：未回填则本字段永 null，
+    // 后续 mw.setBounds 即抛 TypeError，菜单窗从未显示
+    _modDiag('[MenuWin] 窗口已创建，loadFile 已发起');
+  }
+
+  /** 菜单窗定位 + 显示（拉回后调用）：中心对齐猫屏幕坐标，clamp 工作区；
+   *  首开时 loadFile 异步——isLoading 时挂 did-finish-load 再下发载荷/显示（防 send 丢失）。
+   *  出界关闭轮询主进程接管（2026-11-16）：渲染层 menu-window.html 原自轮询两处硬伤——
+   *  ① petArea 从未赋值（恒 null → 桌宠区判定恒 false）；② cursorIn 拿 screenX/screenY
+   *  比视口客户区 rect（坐标系错位 → 菜单区判定恒 false）→ show 后 ~300ms 必自关
+   *  （小M 实测「动作管理不可见」根因）。主进程 getCursorScreenPoint 直读屏幕坐标，
+   *  菜单窗 bounds ∪ 桌宠窗 bounds 联合判定，出界 300ms 关（与 _petCtxPollId 同构）。 */
+  /** v14.3 菜单布局纯计算：给定猫心屏幕坐标与半径，算菜单窗 bounds + 扇形中轴 + 四边余量。
+   *  弹出与拖拽跟随共用同一份口径，避免两处公式漂移（D8 确定性规则）。 */
+  _computeMenuLayout(catXInt: number, catYInt: number, radius: number): {
+    mx: number; my: number; mW: number; mH: number;
+    fanMid: number; catLocal: { x: number; y: number };
+    gaps: { gapL: number; gapR: number; gapT: number; gapB: number };
+  } {
+    const { screen } = require('electron');
+    const mW = Math.round(2 * (radius + 78)), mH = mW;
+    const wa = screen.getDisplayMatching({ x: catXInt, y: catYInt, width: 10, height: 10 }).workArea;
+    const mx = Math.round(Math.min(Math.max(catXInt - mW / 2, wa.x + 4), wa.x + wa.width - mW - 4));
+    const my = Math.round(Math.min(Math.max(catYInt - mH / 2, wa.y + 4), wa.y + wa.height - mH - 4));
+    const gapL = catXInt - wa.x, gapR = wa.x + wa.width - catXInt;
+    const gapT = catYInt - wa.y, gapB = wa.y + wa.height - catYInt;
+    const gaps = [gapR, gapB, gapL, gapT]; // 对应角度 0(右)/90(下)/180(左)/270(上)
+    const maxGap = Math.max.apply(null, gaps);
+    const secondGap = Math.max.apply(null, gaps.filter((g) => g < maxGap));
+    let fanMid = 0; // 默认右半圆
+    if (maxGap - secondGap >= 40) fanMid = gaps.indexOf(maxGap) * 90;
+    return {
+      mx, my, mW, mH, fanMid,
+      catLocal: { x: catXInt - mx, y: catYInt - my },
+      gaps: { gapL, gapR, gapT, gapB },
+    };
+  }
+
+  /** v14.3 拖拽跟随：菜单窗跟随桌宠新位置重定位 + 重算扇形朝向，补一帧轻量 reflow。
+   *  不重播展开动画、不重建叶子，只平移窗口 + 更新环心/中轴/半径并让渲染层重新 place()。 */
+  _followMenuToPet(): void {
+    const mw = this.menuWindow;
+    const win = this.petStage;
+    if (!mw || mw.isDestroyed() || !mw.isVisible()) return;
+    if (!win || win.isDestroyed() || !this._menuCatOffsetInPet) return;
+    const b = win.getBounds();
+    const catXInt = Math.round(b.x + this._menuCatOffsetInPet.x);
+    const catYInt = Math.round(b.y + this._menuCatOffsetInPet.y);
+    const s = Math.min(Math.max(this._getPetScale() || 1, 0.5), 2.2);
+    const radius = Math.round(105 * s + 32);
+    const L = this._computeMenuLayout(catXInt, catYInt, radius);
+    mw.setBounds({ x: L.mx, y: L.my, width: L.mW, height: L.mH });
+    // 轻量 reflow：渲染层只更新环心/中轴/半径并 place()，不动叶子/动画/确认态。
+    mw.webContents.send('pet-menu:reflow', {
+      radius, fanMid: L.fanMid, catLocal: L.catLocal,
+    });
+    mw.moveTop(); // 拖到新位置保持盖过桌宠窗
+  }
+
+  _openMenuWindowAt(catScreenX: number, catScreenY: number, petBounds: { x: number; y: number; width: number; height: number }, level: 'main' | 'mode' | 'interact' = 'interact', mode: 'pet' | 'edge' | 'hidden' = 'pet'): void {
+    this._ensureMenuWindow();
+    const mw = this.menuWindow;
+    if (!mw || mw.isDestroyed()) { _modDiag('[MenuWin] openMenuWindowAt 退出：菜单窗不在场'); return; }
+    // Electron 28 gin 原生 Rect 转换要求整数成员（2026-11-16 实锤根因）：猫心锚改
+    // getBoundingClientRect 中心后坐标含小数，getDisplayMatching({x,y,…}) 收到浮点直接抛
+    // "Error processing argument at index 0, conversion failure"，且被全局异常快照
+    // （setupExceptionCapture 保活不退出）静默吞掉 → reveal 从未调度 → 菜单窗永不显示。
+    // 所有 crash-logs/uncaughtException_*.log 每次点互动一条，全部是本处。
+    const catXInt = Math.round(catScreenX);
+    const catYInt = Math.round(catScreenY);
+    const { screen } = require('electron');
+    // 布局 v3（2026-11-16 终版：极简环形 + 展开动画）：v1 环形 R=40 压猫身（0.5×
+    // 猫视觉半宽 52px）被遮；v2 卡片面板可用但丢掉极简交互。v3 回归环形悬浮叶，
+    // 关键修正 = 环半径随猫视觉尺寸放大到猫身外围：R = 视频半宽(105×s) + 叶半宽(18)
+    // + 间隙(14)，0.5× 档 R≈85、1× 档 R≈137，叶完整环抱猫身互不遮挡。
+    // 菜单窗透明、尺寸随环自适应（可大于桌宠窗，不影响视觉），中心对齐猫心；
+    // catLocal 下发猫在窗内的实际坐标（窗口被工作区 clamp 后仍精确环抱）。
+    const s = Math.min(Math.max(this._getPetScale() || 1, 0.5), 2.2);
+    const radius = Math.round(105 * s + 32);
+    // 留白 78：一级 4 叶正下方一叶 hover 后叶半宽+标签下探 ≈72px，任意档位完整在窗内。
+    // v14.3：布局口径抽到 _computeMenuLayout（弹出/拖拽共用），并记录猫心相对桌宠窗的
+    // 局部偏移——拖拽时据此换算新猫心，菜单窗才能跟着猫同步平移与重排扇形。
+    const L = this._computeMenuLayout(catXInt, catYInt, radius);
+    const { mx, my, mW, mH, fanMid, catLocal } = L;
+    this._menuCatOffsetInPet = {
+      x: catXInt - petBounds.x,
+      y: catYInt - petBounds.y,
+    };
+    mw.setBounds({ x: mx, y: my, width: mW, height: mH });
+    const { gapL, gapR, gapT, gapB } = L.gaps;
+    _modDiag(`[MenuWin] 扇形朝向 mid=${fanMid}° 余量 L=${gapL} R=${gapR} T=${gapT} B=${gapB}`);
+    const reveal = () => {
+      _modDiag(`[MenuWin] reveal 进入 isDestroyed=${mw.isDestroyed()}`);
+      if (mw.isDestroyed()) return;
+      // 打开瞬间光标屏幕坐标（菜单窗初始化联合出界判定——{-1,-1} 哨兵会误判出界闪灭）
+      const cursor = screen.getCursorScreenPoint();
+      mw.webContents.send('pet-menu:show', { petBounds, cursor, radius, catLocal, level, mode, fanMid });
+      mw.showInactive();
+      mw.moveTop(); // drag-and-drop 带内再顶一次，确保盖过桌宠窗（2026-11-16）
+      // show 后 250ms 验证（取证 isVisible/实际 bounds，杜绝「显示了但看不见」的盲区）
+      setTimeout(() => {
+        if (mw.isDestroyed()) { _modDiag('[MenuWin] show后250ms 窗口已销毁'); return; }
+        const vb = mw.getBounds();
+        _modDiag(`[MenuWin] show后250ms isVisible=${mw.isVisible()} bounds=(${vb.x},${vb.y} ${vb.width}x${vb.height}) alwaysOnTop=${mw.isAlwaysOnTop()}`);
+      }, 250);
+      this._menuShownAt = Date.now();
+      _modDiag(`[Pet] 菜单窗显示 (${mx},${my} ${mW}x${mH} 环R=${radius} s=${s}) 猫心=(${Math.round(catScreenX)},${Math.round(catScreenY)}) 桌宠窗=(${petBounds.x},${petBounds.y} ${petBounds.width}x${petBounds.height})`);
+      // 出界关闭轮询（主进程接管）：覆盖旧轮询
+      if (this._menuWinPollId) clearInterval(this._menuWinPollId);
+      let outSince = 0;
+      this._menuWinPollId = setInterval(() => {
+        const w3 = this.menuWindow;
+        if (!w3 || w3.isDestroyed() || !w3.isVisible()) {
+          if (this._menuWinPollId) { clearInterval(this._menuWinPollId); this._menuWinPollId = null; }
+          return;
+        }
+        const cur = screen.getCursorScreenPoint();
+        const mb = w3.getBounds();
+        const inMenu = cur.x >= mb.x && cur.x <= mb.x + mb.width && cur.y >= mb.y && cur.y <= mb.y + mb.height;
+        const pb = (this.petStage && !this.petStage.isDestroyed()) ? this.petStage.getBounds() : petBounds;
+        // z-order 维持（2026-11-16 小M 截图实锤：7 叶只露出左侧 4 叶，右侧 3 叶被猫盖住）：
+        // 仅靠窗口创建时的 drag-and-drop 等级不足——桌宠侧的置顶自愈会重排 topmost 带。
+        // 会话存活期每 120ms moveTop 一次，保证菜单叶始终压在桌宠窗之上。
+        w3.moveTop();
+        const inPet = cur.x >= pb.x && cur.x <= pb.x + pb.width && cur.y >= pb.y && cur.y <= pb.y + pb.height;
+        if (!inMenu && !inPet) {
+          if (!outSince) outSince = Date.now();
+          else if (Date.now() - outSince > 300) {
+            _modDiag(`[Pet] 菜单窗出界自动关闭 cur=(${cur.x},${cur.y}) 菜单窗=(${mb.x},${mb.y} ${mb.width}x${mb.height})`);
+            this._closeMenuSession();
+          }
+        } else {
+          outSince = 0;
+        }
+      }, 120);
+    };
+    // reveal-once（2026-11-16）：did-finish-load / loadFile promise / did-fail-load /
+    // 1.5s 兜底定时器四路触发，任一路先到即显示
+    let revealed = false;
+    const revealOnce = () => {
+      _modDiag(`[MenuWin] revealOnce 进入 revealed=${revealed} isDestroyed=${mw.isDestroyed()}`);
+      if (revealed) return;
+      revealed = true;
+      try {
+        reveal();
+      } catch (err) {
+        _modDiag(`[MenuWin] reveal 抛异常: ${err instanceof Error ? (err.stack || err.message) : String(err)}`);
+      }
+    };
+    this._menuWinReveal = revealOnce; // 供 _ensureMenuWindow 的 loadFile promise / did-finish-load 触发
+    mw.webContents.once('did-finish-load', revealOnce);
+    mw.webContents.once('did-fail-load', (_e: unknown, code: number, desc: string) => {
+      _modDiag(`[MenuWin] reveal 等待期间 did-fail-load code=${code} desc=${desc}（降级仍显示）`);
+      revealOnce();
+    });
+    setTimeout(() => {
+      _modDiag(`[MenuWin] 1.5s 兜底检查 revealed=${revealed} isDestroyed=${mw.isDestroyed()} isLoading=${mw.webContents.isLoading()}`);
+      if (!revealed && !mw.isDestroyed()) revealOnce();
+    }, 1500);
+    if (!mw.webContents.isLoading()) revealOnce(); // 已加载完成（窗口复用）立即显示
+  }
+
+  /** 底边锚定 setBounds（2026-11-15 v5.3：可选 forceSize——形象工坊扩窗 260 用） */
   _setPetBoundsAnchored(x: number, bottomY: number, forceSize?: number): void {
     if (!this.petStage || this.petStage.isDestroyed()) return;
     const size = forceSize ?? this._petStageSize().w;
@@ -1910,10 +2182,22 @@ window.__clipSenseBarHover = function (on) {
     // 右键：原生上下文菜单
     // 右键菜单改为渲染层 HTML 实现（2026-10-14 小M 需求：失去鼠标焦点自动关闭，
     // 原生 Menu 做不到且样式不可控）——主进程只负责扩窗/还原与状态/动作 IPC
-    ipcMain.on('pet:open-ctx', () => {
-      _modDiag('[Pet] open-ctx received (mode=' + this._getHideMode() + ', scale=' + this._petScale + ')');
+    ipcMain.on('pet:open-ctx', (_event: unknown, payload?: { mode?: string; catX?: number; catY?: number }) => {
+      _modDiag('[Pet] open-ctx received (mode=' + this._getHideMode() + ', scale=' + this._petScale + ') payload=' + JSON.stringify(payload || {}));
       const win = this.petStage;
       if (!win || win.isDestroyed()) { _modDiag('[Pet] open-ctx abort: petStage missing'); return; }
+      // v4 统一菜单窗（2026-11-16）：非 live2d 的一级菜单改走独立透明环形窗——
+      // 桌宠窗仅 220×s（0.5× 档 110px）物理上放不下环形叶+中文标签，这正是旧窗内
+      // 菜单「看不清/显示不全」的根源。独立窗环半径随猫视觉尺寸自适应，三套菜单
+      // （main/mode/interact）共用同一框架。live2d 模式保留窗内旧链路（不动历史）。
+      const renderMode = payload && payload.mode;
+      if (renderMode && renderMode !== 'live2d') {
+        const b = win.getBounds();
+        const catX = (typeof payload?.catX === 'number' && isFinite(payload.catX)) ? b.x + payload.catX : b.x + b.width / 2;
+        const catY = (typeof payload?.catY === 'number' && isFinite(payload.catY)) ? b.y + payload.catY : b.y + b.height / 2;
+        this._openMenuWindowAt(catX, catY, { x: b.x, y: b.y, width: b.width, height: b.height }, 'main', this._getHideMode());
+        return;
+      }
       // 去 resize 化（2026-10-20 小M：右击闪烁+瞬移根因 = transparent 窗口 resize）：
       // 窗口恒定 220x220（菜单全尺寸），右键纯渲染层展开，主进程零窗口操作。
       // 宠物常驻居中锚定（渲染层 fromCenter），拖拽走 setBounds 纯 move（无 resize）。
@@ -1954,18 +2238,51 @@ window.__clipSenseBarHover = function (on) {
     // v5.3 纯移动拉回（v4 教训：扩窗改窗口几何 → left:50%/bottom:0 锚定的猫必移动+叶错位，
     // 窗口几何是渲染层锚定的根不可动）：尺寸不变，只把越出 workArea 的部分拉回屏内；
     // 不覆写 _petCtxSaved（open-ctx 已存用户拖拽位，close-ctx 原样还原）。
+    // v5.4 独立菜单窗（2026-11-15 L3，小M 批准）：二级扇迁独立窗——桌宠窗零几何变化（猫不动），
+    // 菜单窗 260×260 中心对齐猫屏幕中心并 clamp 到所在屏工作区；showInactive 不夺焦。
+    // 叶动作回传：pet-menu:action → 转发 petStage 播放；关闭：pet-menu:close → 隐菜单窗。
     ipcMain.on('pet:expand-ctx', () => {
       const win = this.petStage;
       if (!win || win.isDestroyed()) return;
-      const b = win.getBounds();
       const { screen } = require('electron');
+      const b = win.getBounds();
       const display = screen.getDisplayMatching(b);
       const pulled = computeCtxPullBack(b, display);
       if (pulled.moved) {
         win.setBounds({ x: pulled.x, y: pulled.y, width: b.width, height: b.height });
         _modDiag(`[Pet] expand-ctx 拉回屏内: (${b.x},${b.y}) -> (${pulled.x},${pulled.y})`);
       }
+      // 猫屏幕中心（2026-11-16 修硬编码 110/105——那是 scale=1 口径，窗口/视频都随档位
+      // 缩放：窗=220×s，视频高=210×s 底边锚定 → 心=(W/2, H-105×s)。webm 主链路
+      // pet-menu:show 载荷为准，此处仅为 expand-ctx 直通路径的等价兜底）
+      const s = this._getPetScale() || 1;
+      this._openMenuWindowAt(b.x + b.width / 2, b.y + b.height - 105 * s, { x: b.x, y: b.y, width: b.width, height: b.height });
     });
+    // 互动菜单窗打开（2026-11-15 L3 pet-menu-window 最终通道）：react 叶点击（pet-stage）
+    // 发 pet-menu:show，载荷 catX/catY = pet-stage 窗口内 CSS 坐标（catAnchor 真实猫几何，
+    // webm/live2d 通吃——expand-ctx 硬编码 webm 居中锚的旧口径退役）。行为与 expand-ctx
+    // 同构：纯移动拉回（v5.3）→ 菜单窗中心对齐猫 + clamp 工作区 → showInactive 不夺焦。
+    // 此前主进程无此处理器：点互动发 show 无人听，菜单窗根本不出现（小M 实测断链）。
+    ipcMain.on('pet-menu:show', (_event: unknown, payload?: { catX?: number; catY?: number }) => {
+      const win = this.petStage;
+      if (!win || win.isDestroyed()) { _modDiag('[Pet] pet-menu:show 丢弃：petStage 不在场'); return; }
+      const { screen } = require('electron');
+      const b0 = win.getBounds();
+      _modDiag(`[Pet] pet-menu:show 收到 payload=${JSON.stringify(payload || {})} 桌宠窗=(${b0.x},${b0.y} ${b0.width}x${b0.height})`);
+      const display = screen.getDisplayMatching(b0);
+      const pulled = computeCtxPullBack(b0, display);
+      const b = pulled.moved
+        ? { x: pulled.x, y: pulled.y, width: b0.width, height: b0.height }
+        : b0;
+      if (pulled.moved) {
+        win.setBounds(b);
+        _modDiag(`[Pet] 菜单窗打开前拉回屏内: (${b0.x},${b0.y}) -> (${pulled.x},${pulled.y})`);
+      }
+      const catX = typeof payload?.catX === 'number' && isFinite(payload.catX) ? payload.catX : 110;
+      const catY = typeof payload?.catY === 'number' && isFinite(payload.catY) ? payload.catY : b.height - 105;
+      this._openMenuWindowAt(b.x + catX, b.y + catY, { x: b.x, y: b.y, width: b.width, height: b.height });
+    });
+
     ipcMain.on('pet:close-ctx', () => {
       const win = this.petStage;
       const saved = this._petCtxSaved;
@@ -1977,6 +2294,18 @@ window.__clipSenseBarHover = function (on) {
         this._applyPetIgnore(); // 恢复轮廓命中语义
       }
     });
+    // 互动菜单窗动作回传（2026-11-15 L3 迁移接线补全 + 一叶一动作）：act = 具体素材名
+    // （p1…/light0song，menu-window.html 叶子 data-act），直传 petStage 播放——
+    // 渲染层 playAction 已支持直接素材名（POOLS 无此键时按单素材播放）。
+    // 此前 L3 只迁了 UI：pet-menu:action 在主进程无处理器，点叶子不会播放（小M 实测）。
+    ipcMain.on('pet-menu:action', (_event: unknown, payload: { act?: string }) => {
+      const act = payload && typeof payload.act === 'string' ? payload.act : '';
+      if (!act) return;
+      const win = this.petStage;
+      if (win && !win.isDestroyed()) win.webContents.send('pet:play-action', { act });
+      this._closeMenuSession(); // 动作即播即收（与原窗内叶 closeCtx 语义对齐）
+    });
+    ipcMain.on('pet-menu:close', () => this._closeMenuSession());
     ipcMain.handle('pet:get-menu-state', () => ({ mode: this._getHideMode(), scale: this._getPetScale() }));
     ipcMain.on('pet:set-hide-mode', (_event: unknown, mode: string) => {
       if (mode === 'pet' || mode === 'edge' || mode === 'hidden') this._setHideMode(mode);
@@ -2010,6 +2339,15 @@ window.__clipSenseBarHover = function (on) {
         _modDiag(`[Pet] 拖拽尺寸漂移 ${b.width}x${b.height} → 钉回 ${size.w}x${size.h}（DPI 取整实锤）`);
       }
       this.petStage.setBounds({ x: c.x, y: c.y, width: size.w, height: size.h });
+      // v14.3 菜单会话中拖拽桌宠：菜单窗跟随新位置平移 + 重算扇形朝向/环心（30Hz 节流），
+      // 让「弹出后拖动」时菜单始终环抱猫、且开口朝新的空旷侧，不会被屏幕边缘裁掉。
+      // 用 33ms 节流与渲染层 drag-move 同频，避免每拍 setBounds+reflow 造成抖动。
+      const now = Date.now();
+      if (this.menuWindow && !this.menuWindow.isDestroyed() && this.menuWindow.isVisible()
+          && this._menuCatOffsetInPet && now - this._menuReflowAt >= 33) {
+        this._menuReflowAt = now;
+        this._followMenuToPet();
+      }
     });
     ipcMain.on('pet:drag-end', () => {
       if (!this.petStage || this.petStage.isDestroyed()) { this._petDragOffset = null; return; }
@@ -2476,6 +2814,24 @@ if (!app.requestSingleInstanceLock()) {
       try { app.dock.hide(); } catch (_) { /* 无 dock（headless/CI）时忽略 */ }
     }
     await spikeApp.init();
+    // 菜单窗全链路自检（CLIPSENSE_MENU_SELFTEST=1 时启用，2026-11-16 调试工具）：
+    // 启动 8s 后用桌宠窗真实 bounds 自动触发一次 pet-menu:show → 定位 → reveal，
+    // 日志可完整取证 reveal/isVisible/z-order，无需人工点击。
+    if (process.env.CLIPSENSE_MENU_SELFTEST === '1') {
+      let selfTestTries = 0;
+      const selfTestTimer = setInterval(() => {
+        const win = spikeApp.petStage;
+        if (win && !win.isDestroyed() && win.isVisible()) {
+          clearInterval(selfTestTimer);
+          const b = win.getBounds();
+          _modDiag(`[SelfTest] 触发菜单窗自检 桌宠窗=(${b.x},${b.y} ${b.width}x${b.height})`);
+          spikeApp._openMenuWindowAt(b.x + b.width / 2, b.y + b.height / 2, b);
+        } else if (++selfTestTries > 30) {
+          clearInterval(selfTestTimer);
+          _modDiag('[SelfTest] 30s 内桌宠窗未就绪，自检中止');
+        }
+      }, 1000);
+    }
   });
 }
 

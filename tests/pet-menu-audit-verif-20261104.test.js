@@ -426,16 +426,16 @@ describe('A2 quit 确认气泡：顶部居中公式三档推演（遮挡修复�
 // ==================== A3 react 叶点击链路完整性（重点审计：互动叶误删修复） ====================
 
 describe('A3 react 叶链路（2026-11-05 Bug3 新契约：二级动作点播扇）', () => {
-  test('点击 react 叶 → 打开 interact 二级扇（back + 动作叶）；点动作叶 → model.motion 实调', async () => {
+  test('点击 react 叶（live2d）→ 触发反应；webm 下 → 发 pet-menu:show 独立菜单窗（v5.4 迁移契约）', async () => {
     const { h, model } = await bootLive2dOk();
     h.ipc.emit('pet:ctx-show', {}, { mode: 'pet', scale: 1, winW: 220, winH: 220 });
     const react = leafByKey(h, 'react');
     assert.ok(react, 'react 叶存在');
-    clickLeaf(h, react); // 第一跳：开二级扇
+    clickLeaf(h, react); // live2d 模式：二级动作点播扇留守窗内（spec 非目标：live2d 不迁独立窗）
     const m0 = leafByKey(h, 'm0');
     assert.ok(m0, 'interact 二级扇应有动作叶 m0（uniform 采样）');
     const before = model.__motions.length;
-    clickLeaf(h, m0); // 第二跳：点动作叶 → motion 实调
+    clickLeaf(h, m0); // 点动作叶 → motion 实调
     assert.ok(model.__motions.length > before,
       `动作叶点选应触发 motion（前 ${before} 后 ${model.__motions.length}）`);
     const last = model.__motions[model.__motions.length - 1];

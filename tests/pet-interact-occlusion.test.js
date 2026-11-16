@@ -30,11 +30,13 @@ function intersects(a, b) {
 }
 
 const INTERACT_LEAVES = [
-  { key: 'click', ang: 40, icon: '👆', hint: '点击动作', value: 'click' },
-  { key: 'hover', ang: 10, icon: '👋', hint: '挥手动作', value: 'hover' },
-  { key: 'song', ang: 140, icon: '🎵', hint: '唱歌', value: 'song' },
-  { key: 'light', ang: 170, icon: '💡', hint: '光效', value: 'light' },
-  { key: 'heart', ang: 200, icon: '❤️', hint: '爱心', value: 'heart' },
+  // 真实 webm 互动叶组（pet-stage.html renderInteractSub，2026-11-15 一叶一动作）
+  { key: 'a-p1', ang: 140, icon: '🐾', hint: '前扑逗趣', value: 'p1' },
+  { key: 'a-p2', ang: 170, icon: '🔄', hint: '追尾巴', value: 'p2' },
+  { key: 'a-p3', ang: 200, icon: '🤗', hint: '抬爪邀请', value: 'p3' },
+  { key: 'a-p4', ang: 40, icon: '💃', hint: '摇摆小舞', value: 'p4' },
+  { key: 'a-p5', ang: 10, icon: '👃', hint: '凑近嗅闻', value: 'p5' },
+  { key: 'a-song', ang: 340, icon: '🎵', hint: '唱歌', value: 'light0song' },
 ];
 
 const SCALES = [
@@ -61,7 +63,7 @@ describe('互动二级扇防遮挡 v5.4（真实窗口 220×scale：半径随档
           interactLeaves: INTERACT_LEAVES,
         });
 
-        assert.strictEqual(r.leaves.length, 6, 'back + 5 动作叶');
+        assert.strictEqual(r.leaves.length, 7, 'back + 6 动作叶');
 
         // ① 渲染层落位（含兜底平移）必须全窗内——小M 截图「三个角显示不全」的直接回归锁
         for (const leaf of r.leaves) {
@@ -118,11 +120,11 @@ describe('互动二级扇防遮挡 v5.4（真实窗口 220×scale：半径随档
       winW: 220, winH: 220, dirH: 'l', dirV: 'u', level: 'interact', scale: 1, catX: 110, catY: 115,
       interactLeaves: INTERACT_LEAVES,
     });
-    assert.strictEqual(r1.leaves.find((l) => l.key === 'hover').r, 80, 'scale=1 须维持 R80 标定');
+    assert.strictEqual(r1.leaves.find((l) => l.key === 'a-p5').r, 80, 'scale=1 须维持 R80 标定');
     const r07 = MENU_LAYOUT.computeLayout({
       winW: 154, winH: 154, dirH: 'l', dirV: 'u', level: 'interact', scale: 0.7, catX: 77, catY: 104,
       interactLeaves: INTERACT_LEAVES,
     });
-    assert.strictEqual(r07.leaves.find((l) => l.key === 'hover').r, 56, '半径须随档位缩放 80×0.7=56');
+    assert.strictEqual(r07.leaves.find((l) => l.key === 'a-p5').r, 56, '半径须随档位缩放 80×0.7=56');
   });
 });

@@ -119,9 +119,14 @@ describe('expand-ctx wiring 静态守卫（v5.3：处理器可达 + 纯移动）
     assert.ok(handlerBlock.includes('computeCtxPullBack'), '处理器须经 computeCtxPullBack 计算落点');
   });
 
-  test('处理器无 260 扩窗残留（v4 教训：扩窗致猫移动+叶错位）', () => {
-    assert.ok(!handlerBlock.includes('260'), 'expand-ctx 不得再扩窗 260（窗口几何不可动）');
+  test('桌宠窗几何不可动：不走锚定扩窗路径（v4 教训），尺寸钉死原值', () => {
+    // L3 独立菜单窗（260×260）是另一窗口，其尺寸不受此约束；
+    // 桌宠窗只允许 computeCtxPullBack 纯移动拉回（宽高钉死原值，无 resize）
     assert.ok(!handlerBlock.includes('_setPetBoundsAnchored'), 'expand-ctx 不得走锚定扩窗路径');
+    assert.ok(
+      /setBounds\(\{ x: pulled\.x, y: pulled\.y, width: b\.width, height: b\.height \}\)/.test(handlerBlock),
+      '桌宠窗 setBounds 必须用拉回坐标 + 原宽高（纯移动）',
+    );
   });
 
   test('处理器不覆写 _petCtxSaved（close-ctx 须还原用户拖拽位）', () => {

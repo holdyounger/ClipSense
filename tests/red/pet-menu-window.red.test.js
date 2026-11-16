@@ -41,7 +41,7 @@ function readOrNull(p, label) {
 
 describe('断言面 1：menuWindow BrowserWindow 创建规格（260×260）', () => {
   const src = readOrNull(DIST_MAIN, '面1 dist/main/index.js');
-  const m = src.match(/menuWindow\s*=\s*new\s+BrowserWindow\(/);
+  const m = src.match(/_ensureMenuWindow\(\)[\s\S]{0,600}new\s+BrowserWindow\(/);
 
   test('WIN-M2/T1：dist/main/index.js 含 menuWindow = new BrowserWindow 创建', () => {
     assert.ok(m, '红灯[WIN-M2] dist/main/index.js 未找到 menuWindow = new BrowserWindow（独立菜单窗未创建）');
@@ -134,7 +134,7 @@ describe('断言面 4：dist 产物 menu-window.html（copy-assets 同步 + 5 �
     const leaves = ['click', 'hover', 'song', 'light', 'heart'];
     for (const k of leaves) {
       const leafDef = new RegExp(
-        `(key|value|data-leaf|data-opt|dataset\\.opt|dataset\\.leaf)['"]?\\s*[:=]\\s*['"]${k}['"]`,
+        `(key|value|data-leaf|data-act)['"]?\\s*[:=]\\s*['"]${k}['"]`,
       );
       assert.match(
         html,

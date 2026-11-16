@@ -103,6 +103,33 @@
     transition: opacity 180ms ease;
   }
   #petVideo2 { opacity: 0; }
+  /* 唱歌音符层（webm 专用）：跟随 video 底部居中，不吃鼠标事件。
+     仅播放 light0song 时由 JS 注入音符粒子，从狗嘴位置上升飘散并淡出——
+     给「唱歌」一个摇摆没有的视觉标识，解决两者都是「张嘴近景小幅晃」难分辨的问题。 */
+  #songFx {
+    position: absolute; left: 50%; bottom: 0;
+    transform: translateX(-50%);
+    height: 210px; width: 210px;
+    pointer-events: none;
+    z-index: 90; /* 高于 video（默认流内），低于右键菜单 100，不遮挡菜单交互 */
+    overflow: visible;
+  }
+  .song-note {
+    position: absolute;
+    font-size: 20px; line-height: 1;
+    color: #fff;
+    text-shadow: 0 0 6px rgba(108, 92, 231, 0.95), 0 1px 3px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    will-change: transform, opacity;
+    /* 上升 + 横向轻摆 + 淡出；具体时长/延迟/横向幅度由 JS 内联注入形成参差 */
+    animation: songRise var(--dur, 1.8s) ease-out var(--delay, 0s) infinite;
+  }
+  @keyframes songRise {
+    0%   { opacity: 0; transform: translate(0, 0) scale(0.6) rotate(-14deg); }
+    18%  { opacity: 1; transform: translate(calc(var(--drift, 12px) * 0.3), -22px) scale(1) rotate(6deg); }
+    75%  { opacity: 0.9; }
+    100% { opacity: 0; transform: translate(var(--drift, 12px), -86px) scale(1.05) rotate(-8deg); }
+  }
   #sprite {
     position: absolute; left: 50%; bottom: 6px;
     width: 138px; height: auto;
@@ -117,6 +144,7 @@
 
 <video id="petVideo" muted autoplay loop playsinline preload="auto"></video>
 <video id="petVideo2" muted autoplay playsinline preload="auto"></video>
+<div id="songFx"></div>
 <canvas id="vrmCanvas" style="position:absolute;inset:0;width:100%;height:100%;display:none"></canvas>
 <div id="ctxMenu">
   <div class="cm-hint" id="cmHint"></div>
@@ -170,6 +198,8 @@ let mode = 'none';           // webm | sprite
 window.__petMode = mode;
 function setMode(m) {
   mode = m;
+  // 切离 webm（进 sprite/live2d）时清掉唱歌音符层，避免残留动画浮在非 webm 画面上
+  if (m !== 'webm' && typeof clearSongFx === 'function') clearSongFx();
   try { window.__petMode = m; } catch (_) {}
   // Live2D 后端启动链可观测契约 C3（tests/live2d-backend.dom.test.js）：
   // 按尝试顺序 push 后端名（live2d 尝试必在链上；sprite 兜底也记录）
@@ -187,6 +217,13 @@ let petScale = 1.0;
 function applyScale(s) {
   petScale = Number(s) || 1;
   eachV(function (v) { v.style.height = Math.round(210 * petScale) + 'px'; });
+  // 唱歌音符层随桌宠同步缩放。容器固定 210px，仅用 scale（锚点=底边中心）放大，
+  // 保证 vertical 位置与 video「底部居中」对齐；不再改宽高，避免与 scale 重复缩放。
+  const fxEl = document.getElementById('songFx');
+  if (fxEl) {
+    fxEl.style.transformOrigin = '50% 100%';
+    fxEl.style.transform = 'translateX(-50%) scale(' + petScale.toFixed(3) + ')';
+  }
   // 滚轮缩放失效修复（2026-11-04 小M）：live2d 下 video 高度变化无视觉效果，
   // 必须重排模型（layoutLive2d 读 petScale 计算缩放/底边锚定）
   if (mode === 'live2d' && __l2d && __l2d.layout) {
@@ -249,9 +286,48 @@ function preloadBlobs() {
 // ③ 修复 paint-ready 断链：首播实际落在 video2，旧监听却挂 video（无 src 永不触发），
 //    全靠主进程 1200ms 兜底显示——首帧交换时双 rAF 直发，恢复 paint-verified show
 let fadePauseTimer = null;
+// 唱歌音符层（webm 专用）：light0song 与其他动作的视觉区分标识。
+// 素材本体是「歪头张嘴小幅晃」，与 p4 摇摆同属张嘴近景、快速播放难分辨；
+// 叠加上升飘散的音符粒子后，唱歌在视觉上一眼可辨。纯 DOM/CSS 动画，无额外素材成本。
+const songFxEl = document.getElementById('songFx');
+const SONG_NOTES = ['♪', '♫', '♩', '♬'];
+let songActive = false;
+function clearSongFx() {
+  if (!songActive) return;
+  songActive = false;
+  try { if (songFxEl && songFxEl.replaceChildren) songFxEl.replaceChildren(); } catch (_) {}
+  try { if (songFxEl) songFxEl.innerHTML = ''; } catch (_) {}
+}
+function startSongFx() {
+  if (mode !== 'webm' || !songFxEl || !songFxEl.appendChild) return;
+  clearSongFx();
+  songActive = true;
+  // 5 枚音符错位排布：起点集中在狗嘴（视频中上部），横向幅度/时长/延迟各异形成自然参差。
+  const presets = [
+    { left: 40, top: 40, drift: -26, dur: 1.9, delay: 0.0, size: 18 },
+    { left: 55, top: 36, drift: 22,  dur: 2.1, delay: 0.45, size: 22 },
+    { left: 47, top: 44, drift: -14, dur: 1.7, delay: 0.9,  size: 16 },
+    { left: 62, top: 42, drift: 18,  dur: 2.0, delay: 1.3,  size: 19 },
+    { left: 34, top: 46, drift: -20, dur: 1.8, delay: 1.7,  size: 17 }
+  ];
+  presets.forEach(function (p, i) {
+    const el = document.createElement('span');
+    el.className = 'song-note';
+    el.textContent = SONG_NOTES[i % SONG_NOTES.length];
+    el.style.left = p.left + '%';
+    el.style.top = p.top + '%';
+    el.style.fontSize = p.size + 'px';
+    el.style.setProperty('--drift', p.drift + 'px');
+    el.style.setProperty('--dur', p.dur + 's');
+    el.style.setProperty('--delay', p.delay + 's');
+    songFxEl.appendChild(el);
+  });
+}
 function play(name, loop) {
   if (!BLOBS[name]) return;
   current = name;
+  // 只有唱歌素材启用音符层；其余任何播放（含回待机）立即清除。
+  if (name === 'light0song') startSongFx(); else clearSongFx();
   const incoming = backV;
   const outgoing = frontV;
   incoming.pause();
@@ -294,7 +370,10 @@ function playIdle(now) {
 }
 function playAction(poolName, backToIdle) {
   state = 'action';
-  const pickName = pick(POOLS[poolName]);
+  // 一叶一动作（2026-11-15 小M「二级菜单和 webm 内容对应不上」）：池名缺省时按
+  // 直接素材名播放（playAction('p1') → 单素材 p1），互动叶点播依赖此通道
+  const pool = POOLS[poolName] || [poolName];
+  const pickName = pick(pool);
   play(pickName, false);
   // ended 由统一 ended 监听回 idle；backToIdle 预留
 }
@@ -513,11 +592,16 @@ window.addEventListener('contextmenu', function (e) {
   var l2dPending = mode === 'live2d' && !__l2d;
   if (!l2dPending && !cursorHit(e.clientX, e.clientY)) return; // 命中区收缩（2026-10-20）：透明区右键不弹菜单
   // 去 resize 化（2026-10-20）：窗口恒定菜单全尺寸，右键纯渲染层展开（主进程零窗口操作）→ 无 resize 闪烁、无瞬移
-  if (ctxOpen) { ipcRenderer.send('pet:open-ctx'); return; } // 已开：仅续期失焦轮询
+  // v4 统一菜单窗：非 live2d 模式的一级菜单改走独立环形菜单窗（与互动二级同框架）。
+  // 带上 mode（主进程据此分流 live2d=窗内旧链路）与精确猫心（getBoundingClientRect 口径，
+  // 免去主进程用 220×s 兜底公式引入的 DPI/锚点偏差）。
+  var ca = catAnchor();
+  var ctxPayload = { mode: mode, catX: ca.catX, catY: ca.catY };
+  if (ctxOpen) { ipcRenderer.send('pet:open-ctx', ctxPayload); return; } // 已开：仅续期失焦轮询
   dirH = 'l'; dirV = 'u';           // 常量：窗口恒定后菜单展开方向不再需要动态
   savedVideoOffsets = captureVideoOffsets();
   applyDirection();
-    ipcRenderer.send('pet:open-ctx'); // HTML 右键菜单（失去鼠标焦点自动关闭）
+  ipcRenderer.send('pet:open-ctx', ctxPayload);
 });
 
 
@@ -528,6 +612,14 @@ video.addEventListener('ended', onEndedCommon);
 video2.addEventListener('ended', onEndedCommon);
 // 大小可调：主进程推送缩放系数 → 动态高度
 ipcRenderer.on('pet:react', function () { triggerReact(); });
+// 互动菜单窗动作回传（2026-11-15 L3 pet-menu-window）：叶点击 → 主进程转发 → 播放动作
+ipcRenderer.on('pet:play-action', function (_e, act) {
+  if (act === 'click') playAction('click');
+  else if (act === 'hover') playAction('hover');
+  else if (act === 'heart') playAction('react');
+  else if (act === 'song') playAction('song');
+  else if (act === 'light') playAction('light');
+});
 // 大小可调（2026-10-14）：主进程确认后推送缩放系数 → 动态适配 video 高度
 ipcRenderer.on('pet:scale', function (_e, s, pos) {
   applyScale(Number(s) || 1);
@@ -582,9 +674,15 @@ function catAnchor() {
     // 包围盒未就绪（加载 pending）：窗口水平中点 + 底边上方（与模型落位语义一致）
     return { catX: window.innerWidth / 2, catY: window.innerHeight * 0.75 };
   }
+  // webm 分支（2026-11-16 出窗根因修复）：改用 getBoundingClientRect 求猫心——
+  // 视频锚定是 left:50% + transform:translateX(-50%)，offsetLeft 不含 transform 恒等于
+  // W/2，旧口径 catX = W/2 + w/2 向右多算半个视频宽（0.5× 档实测偏差 52.5px > 半窗），
+  // 主进程 pet-menu:show 用它定位 260×260 独立菜单窗 → 叶环整体右移出桌宠窗。
+  // rect 含 transform，与 body-rect 上报/命中检测同口径（同一教训第四次复发——几何源统一）。
+  var r = video.getBoundingClientRect();
   return {
-    catX: video.offsetLeft + video.offsetWidth / 2,
-    catY: video.offsetTop + video.offsetHeight / 2,
+    catX: r.left + r.width / 2,
+    catY: r.top + r.height / 2,
   };
 }
 
@@ -629,45 +727,33 @@ function applyLayout() {
 function renderMainFan() { ctxLevel = 'main'; applyLayout(); }
 function renderModeSub() { ctxLevel = 'mode'; applyLayout(); }
 // Bug3（2026-11-05 小M：互动太少且没关联动作）：互动叶改二级动作点播扇——
-// live2d 动作池均匀采样 6 叶 + 🎲 随机；webm 走 click/hover 池 + ❤️ 爱心。
+// live2d 动作池均匀采样 6 叶 + 🎲 随机；webm 一叶一动作（value=素材名，hint=权威动作名）。
 // 布局走 pet-menu-layout 的 interact 级（back 锚 react 叶位，红灯用例已锁）。
 let interactLeaves = [];
 var live2dMotionCount = 9;   // 模块级：live2d 加载后由 motionManager definitions 实测回填
 var live2dMotionNames = [];  // 模块级：动作显示名（hint 用），model3.json 无 displayName 时回落「动作 N」
 function renderInteractSub() {
+  // webm：二级扇已迁独立菜单窗（2026-11-15 L3 pet-menu-window，一叶一动作：data-act=素材名）——
+  // 仅请求主进程打开菜单窗（pet:expand-ctx：v5.3 纯移动拉回 + show），窗内不再渲染互动叶
+  //（避免双菜单叠影）；动作经 pet-menu:action → pet:play-action 回传播放。
+  // live2d 动作点播仍走窗内叶（独立窗叶子为 webm 素材集），不拉起菜单窗。
+  if (mode !== 'live2d') { ipcRenderer.send('pet:expand-ctx'); return; }
   ctxLevel = 'interact';
-  // 互动拉回 v5.3（2026-11-15，修 v5.2 死代码：expand-ctx 处理器 _petCtxOpen 早退致拉回永不执行）：
-  // 请求主进程纯移动拉回屏内（窗口几何不动——v4 教训：扩窗致猫移动+叶错位）；
-  // close-ctx 仍还原用户拖拽位（藏猫体验保留）
-  ipcRenderer.send('pet:expand-ctx');
-  if (mode === 'live2d') {
-    var n = live2dMotionCount;
-    // 左弧约束二次修正（2026-11-05 小M：动作叶挡住形象主体）：原 245-i*65 全圆包裹
-    // 让 9 叶铺满整窗圆周（实机日志 leaves 铺满 154 窗口 + rand/m2 同坐标叠放）——
-    // 模型主体在圆心必被遮挡。收敛到左弧 250°→110°（背向主体，与 mode 扇同侧），
-    // 均匀采样最多 5 叶；🎲 随机语义由 hover/idle 池承担不再单列（原 rand 与采样叶同位叠放）。
-    var angs = [250, 210, 170, 130, 90, 55, 20, 345]; // 左弧+底弧扩展：40° 均布（弦长≈29px > 叶径 22px 判定阈）；最多 8 叶（9 动作去 1 当前）
-    var cap = Math.min(angs.length, n);
-    interactLeaves = [];
-    var prevIdx = -1;
-    for (var k = 0; k < cap; k++) {
-      var i = cap > 1 ? Math.round(k * (n - 1) / (cap - 1)) : 0;
-      i = Math.max(0, Math.min(n - 1, i));
-      if (i <= prevIdx) continue;
-      prevIdx = i;
-      interactLeaves.push({ key: 'm' + i, ang: angs[interactLeaves.length], icon: '▶', hint: (live2dMotionNames[i] || ('动作 ' + (i + 1))), value: String(i) });
-    }
-  } else {
-    interactLeaves = [
-      // 防遮挡 v5（2026-11-14 小M：扩窗致桌宠移动+菜单错位——撤扩窗，窗口恒 220×220 猫不动）：
-      // 半径由引擎自适应反推（R88 = 可用半宽 - 叶半 - margin，左右弧叶 x 出猫核心横带）
-      // v4 扩窗方案原罪：改窗口几何 → left:50%/bottom:0 锚定的猫必然随窗移动（已撤）
-      { key: 'click', ang: 40, icon: '👆', hint: '点击动作', value: 'click' },
-      { key: 'hover', ang: 10, icon: '👋', hint: '挥手动作', value: 'hover' },
-      { key: 'song', ang: 140, icon: '🎵', hint: '唱歌', value: 'song' },
-      { key: 'light', ang: 170, icon: '💡', hint: '光效', value: 'light' },
-      { key: 'heart', ang: 200, icon: '❤️', hint: '爱心', value: 'heart' },
-    ];
+  var n = live2dMotionCount;
+  // 左弧约束二次修正（2026-11-05 小M：动作叶挡住形象主体）：原 245-i*65 全圆包裹
+  // 让 9 叶铺满整窗圆周（实机日志 leaves 铺满 154 窗口 + rand/m2 同坐标叠放）——
+  // 模型主体在圆心必被遮挡。收敛到左弧 250°→110°（背向主体，与 mode 扇同侧），
+  // 均匀采样最多 5 叶；🎲 随机语义由 hover/idle 池承担不再单列（原 rand 与采样叶同位叠放）。
+  var angs = [250, 210, 170, 130, 90, 55, 20, 345]; // 左弧+底弧扩展：40° 均布（弦长≈29px > 叶径 22px 判定阈）；最多 8 叶（9 动作去 1 当前）
+  var cap = Math.min(angs.length, n);
+  interactLeaves = [];
+  var prevIdx = -1;
+  for (var k = 0; k < cap; k++) {
+    var i = cap > 1 ? Math.round(k * (n - 1) / (cap - 1)) : 0;
+    i = Math.max(0, Math.min(n - 1, i));
+    if (i <= prevIdx) continue;
+    prevIdx = i;
+    interactLeaves.push({ key: 'm' + i, ang: angs[interactLeaves.length], icon: '▶', hint: (live2dMotionNames[i] || ('动作 ' + (i + 1))), value: String(i) });
   }
   applyLayout();
 }
@@ -752,8 +838,26 @@ ipcRenderer.on('pet:ctx-show', function (_e, st) {
 });
 let pendingWin = null;
 // 失焦自动关闭双通道：DOM mouseleave 快路径 + 主进程 OS 光标轮询权威（pet:ctx-hide）
-window.addEventListener('mouseleave', function () { if (ctxOpen) closeCtx(true, 'dom-mouseleave'); });
-ipcRenderer.on('pet:ctx-hide', function () { closeCtx(false, 'os-poll'); });
+window.addEventListener('mouseleave', function () {
+ if (ctxOpen) 
+ closeCtx(true, 'dom-mouseleave'); 
+ });
+ipcRenderer.on('pet:ctx-hide', function () {
+ closeCtx(false, 'os-poll'); 
+ });
+// 互动菜单窗动作回传（2026-11-15 L3 pet-menu-window 一叶一动作）：act=素材名（p1…/light0song），
+// webm 经 playAction 直名播放（POOLS 无此键时按单素材）；live2d 序号动作兼容点播
+ipcRenderer.on('pet:play-action', function (_e, p) {
+  var act = p && p.act;
+  if (!act) return;
+  if (mode === 'live2d' && window.__petLive2dAction) {
+    var idx = parseInt(act, 10);
+    if (isFinite(idx)) { try { __l2d.model.motion('Idle', idx, 3); } catch (_) {} }
+    else { triggerReact(); }
+  } else {
+    playAction(act);
+  }
+});
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && ctxOpen) { closeCtx(true, 'esc'); e.stopPropagation(); }
 });
@@ -776,7 +880,14 @@ ctxMenu.addEventListener('click', function (e) {
     // 显式入口带 force=true：不受「点击桌宠时唤出面板」开关影响
     if (k === 'summon') { closeCtx(); ipcRenderer.send('pet:summon', true); }
     else if (k === 'mode') renderModeSub();
-    else if (k === 'react') renderInteractSub(); // Bug3：点互动 → 动作点播二级扇
+    else if (k === 'react') {
+      // 独立菜单窗（2026-11-15 L3）：仅 webm/sprite 模式迁独立窗（spec 非目标：live2d 不迁）；
+      // live2d 模式二级动作点播扇留守窗内（renderInteractSub，动作索引点播 motion）
+      if (mode === 'live2d') { renderInteractSub(); return; }
+      const ca = catAnchor();
+      closeCtx();
+      ipcRenderer.send('pet-menu:show', { catX: ca.catX, catY: ca.catY, anchor: 'cat-center' });
+    }
     else if (k === 'skill') {
       // 形象工坊（2026-11-13 小M）：引导用户用 pet-webm-pipeline Skill 生成自己的桌宠形象
       closeCtx();
@@ -805,17 +916,16 @@ ctxMenu.addEventListener('click', function (e) {
     if (leaf.dataset.opt === 'back') { ctxLevel = 'main'; applyLayout(); return; }
     if (!opt) return;
     closeCtx();
-    if (opt === 'rand') { triggerReact(); return; } // 🎲 随机 = 原互动语义（triggerReact 按后端分发）
+    if (opt === 'rand') { triggerReact(); return; } // 🎲 遗留通道（当前无 rand 叶，防御保留）
     if (mode === 'live2d' && window.__petLive2dAction) {
       // live2d：按动作序号点播（motionCount 采样索引）
       var idx = parseInt(opt, 10);
       if (isFinite(idx)) { try { __l2d.model.motion('Idle', idx, 3); } catch (_) {} } // priority=3 FORCE：打断 idle 立即播
-      else if (opt === 'click') triggerReact();
-    } else if (opt === 'click') { playAction('click'); }
-    else if (opt === 'hover') { playAction('hover'); }
-    else if (opt === 'heart') { playAction('react'); }
-    else if (opt === 'light') { playAction('light'); }  // 彩蛋：光效（2026-11-13 动作管理适配）
-    else if (opt === 'song') { playAction('song'); }    // 彩蛋：唱歌
+      else { triggerReact(); }
+    } else {
+      // webm：value = 具体素材名（p1…/light0song），一叶一动作直播（2026-11-15 对应性修复）
+      playAction(opt);
+    }
   } else if (ctxLevel === 'mode') {
     const opt = leaf.dataset.opt;
     if (!opt) return;

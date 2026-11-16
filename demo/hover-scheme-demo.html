@@ -1,0 +1,256 @@
+<!doctype html>
+<!-- ClipSense 桌宠菜单 · Hover 方案对比 Demo（独立预览，不参与构建）
+     用途：让用户在真实按钮皮肤/布局上直接对比 4 套 hover 视觉，确认后再落地到
+     src/renderer/menu-window.html。按钮配色、环形布局、飞散动画均复刻自真实菜单，
+     唯一变量是 hover 表现。页面本身无需 Electron，可直接用浏览器打开。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipSense 菜单 Hover 方案对比</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    font-family: "Microsoft YaHei", "Segoe UI", "Segoe UI Emoji", sans-serif;
+    /* 模拟 ClipSense 主界面的深色 Acrylic 桌面，让浅色/彩色按钮都能显出对比 */
+    background:
+      radial-gradient(circle at 12% 8%, rgba(108,92,231,.30), transparent 40%),
+      radial-gradient(circle at 88% 92%, rgba(162,155,254,.16), transparent 42%),
+      linear-gradient(145deg, #1a1826 0%, #12111c 60%, #0d0c15 100%);
+    color: #eceaf5;
+    padding: 28px 24px 48px;
+  }
+  .wrap { max-width: 1320px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; font-weight: 600; letter-spacing: .5px; }
+  .lead { color: #9d99b5; font-size: 13px; margin: 0 0 20px; line-height: 1.7; }
+  .lead b { color: #c9c4e8; font-weight: 600; }
+
+  /* 一级 / 二级皮肤切换 */
+  .tabs { display: inline-flex; gap: 4px; background: rgba(255,255,255,.06);
+          border: 1px solid rgba(255,255,255,.1); border-radius: 11px; padding: 4px; margin-bottom: 24px; }
+  .tabs button {
+    font: inherit; font-size: 13px; color: #a8a4c0; cursor: pointer;
+    background: transparent; border: 0; border-radius: 8px; padding: 8px 18px;
+    transition: background .15s ease, color .15s ease;
+  }
+  .tabs button:hover { background: rgba(255,255,255,.08); color: #e8e5f5; }
+  .tabs button.active { background: #6c5ce7; color: #fff; box-shadow: 0 3px 12px rgba(108,92,231,.45); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; }
+
+  /* 卡片 */
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.02));
+    border: 1px solid rgba(255,255,255,.08); border-radius: 16px;
+    padding: 18px 14px 16px; text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  }
+  .card.reco { border-color: rgba(124,108,240,.55); box-shadow: 0 0 0 1px rgba(124,108,240,.25), 0 12px 34px rgba(0,0,0,.3); }
+  .card .badge { display: inline-block; font-size: 10px; letter-spacing: .5px; padding: 3px 9px;
+                 border-radius: 20px; background: #6c5ce7; color: #fff; margin-bottom: 8px; }
+  .card h2 { font-size: 15px; margin: 0 0 3px; font-weight: 600; }
+  .card .tag { font-size: 12px; color: #a29bfe; margin: 0 0 2px; }
+  .card .rule { font-size: 11px; color: #7f7b97; margin: 0 0 6px; line-height: 1.5; min-height: 30px; }
+
+  /* ===== 舞台：复刻真实环形菜单的容器与锚点 ===== */
+  .stage { position: relative; width: 272px; height: 264px; margin: 0 auto; }
+  .ring { position: absolute; inset: 0; }
+  .cat {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; background: rgba(30,26,48,.75); border: 1px dashed rgba(162,155,254,.5);
+    box-shadow: 0 4px 14px rgba(0,0,0,.4); pointer-events: none;
+  }
+  .cat::after { content: "猫心"; position: absolute; top: 50px; font-size: 9px; color: #8b86a8; white-space: nowrap; }
+
+  /* 通用叶结构（复刻真实菜单：40px 圆、常驻中文标签、飞散展开） */
+  .leaf {
+    position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; box-sizing: border-box;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;
+    transform: translate(-50%,-50%) translate(0,0) scale(0); opacity: 0; z-index: 2;
+    transition: transform .34s cubic-bezier(.22,.9,.28,1.15), opacity .24s ease,
+                box-shadow .2s ease, background .2s ease, border-color .2s ease, filter .2s ease;
+    will-change: transform;
+  }
+  .leaf.in {
+    transform: translate(-50%,-50%) translate(var(--dx), var(--dy)) scale(1); opacity: 1;
+  }
+  .leaf .ic { font-size: 19px; line-height: 1; }
+  .leaf .lb {
+    position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; font-weight: 500; white-space: nowrap; padding: 2px 7px; border-radius: 5px;
+    pointer-events: none; transition: color .2s ease, background .2s ease;
+  }
+
+  /* ===== 皮肤 A · 浅色毛玻璃（真实菜单一级） ===== */
+  .ring.skin-glass .leaf {
+    background: rgba(255,255,255,.9); border: 1px solid rgba(255,255,255,.95); color: #2c2c2a;
+    box-shadow: 0 4px 16px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.9);
+  }
+  .ring.skin-glass .leaf .ic { filter: drop-shadow(0 1px 1px rgba(0,0,0,.18)); }
+  .ring.skin-glass .leaf .lb { color: #2c2c2a; background: rgba(255,255,255,.94); box-shadow: 0 1px 4px rgba(0,0,0,.16); }
+
+  /* ===== 皮肤 C · 彩色通透（真实菜单二级） ===== */
+  .ring.skin-candy .leaf {
+    background: var(--tint, #CECBF6); border: 1px solid rgba(255,255,255,.88); color: #2c2c2a;
+    box-shadow: 0 3px 12px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.72);
+  }
+  .ring.skin-candy .leaf .ic { filter: drop-shadow(0 1px 1px rgba(0,0,0,.16)); }
+  .ring.skin-candy .leaf .lb { color: #2c2c2a; background: rgba(255,255,255,.95); box-shadow: 0 1px 4px rgba(0,0,0,.14); }
+
+  /* ============ 四套 hover：唯一变量（把鼠标移到任意按钮上对比） ============ */
+
+  /* 现状 v11：径向浮起 1.12 + 外移 7px + 阴影加深，0.34s 回弹，通电蓝字 */
+  [data-scheme="v11"] .leaf.in:hover {
+    transform: translate(-50%,-50%)
+               translate(calc(var(--dx) + var(--ux,0) * 8px), calc(var(--dy) + var(--uy,0) * 8px))
+               scale(1.12);
+    box-shadow: 0 8px 26px rgba(0,0,0,.32), 0 0 0 1px rgba(10,132,255,.2);
+    transition: transform .34s cubic-bezier(.22,.9,.28,1.15), box-shadow .2s ease;
+    z-index: 10;
+  }
+  [data-scheme="v11"] .leaf:hover .lb { color: #0a84ff; background: #fff; }
+
+  /* A · Fluent 紫描边 + 微浮：统一上浮 2px + 深投影 + 2px 品牌紫描边，0.15s 利落 */
+  [data-scheme="fluentA"] .leaf.in:hover {
+    transform: translate(-50%,-50%) translate(var(--dx), calc(var(--dy) - 2px)) scale(1.06);
+    border-color: #6c5ce7;
+    box-shadow: 0 0 0 2px #6c5ce7, 0 9px 22px rgba(0,0,0,.34);
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+    z-index: 10;
+  }
+  [data-scheme="fluentA"] .leaf:hover .lb { color: #6c5ce7; background: #fff; }
+
+  /* B · 品牌紫辉光：不位移不放大，紫色柔光 + 亮边，0.15s（对应 .pin-btn.pinned） */
+  [data-scheme="glowB"] .leaf.in:hover {
+    box-shadow: 0 0 0 1px #a29bfe, 0 0 22px 3px rgba(108,92,231,.65), 0 4px 14px rgba(0,0,0,.25);
+    transition: box-shadow .15s ease;
+    z-index: 10;
+  }
+  [data-scheme="glowB"] .leaf:hover .lb { color: #6c5ce7; background: #fff; }
+
+  /* C · 底色递进：仅亮度降一档 + 轻影，0.12s，几乎无动感（对应 .header button:hover） */
+  [data-scheme="toneC"] .leaf.in:hover {
+    filter: brightness(.9) saturate(1.05);
+    box-shadow: 0 3px 10px rgba(0,0,0,.24);
+    transition: filter .12s ease, box-shadow .12s ease;
+    z-index: 10;
+  }
+  [data-scheme="toneC"] .leaf:hover .lb { color: #2c2c2a; background: rgba(255,255,255,.98); }
+
+  .hint { text-align: center; color: #6f6b86; font-size: 12px; margin-top: 24px; }
+  .footnote { max-width: 1320px; margin: 22px auto 0; color: #6f6b86; font-size: 11px; line-height: 1.8;
+              border-top: 1px solid rgba(255,255,255,.06); padding-top: 14px; }
+  .footnote b { color: #9d99b5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ClipSense 桌宠菜单 · Hover 方案对比</h1>
+  <p class="lead">按钮皮肤、环形布局、飞散展开动画全部复刻自真实菜单，<b>唯一变量是 hover 表现</b>。把鼠标移到任意圆形按钮上，四套方案可同屏对比。</p>
+
+  <div class="tabs" id="tabs">
+    <button data-level="main" class="active">一级菜单 · 浅色毛玻璃</button>
+    <button data-level="interact">二级菜单 · 彩色通透</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="hint">↑ 依次 hover 四个环里的同一个位置，对比「浮起幅度 / 描边 / 辉光 / 底色变化 / 节奏」</p>
+</div>
+
+<div class="footnote">
+  <b>方案来源：</b>A 对应主界面 <code>.item:hover</code>（上浮 + 深影）与紫色焦点环；B 对应 <code>.pin-btn.pinned</code>（品牌紫辉光 + 亮边）；C 对应 <code>.header button:hover</code>（透明度递进，最安静）。<br>
+  <b>说明：</b>本 demo 为独立预览，不参与构建、不影响运行实例；确认选版后才改动 <code>src/renderer/menu-window.html</code>。
+</div>
+
+<script>
+'use strict';
+// 与真实菜单一致的数据与色板
+const CANDY_TINTS = ['#B5D4F4', '#F4C0D1', '#CECBF6', '#FAC775', '#9FE1CB', '#F5C4B3', '#C0DD97'];
+const BACK_TINT = '#E8E8ED';
+const MENUS = {
+  main: [
+    { ic: '🐱', lb: '模式' }, { ic: '❤️', lb: '互动' },
+    { ic: '🎨', lb: '形象工坊' }, { ic: '⏻', lb: '退出' }
+  ],
+  interact: [
+    { ic: '↩', lb: '返回' }, { ic: '🐾', lb: '前扑' }, { ic: '🌀', lb: '追尾' },
+    { ic: '✋', lb: '抬爪' }, { ic: '💃', lb: '摇摆' }, { ic: '👃', lb: '嗅闻' }, { ic: '🎵', lb: '唱歌' }
+  ]
+};
+const SCHEMES = [
+  { key: 'v11',     name: '当前 v11',        tag: '径向浮起 + 回弹', rule: 'scale 1.12 / 径向 8px / 0.34s 回弹 / 蓝字', reco: false },
+  { key: 'fluentA', name: 'A · Fluent 紫描边', tag: '微浮 + 紫描边',   rule: '上浮 2px / 2px 品牌紫描边 / 0.15s 利落', reco: true },
+  { key: 'glowB',   name: 'B · 品牌紫辉光',   tag: '不位移 + 柔光',    rule: '紫色柔光 + 亮边 / 0.15s / 不放大', reco: false },
+  { key: 'toneC',   name: 'C · 底色递进',     tag: '仅加深 + 轻影',    rule: '亮度降一档 / 0.12s / 几乎无动感', reco: false }
+];
+
+let level = 'main';
+const grid = document.getElementById('grid');
+
+function buildCard(s, idx) {
+  const card = document.createElement('div');
+  card.className = 'card' + (s.reco ? ' reco' : '');
+  card.dataset.scheme = s.key;
+  const badge = s.reco ? '<span class="badge">推荐 · 最同源</span>' : '';
+  card.innerHTML =
+    badge +
+    '<h2>' + s.name + '</h2>' +
+    '<p class="tag">' + s.tag + '</p>' +
+    '<p class="rule">' + s.rule + '</p>' +
+    '<div class="stage"><div class="ring"><div class="cat">🐱</div></div></div>';
+  grid.appendChild(card);
+  return card;
+}
+
+SCHEMES.forEach(buildCard);
+
+function render() {
+  const specs = MENUS[level];
+  const R = level === 'main' ? 76 : 84;
+  grid.querySelectorAll('.card').forEach(function (card) {
+    const ring = card.querySelector('.ring');
+    ring.className = 'ring ' + (level === 'main' ? 'skin-glass' : 'skin-candy');
+    ring.querySelectorAll('.leaf').forEach(function (el) { el.remove(); });
+    specs.forEach(function (spec, i) {
+      const leaf = document.createElement('div');
+      leaf.className = 'leaf';
+      const ang = (-90 + i * (360 / specs.length)) * Math.PI / 180;
+      const ux = Math.cos(ang), uy = Math.sin(ang);
+      leaf.style.setProperty('--dx', Math.round(R * ux) + 'px');
+      leaf.style.setProperty('--dy', Math.round(R * uy) + 'px');
+      leaf.style.setProperty('--ux', ux.toFixed(4));
+      leaf.style.setProperty('--uy', uy.toFixed(4));
+      const tint = (level === 'interact' && spec.lb === '返回') ? BACK_TINT
+        : CANDY_TINTS[(level === 'interact' ? Math.max(0, i - 1) : i) % CANDY_TINTS.length];
+      leaf.style.setProperty('--tint', tint);
+      leaf.style.transitionDelay = (i * 32) + 'ms';
+      leaf.innerHTML = '<span class="ic">' + spec.ic + '</span><span class="lb">' + spec.lb + '</span>';
+      ring.appendChild(leaf);
+    });
+    // 飞散展开动画：先全收起，再下一帧展开；播完清掉错峰延迟让 hover 跟手
+    const leaves = ring.querySelectorAll('.leaf');
+    leaves.forEach(function (el) { el.classList.remove('in'); });
+    void ring.offsetWidth;
+    requestAnimationFrame(function () {
+      leaves.forEach(function (el) { el.classList.add('in'); });
+    });
+    setTimeout(function () { leaves.forEach(function (el) { el.style.transitionDelay = '0ms'; }); },
+      460 + leaves.length * 32);
+  });
+}
+
+document.getElementById('tabs').addEventListener('click', function (e) {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  level = btn.dataset.level;
+  this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b === btn); });
+  render();
+});
+
+render();
+</script>
+</body>
+</html>

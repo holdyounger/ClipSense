@@ -1,0 +1,496 @@
+<!doctype html>
+<!-- menu-window.html — 桌宠统一环形菜单窗（2026-11-16 v9：Mac 风格皮肤）
+     演进：v1 环形 R=40 压猫身 → v2 卡片面板（丢极简）→ v3 互动二级独立大窗+环形动画
+     （用户认可框架，但「看不清」= 标签 10px/0.72 亮度 + 图标 17px + 最下叶标签出窗）
+     → v4 把 v3 框架推广到一级/模式二级/互动二级（深色近黑按钮 + 常驻中文标签）
+     → v7 方案B 去白边（用户嫌白边丑）
+     → v9 Mac 风格皮肤：一级 main = A 浅色毛玻璃（高透明白底 + 极细亮边 + 分层柔影），
+     二级 mode/interact = C 彩色通透（一动作一柔色，back 中性灰）；确认气泡改浅色弹窗风。
+     → v10 hover 改 macOS 质感（径向浮起 + 阴影加深，去高饱和蓝圈）+ 按下回弹 + 键盘导航
+     + 展开错峰延迟播完清零避免 hover 发黏。
+     → v11 移除 Dock 式邻近联动，hover 只让目标按钮自身响应（用户嫌联动浮夸）。
+     → v12 hover 改 B+C（品牌紫辉光 + 底色递进，用户嫌丑）→ v13 辉光改以按钮自身背景色为主
+     （二级各叶发自己 tint 柔光、一级白底发白光，--glow 由 makeLeaf 写入）+ C 底色递进，
+     零位移零放大、0.15s 过渡。→ v14 本版：按钮 40→30px（图标 19→15 / 标签 12→11、
+     top 44→34），布局从 360° 均布改为 180° 半圆扇形；主进程半径/留白不变。
+     → v14.1 扇形朝向跟随桌宠相对工作区的位置——主进程按猫心到屏幕四边余量算中轴
+     fanMid（朝空间最大一侧，余量差<40px 视为居中保持右半圆，避免贴边抖动），渲染层 place()
+     以 fanMid 为中轴铺 180° 扇形，开口朝空旷侧。
+     → v14.2 本版：修桌宠贴屏幕四角时菜单超出物理屏幕——菜单窗已被主进程 clamp 进工作区，
+     但 180° 扇形两端（mid±90°）是一对相反方向，贴角时猫心偏向窗口角落，必有一端飞出窗口
+     （=出屏）。place() 改为：① 以窗口边界为安全边界，从中轴向两侧逐度扫描出叶心+标签完整的
+     角度区间；② 角落可用空间只剩一个象限时同步放大有效半径（≤1.8×）保证相邻叶心距≥30px
+     不叠叶。居中/贴边时半径原样、区间接近完整 180°。键盘导航/按下回弹/两套皮肤/框架/动作/
+     确认逻辑不动。
+     交互：右键桌宠 → main；点「模式」→ mode（选中态高亮）；点「互动」→ interact（一叶一动作）；
+     back / Esc 逐级返回，主级 Esc 关闭；方向键切焦点 / Enter 激活；退出/纯隐藏带确认气泡；
+     out-of-bounds 由主进程轮询关闭。 -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ClipSense 桌宠菜单</title>
+<style>
+  html, body {
+    margin: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  #ring { position: absolute; inset: 0; pointer-events: none; }
+  /* 通用结构：位置 / 尺寸 / 飞散动画。配色全部交给皮肤选择器（.skin-glass / .skin-candy）。
+     v10：位移与缩放拆成变量（--ox/--oy/--sc），让浮起与按下回弹走同一条 transform 过渡；
+     v11 移除邻叶联动；v12 hover 改 B+C：不位移不放大，--ox/--oy/--sc 仅 :active 按下回弹复用。 */
+  .leaf {
+    position: absolute; left: var(--cx, 50%); top: var(--cy, 50%);
+    width: 30px; height: 30px; box-sizing: border-box;
+    border-radius: 50%; pointer-events: auto;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    /* 展开动画：从猫心 scale(0) 飞散到环位（left/top 固定猫心，位移走 transform 变量） */
+    transform: translate(-50%, -50%) translate(0px, 0px) scale(0);
+    opacity: 0;
+    /* transform 0.34s 保留给展开动画与按下回弹；B+C 的颜色/辉光反馈走 0.15s 利落过渡。 */
+    transition: transform 0.34s cubic-bezier(0.22, 0.9, 0.28, 1.15),
+                opacity 0.24s ease,
+                background 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+    will-change: transform;
+  }
+  .leaf.in {
+    --sc: 1; --ox: 0px; --oy: 0px;
+    transform: translate(-50%, -50%)
+               translate(calc(var(--dx) + var(--ox)), calc(var(--dy) + var(--oy)))
+               scale(var(--sc));
+    opacity: 1;
+  }
+  /* B+C 聚焦（v12，用户审核 demo 后选定）：不位移、不放大、不上浮——只靠
+     「底色递进一档 + 品牌紫柔光 + 亮边」表达。--sc/--ox/--oy 保持 .leaf.in 默认值，
+     所以 hover 时零位移；z-index 提升只为避免辉光被相邻叶盖住。focus 类供键盘导航复用。 */
+  .leaf.in:hover, .leaf.in.kb-focus {
+    z-index: 10;
+  }
+  /* 按下：物理回弹缩放（写在 hover 之后，同级后者覆盖），与 B+C 的零位移 hover 不冲突。 */
+  .leaf.in:active { --sc: 0.9; --ox: 0px; --oy: 0px; }
+  .leaf .ic { font-size: 15px; line-height: 1; }
+  .leaf .lb {
+    /* v14：按钮 40→30px，标签上移 44→34px 贴合新叶，字号 12→11px */
+    position: absolute; top: 34px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px; font-weight: 500; white-space: nowrap;
+    padding: 2px 7px; border-radius: 5px;
+    pointer-events: none;
+  }
+
+  /* ===== A 方案 · 浅色毛玻璃（一级 main）=====
+     Windows 透明窗上 backdrop-filter 模糊不了桌面，靠「高透明白底 + 极细亮边 +
+     柔和分层阴影」近似 macOS 控制中心；选中/hover 用通电蓝圈。 */
+  #ring.skin-glass .leaf {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.95);
+    color: #2c2c2a;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+  #ring.skin-glass .leaf .ic { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.18)); }
+  #ring.skin-glass .leaf .lb {
+    color: #2c2c2a;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16);
+  }
+  /* v13 反馈（浅色毛玻璃）：辉光以按钮自身背景色为主——一级是白底，故用白色柔光
+     （--glow 由 makeLeaf 写入）；亮边统一白色中性，文字保持深色。叠加 C 的底色递进一档。
+     零位移零放大，靠「自身色发光 + 底色降亮」表达聚焦，不再外挂品牌紫。 */
+  #ring.skin-glass .leaf.in:hover,
+  #ring.skin-glass .leaf.in.kb-focus,
+  #ring.skin-glass .leaf.selected {
+    filter: brightness(0.93) saturate(1.06);
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.98),
+                0 0 22px 5px var(--glow, rgba(255, 255, 255, 0.85)),
+                0 6px 18px rgba(0, 0, 0, 0.28);
+    color: #2c2c2a;
+  }
+  #ring.skin-glass .leaf:hover .lb,
+  #ring.skin-glass .leaf.kb-focus .lb,
+  #ring.skin-glass .leaf.selected .lb { color: #2c2c2a; background: #fff; }
+
+  /* ===== C 方案 · 彩色通透（二级 mode / interact）=====
+     Big Sur 一动作一柔色：颜色由 makeLeaf 写入 --tint；浅彩底 + 亮边 + 柔影，
+     文字与标签用深色保证可读（旧深色底的 emoji 提亮 filter 不再需要）。 */
+  #ring.skin-candy .leaf {
+    background: var(--tint, #CECBF6);
+    border: 1px solid rgba(255, 255, 255, 0.88);
+    color: #2c2c2a;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+  #ring.skin-candy .leaf .ic { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.16)); }
+  #ring.skin-candy .leaf .lb {
+    color: #2c2c2a;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  }
+  /* v13 反馈（彩色通透）：辉光以按钮自身的 --tint 为主（蓝钮发蓝光、粉钮发粉光…），
+     亮边统一白色中性、文字保持深色，叠加 C 的底色递进一档。零位移零放大，
+     每一叶 hover 发出自己的柔色光，不再所有按钮一律紫光。 */
+  #ring.skin-candy .leaf.in:hover,
+  #ring.skin-candy .leaf.in.kb-focus,
+  #ring.skin-candy .leaf.selected {
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.98),
+                0 0 24px 6px var(--glow, var(--tint, #CECBF6)),
+                0 6px 18px rgba(0, 0, 0, 0.24);
+    filter: brightness(0.9) saturate(1.08);
+    color: #2c2c2a;
+  }
+  #ring.skin-candy .leaf:hover .lb,
+  #ring.skin-candy .leaf.kb-focus .lb,
+  #ring.skin-candy .leaf.selected .lb { color: #2c2c2a; background: #fff; }
+
+  /* 确认气泡（退出 / 纯隐藏）：改为 macOS 浅色弹窗风，与浅色按钮统一。
+     pointer-events:auto 必须保留：#ring 是 none，子级需单独恢复才能点「确定/取消」。 */
+  #confirm {
+    position: absolute; z-index: 200; top: 10px; left: 50%; transform: translateX(-50%);
+    max-width: calc(100% - 16px); box-sizing: border-box;
+    padding: 8px 13px; background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+    font-size: 12px; color: #2c2c2a; text-align: center; display: none;
+    pointer-events: auto;
+  }
+  #confirm .q { color: #1c1c1e; margin-bottom: 6px; white-space: nowrap; }
+  #confirm .yes { color: #0a84ff; font-weight: 700; margin-right: 14px; cursor: pointer; }
+  #confirm .no { color: #6e6e73; cursor: pointer; }
+  /* 确认态只降透明度、叶子仍可点（点叶 = 取消确认，逃生口），不禁用 pointer-events。 */
+  #ring.confirm-mode .leaf { opacity: 0.22; }
+</style>
+</head>
+<body>
+<div id="ring">
+  <div id="confirm">
+    <div class="q" id="confirmQ"></div>
+    <span class="yes" id="confirmYes">确定</span><span class="no" id="confirmNo">取消</span>
+  </div>
+</div>
+<script>
+'use strict';
+const ipc = require('electron').ipcRenderer;
+const ring = document.getElementById('ring');
+const confirmEl = document.getElementById('confirm');
+const confirmQ = document.getElementById('confirmQ');
+const confirmYes = document.getElementById('confirmYes');
+const confirmNo = document.getElementById('confirmNo');
+ipc.send('pet:diag', '[MenuWinR] v14.2 统一菜单脚本启动（贴角防溢：安全角度区间 + 半径自适应）');
+
+// C 方案柔色板（Big Sur 风），按二级叶子索引循环取色；back 固定中性灰。
+const CANDY_TINTS = ['#B5D4F4', '#F4C0D1', '#CECBF6', '#FAC775', '#9FE1CB', '#F5C4B3', '#C0DD97'];
+const BACK_TINT = '#E8E8ED';
+
+// 三套菜单共用同一环形框架：一级 / 模式二级 / 互动二级
+const MENUS = {
+  main: [
+    { act: 'nav:mode',   ic: '🐱', lb: '模式' },
+    { act: 'nav:react',  ic: '❤️', lb: '互动' },
+    { act: 'cmd:skill',  ic: '🎨', lb: '形象工坊' },
+    { act: 'cmd:quit',   ic: '⏻',  lb: '退出', confirm: '确定退出桌宠？' }
+  ],
+  mode: [
+    { act: 'back',       ic: '↩',  lb: '返回' },
+    { act: 'mode:pet',   ic: '🐾', lb: '桌宠模式' },
+    { act: 'mode:edge',  ic: '📐', lb: '贴边模式' },
+    { act: 'mode:hidden',ic: '💤', lb: '纯隐藏', confirm: '隐藏后经托盘或 Alt+V 恢复' }
+  ],
+  interact: [
+    { act: 'back',       ic: '↩',  lb: '返回' },
+    { act: 'p1',         ic: '🐾', lb: '前扑' },
+    { act: 'p2',         ic: '🌀', lb: '追尾' },
+    { act: 'p3',         ic: '✋', lb: '抬爪' },
+    { act: 'p4',         ic: '💃', lb: '摇摆' },
+    { act: 'p5',         ic: '👃', lb: '嗅闻' },
+    { act: 'light0song', ic: '🎵', lb: '唱歌' }
+  ]
+};
+
+let level = 'interact';
+let mode = 'pet';
+let ringR = 90;
+let fanMid = 0; // v14.1 扇形中轴角度（屏幕坐标 0右/90下/180左/270上），由主进程按桌宠位置下发
+let cat = { x: 0, y: 0 };
+let leaves = [];
+let pendingConfirm = null;
+let focusIdx = -1; // 键盘焦点叶索引，-1 表示无；与 mouse hover 互斥切换。
+let bloomTimer = null;
+
+function makeLeaf(spec, i, n) {
+  const el = document.createElement('div');
+  el.className = 'leaf';
+  el.dataset.act = spec.act;
+  el.title = spec.lb;
+  // C 方案：二级每叶一柔色。back 用中性灰，其余按（索引 - 1）取色，
+  // 保证「返回」始终灰色、动作色从蓝开始且不随动作数变化错位。
+  const tint = spec.act === 'back' ? BACK_TINT
+    : CANDY_TINTS[(Math.max(0, i - 1)) % CANDY_TINTS.length];
+  el.style.setProperty('--tint', tint);
+  // v13：hover 辉光以按钮自身背景色为主。二级 = 自己的柔色 tint（蓝钮蓝光、粉钮粉光）；
+  // 一级白底 = 白色柔光。CSS 里 var(--glow) 缺值时也有同名兜底，此处显式写入更明确。
+  const glow = (level === 'main') ? 'rgba(255, 255, 255, 0.9)' : tint;
+  el.style.setProperty('--glow', glow);
+  el.innerHTML = '<span class="ic">' + spec.ic + '</span><span class="lb">' + spec.lb + '</span>';
+  if (level === 'mode' && spec.act === 'mode:' + mode) el.classList.add('selected');
+  // hover 仅目标叶自身响应（CSS :hover 已处理视觉），这里只同步焦点索引，
+  // 供「鼠标移入后接方向键」从当前位置继续；不再联动邻叶。
+  el.addEventListener('mouseenter', function () { focusIdx = i; });
+  el.addEventListener('mouseleave', function () { if (focusIdx === i) focusIdx = -1; });
+  ring.appendChild(el);
+  return el;
+}
+
+// 仅键盘来源加 .kb-focus（复用 hover 视觉）；鼠标来源的焦点由 CSS :hover 自行表达。
+function setFocus(idx, kb) {
+  focusIdx = idx;
+  leaves.forEach(function (el, i) {
+    el.classList.toggle('kb-focus', kb && i === idx);
+  });
+}
+
+function place() {
+  ring.style.setProperty('--cx', cat.x + 'px');
+  ring.style.setProperty('--cy', cat.y + 'px');
+  // v14.2 贴角防溢：菜单窗已被主进程 clamp 进工作区（留 4px），所以窗口边界就是屏幕安全边界。
+  // v14.1 只按「中轴朝最空旷一侧」选了 fanMid，但 180° 扇形的两端（mid±90°）是一对相反
+  // 方向，贴角时必有一端指向窄边——猫心被 clamp 后偏向窗口角落，那一端的叶子就从窗口
+  // （也即物理屏幕）飞出去。修法两步：
+  //  ① 角度裁剪：从中轴向两侧逐度扫描，找叶心连同辉光/标签仍完整落在窗内的连续角度区间；
+  //  ② 半径自适应：角落可用空间只剩一个象限，区间被压窄后 7 片叶会挤成一团，此时同步放大
+  //     有效半径，直到相邻叶心距 ≥ 30px（按钮直径），半径上限 1.8× 保证不飘太远。
+  // 居中/贴边时区间本就接近完整 180°、间距充足，半径原样不动。
+  const HALF = 90;   // 单侧最大展开（完整半圆为 mid±90）
+  const MX = 28;     // 左右安全边距：叶半宽 15 + 辉光扩散余量
+  const MT = 24;     // 上安全边距：叶半宽 15 + 余量（上方无标签）
+  const MB = 56;     // 下安全边距：标签顶 34 + 高约 16 + 光晕余量
+  const MIN_GAP = 30; // 相邻叶心最小间距 = 按钮直径，低于此值按钮会视觉重叠
+  const W = window.innerWidth, H = window.innerHeight;
+  // 给定半径，返回叶心仍完整落在窗内的连续角度区间；无可用角度时返回 null。
+  function safeRange(R) {
+    function safe(deg) {
+      const a = deg * Math.PI / 180;
+      const x = cat.x + R * Math.cos(a), y = cat.y + R * Math.sin(a);
+      return x >= MX && x <= W - MX && y >= MT && y <= H - MB;
+    }
+    // fanMid 自身可能已越界：贴角时猫心被 clamp 到窗口外最多 4px，正左/正上方向的
+    // 叶心也跟着越界（如右上角 gapT=0 → catLocal.y=-4，正左叶 y=-4 < MT）。
+    // 先向两侧找最近的安全角度作 seed，再从 seed 向两侧扩出连续安全区间。
+    let seed = fanMid;
+    if (!safe(seed)) {
+      // 哨兵必须用独立 flag：安全角度本身常为负数（如 -44°），不能用 seed<0 判未找到。
+      let found = false;
+      for (let d = 1; d <= 180 && !found; d++) {
+        if (safe(fanMid - d)) { seed = fanMid - d; found = true; }
+        else if (safe(fanMid + d)) { seed = fanMid + d; found = true; }
+      }
+      if (!found) return null;
+    }
+    let lo = seed, hi = seed;
+    for (let d = 1; d <= HALF; d++) { if (safe(seed - d)) lo = seed - d; else break; }
+    for (let d = 1; d <= HALF; d++) { if (safe(seed + d)) hi = seed + d; else break; }
+    return hi > lo ? { lo: lo, hi: hi } : null;
+  }
+  const n = leaves.length;
+  let R = ringR, range = safeRange(R);
+  if (range) {
+    // 半径自适应：区间窄到叶片要重叠时逐步放大半径（窗口边界仍由 safeRange 守着）。
+    for (let k = 0; k < 24; k++) {
+      const spanDeg = range.hi - range.lo;
+      const gap = n > 1 ? 2 * R * Math.sin((spanDeg / (n - 1)) * Math.PI / 360) : MIN_GAP;
+      if (gap >= MIN_GAP || R >= ringR * 1.8) break;
+      const next = safeRange(R + 5);
+      if (!next) break; // 再放大就要出界，接受当前间距
+      R += 5; range = next;
+    }
+  } else {
+    range = { lo: fanMid, hi: fanMid }; // 极端兜底：宁可越界也不让脚本崩
+  }
+  // n>1 时按 (n-1) 等分铺满安全区间；单点时落在中轴。
+  const step = n > 1 ? (range.hi - range.lo) / (n - 1) : 0;
+  leaves.forEach(function (el, i) {
+    const ang = (range.lo + i * step) * Math.PI / 180;
+    const ux = Math.cos(ang), uy = Math.sin(ang);
+    el.style.setProperty('--dx', Math.round(R * ux) + 'px');
+    el.style.setProperty('--dy', Math.round(R * uy) + 'px');
+    // 径向单位向量：v11 曾用于 hover 浮起；v12 改 B+C 零位移后保留写入（轻量、无害），
+    // 供 :active 按下回弹或未来需要径向效果时复用，不影响当前 hover 表现。
+    el.style.setProperty('--ux', ux.toFixed(4));
+    el.style.setProperty('--uy', uy.toFixed(4));
+    el.style.transitionDelay = (i * 32) + 'ms';
+  });
+}
+
+function bloom() {
+  clearTimeout(bloomTimer);
+  focusIdx = -1;
+  leaves.forEach(function (el) { el.classList.remove('in'); });
+  void ring.offsetWidth; // 强制回流，窗口复用时动画可重播
+  requestAnimationFrame(function () {
+    leaves.forEach(function (el) { el.classList.add('in'); });
+  });
+  // 错峰延迟只服务于展开动画（i*32ms）；展开结束后清零，否则 hover 反馈
+  // 会被最多 6*32=192ms 的残留 delay 拖慢，手感发黏。
+  bloomTimer = setTimeout(function () {
+    leaves.forEach(function (el) { el.style.transitionDelay = '0ms'; });
+  }, 460 + leaves.length * 32);
+}
+
+function render() {
+  ring.querySelectorAll('.leaf').forEach(function (el) { el.remove(); });
+  // 皮肤：一级（main）用 A 浅色毛玻璃；二级（mode / interact）用 C 彩色通透。
+  ring.classList.toggle('skin-glass', level === 'main');
+  ring.classList.toggle('skin-candy', level !== 'main');
+  leaves = MENUS[level].map(makeLeaf);
+  place();
+  bloom();
+  ipc.send('pet:diag', '[MenuWinR] render level=' + level + ' skin='
+    + (level === 'main' ? 'glass' : 'candy') + ' 叶数=' + leaves.length
+    + ' 窗=' + window.innerWidth + 'x' + window.innerHeight + ' 环R=' + ringR);
+}
+
+function closeMenu(reason) {
+  clearConfirm(); // v8：任何关闭都清确认态，杜绝状态残留到下次打开
+  ipc.send('pet-menu:close', { reason: reason || 'action' });
+  // 不调 window.close()：窗口由主进程 _hideMenuWindow 复用式隐藏（hide 而非销毁）。
+  // 旧版渲染层 close 与主进程 hide 并存 → 窗口时而销毁时而复用、状态/轮询易失配。
+}
+
+function askConfirm(text, onYes) {
+  pendingConfirm = onYes;
+  confirmQ.textContent = text;
+  confirmEl.style.display = 'block';
+  ring.classList.add('confirm-mode');
+}
+function clearConfirm() {
+  pendingConfirm = null;
+  confirmEl.style.display = 'none';
+  ring.classList.remove('confirm-mode');
+}
+confirmYes.addEventListener('click', function () {
+  const fn = pendingConfirm; clearConfirm(); if (fn) fn();
+});
+confirmNo.addEventListener('click', clearConfirm);
+
+function activate(el) {
+  const act = el.dataset.act;
+  if (act === 'back') { level = 'main'; clearConfirm(); render(); return; }
+  if (act === 'nav:mode') { level = 'mode'; render(); return; }
+  if (act === 'nav:react') { level = 'interact'; render(); return; }
+  if (act === 'cmd:skill') {
+    try { ipc.invoke('pet:open-skill'); } catch (_) {}
+    closeMenu('skill'); return;
+  }
+  if (act === 'cmd:quit') {
+    askConfirm('确定退出桌宠？', function () { ipc.send('pet:quit'); closeMenu('quit'); });
+    return;
+  }
+  if (act.indexOf('mode:') === 0) {
+    const m = act.slice(5);
+    const apply = function () { ipc.send('pet:set-hide-mode', m); closeMenu('mode:' + m); };
+    if (m === 'hidden') askConfirm('隐藏后经托盘或 Alt+V 恢复', apply);
+    else apply();
+    return;
+  }
+  // 互动动作：p1…/light0song → 主进程转发 petStage 播放
+  ipc.send('pet-menu:action', { act: act });
+  closeMenu('action');
+}
+
+// v14.3 拖拽接力（根因）：独立菜单窗透明全屏盖在桌宠上且窗口级拦截鼠标，桌宠收不到
+// mousedown → 菜单弹出后拖不动。改为菜单窗自己接管「非叶子空白区（猫身位置）」拖拽：
+// 达到位移阈值后发 pet:drag-start/move/end 驱动桌宠，主进程随 move 同步菜单窗平移 +
+// 扇形重排（_followMenuToPet）。叶子/确认区按下不拖，仍走各自点击逻辑。
+let dragDown = false, dragActive = false, dragSX = 0, dragSY = 0, dragLastSent = 0;
+let suppressClick = false;
+window.addEventListener('mousedown', function (e) {
+  if (e.button !== 0 || pendingConfirm) return;
+  if (e.target.closest && (e.target.closest('.leaf') || e.target.closest('#confirm'))) return;
+  dragDown = true; dragActive = false;
+  dragSX = e.screenX; dragSY = e.screenY;
+});
+window.addEventListener('mousemove', function (e) {
+  if (!dragDown) return;
+  const dx = e.screenX - dragSX, dy = e.screenY - dragSY;
+  if (!dragActive) {
+    if (Math.abs(dx) + Math.abs(dy) <= 6) return; // 阈值：单击空白区不触发拖拽
+    dragActive = true;
+    ipc.send('pet:drag-start', dragSX, dragSY);
+  }
+  const now = performance.now();
+  if (now - dragLastSent < 33) return; // 30Hz 节流，与主进程 reflow 同频
+  dragLastSent = now;
+  ipc.send('pet:drag-move', e.screenX, e.screenY);
+});
+window.addEventListener('mouseup', function (e) {
+  if (!dragDown) return;
+  dragDown = false;
+  if (!dragActive) return;
+  dragActive = false;
+  ipc.send('pet:drag-end');
+  // 抑制拖拽结束紧随的 click，避免误触发叶子动作
+  suppressClick = true;
+  setTimeout(function () { suppressClick = false; }, 0);
+});
+
+ring.addEventListener('click', function (e) {
+  if (suppressClick) return; // 拖拽收尾的 click 不当作叶子点击
+  const el = e.target.closest('.leaf');
+  // 确认态下点叶子 = 取消确认（逃生口），不触发动作；确认框本身的 yes/no 由各自监听器处理
+  if (pendingConfirm) { if (el) clearConfirm(); return; }
+  if (el) activate(el);
+});
+window.addEventListener('keydown', function (e) {
+  const k = e.key;
+  if (k === 'Escape') {
+    e.preventDefault();
+    if (pendingConfirm) { clearConfirm(); return; }
+    if (level !== 'main') { level = 'main'; render(); return; }
+    closeMenu('esc'); return;
+  }
+  // 确认态下方向键 / Enter 不响应，避免误触；Esc 仍可取消（上面已处理）。
+  if (pendingConfirm) return;
+  // 方向键切焦点：顺时针 / 逆时针，环形绕回；Enter / Space 激活当前焦点。
+  if (k === 'ArrowRight' || k === 'ArrowDown') {
+    e.preventDefault();
+    setFocus(focusIdx < 0 ? 0 : (focusIdx + 1) % leaves.length, true); return;
+  }
+  if (k === 'ArrowLeft' || k === 'ArrowUp') {
+    e.preventDefault();
+    setFocus(focusIdx < 0 ? leaves.length - 1 : (focusIdx - 1 + leaves.length) % leaves.length, true); return;
+  }
+  if ((k === 'Enter' || k === ' ') && focusIdx >= 0 && leaves[focusIdx]) {
+    e.preventDefault(); activate(leaves[focusIdx]);
+  }
+});
+
+// pet-menu:show：主进程已 setBounds + show；按载荷定位环心、切 level、播放展开动画。
+// level 缺省 interact（兼容旧 pet-menu:show 直开互动路径）；mode 用于二级选中态。
+ipc.on('pet-menu:show', function (_e, payload) {
+  const p = payload || {};
+  ringR = isFinite(p.radius) ? p.radius : ringR;
+  // v14.1：扇形中轴跟随桌宠屏幕位置（主进程算好）；缺字段时回退默认 0（右半圆）
+  fanMid = isFinite(p.fanMid) ? ((p.fanMid % 360) + 360) % 360 : 0;
+  const W = window.innerWidth, H = window.innerHeight;
+  cat = (p.catLocal && isFinite(p.catLocal.x))
+    ? { x: p.catLocal.x, y: p.catLocal.y }
+    : { x: W / 2, y: H / 2 };
+  level = (p.level === 'main' || p.level === 'mode') ? p.level : 'interact';
+  mode = (p.mode === 'pet' || p.mode === 'edge' || p.mode === 'hidden') ? p.mode : 'pet';
+  clearConfirm();
+  render();
+});
+
+// v14.3 拖拽跟随轻量 reflow：主进程在 pet:drag-move 里同步菜单窗位置后发本事件，
+// 只更新环心/中轴/半径并 place() 重排叶片——不重建叶子、不重播展开动画、不清确认态，
+// 让「弹出后拖动」时菜单始终环抱猫且开口朝新的空旷侧。
+ipc.on('pet-menu:reflow', function (_e, payload) {
+  const p = payload || {};
+  if (isFinite(p.radius)) ringR = p.radius;
+  if (isFinite(p.fanMid)) fanMid = ((p.fanMid % 360) + 360) % 360;
+  if (p.catLocal && isFinite(p.catLocal.x)) cat = { x: p.catLocal.x, y: p.catLocal.y };
+  // 展开错峰延迟在动画结束后已清零；拖拽期重排必须保持 0，否则叶片跟手发黏。
+  leaves.forEach(function (el) { el.style.transitionDelay = '0ms'; });
+  place();
+});
+</script>
+</body>
+</html>
