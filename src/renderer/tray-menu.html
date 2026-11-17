@@ -1,0 +1,368 @@
+<!doctype html>
+<!-- tray-menu.html — 统一托盘菜单浮窗（2026-11-16 小M）
+     托盘右键/左键（macOS）弹出，贴托盘图标的轻量浮窗：无边框 + 透明 + 不入任务栏，
+     失焦即隐藏、Esc 关闭。整份托盘菜单从原生 Menu 迁到 HTML：沿用圆角阴影卡片观感；
+     菜单项由主进程 _serializeTrayTemplate() 下发（含内嵌透明度滑块），
+     可点项带 action id，点击经 tray-menu:action 回传主进程查表执行原 click 逻辑（零重写）。
+     2026-11-16 聚合 + 侧飞：compose() 把扁平菜单编成「常驻项 + 4 折叠分组」（一页显示）；
+     点分组头不再内嵌撑高主列表，而是在右侧弹出子面板（可下钻 + 返回），主列表高度恒定。
+     渲染后实测内容尺寸经 tray-menu:resize 回传主进程贴合窗口，消除底部空白。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 无 CSP 限制：与 menu-window.html 同构（内联脚本 + nodeIntegration） -->
+<title>ClipSense 菜单</title>
+<style>
+  :root {
+    --brand: #6c5ce7; --brand-soft: #a29bfe; --ink: #1c1c1e; --sub: #6e6e73;
+    --line: rgba(0,0,0,.07); --hover: rgba(108,92,231,.09); --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: transparent; }
+  body {
+    margin: 0; padding: 8px;
+    /* 2026-11-17 二级菜单左展：DOM 顺序 card→subpanel，用 row-reverse 让 subpanel 视觉在左、card 在右。
+       窗口右缘锚定托盘不变 → card 右缘始终贴托盘、坐标恒定不位移；二级向左扩展。 */
+    display: inline-flex; flex-direction: row-reverse; align-items: flex-start; gap: 6px;
+    width: max-content;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--ink); user-select: none;
+  }
+  .card, .subpanel {
+    background: rgba(250,250,252,.97);
+    border: 1px solid rgba(0,0,0,.06);
+    border-radius: var(--radius);
+    /* 去掉投影：透明无边框浮窗下 box-shadow 被窗口边界裁切，
+       只剩卡片外侧一圈半透明暗边（看起来像糊了一层框）。 */
+    padding: 6px;
+    max-height: 480px; overflow-y: auto; overflow-x: hidden;
+  }
+  .card { width: 274px; flex: 0 0 274px; }
+  .subpanel { width: 240px; flex: 0 0 240px; }
+  .subpanel[hidden] { display: none; }
+  .card::-webkit-scrollbar, .subpanel::-webkit-scrollbar { width: 6px; }
+  .card::-webkit-scrollbar-thumb, .subpanel::-webkit-scrollbar-thumb { background: rgba(0,0,0,.16); border-radius: 3px; }
+  .card::-webkit-scrollbar-track, .subpanel::-webkit-scrollbar-track { background: transparent; }
+
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    min-height: 30px; padding: 5px 9px; border-radius: 7px;
+    font-size: 12.5px; cursor: pointer; transition: background .12s ease;
+    white-space: nowrap;
+  }
+  .item:hover { background: var(--hover); }
+  .item .mark {
+    width: 15px; flex: 0 0 15px; text-align: center;
+    font-size: 12px; color: var(--brand); font-weight: 700;
+  }
+  .item .mark.radio { font-size: 15px; }
+  .item .label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  .item .caret { color: var(--sub); font-size: 10px; flex: 0 0 auto; }
+  .sep { height: 1px; background: var(--line); margin: 5px 4px; }
+  .children { padding-left: 14px; }
+  .children .item { font-size: 12px; }
+
+  /* 分组头：点击在右侧子面板展开，不再内嵌撑高主列表 */
+  .group-head { background: rgba(0,0,0,.025); border: 1px solid rgba(0,0,0,.045); }
+  .group-head:hover { background: var(--hover); }
+  .group-head.active-group { background: rgba(108,92,231,.11); border-color: rgba(108,92,231,.22); }
+  .group-head .g-ico { width: 15px; flex: 0 0 15px; text-align: center; font-size: 12px; color: var(--brand); }
+  .group-head .g-label { flex: 1 1 auto; font-weight: 600; font-size: 12.5px; }
+  .group-head .g-count {
+    font-size: 10px; color: var(--sub); background: rgba(0,0,0,.05);
+    padding: 1px 6px; border-radius: 8px; flex: 0 0 auto;
+  }
+
+  /* 侧飞子面板：顶部面包屑（返回/关闭）+ 子项 */
+  .sub-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px 7px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .back-btn { color: var(--brand); font-size: 12px; cursor: pointer; flex: 0 0 auto; padding: 2px 4px; border-radius: 5px; }
+  .back-btn:hover { background: var(--hover); }
+  .sub-title { font-weight: 700; font-size: 12.5px; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 内嵌透明度滑块区块（在「透明度」子面板里，可拖 + 点位可点） */
+  .slider-box { padding: 6px 6px 9px; }
+  .slider-box + .slider-box { border-top: 1px solid var(--line); }
+  .s-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+  .s-title { font-size: 12px; font-weight: 600; }
+  .s-val { font-size: 12.5px; font-weight: 700; color: var(--brand); font-variant-numeric: tabular-nums; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 5px; margin: 0 0 7px;
+    border-radius: 3px; outline: none; cursor: pointer;
+    background: linear-gradient(to right, var(--brand) 0%, var(--brand) var(--fill, 50%), #d8d8dc var(--fill, 50%), #d8d8dc 100%);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; border: 3px solid var(--brand);
+    box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: grab;
+  }
+  input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.1); }
+  .stops { display: flex; justify-content: space-between; gap: 4px; }
+  .stop {
+    flex: 1; padding: 3px 0; font-size: 10px; text-align: center;
+    border: 1px solid #d8d8dc; border-radius: 5px; background: #fff;
+    color: var(--sub); cursor: pointer; transition: all .15s ease;
+  }
+  .stop:hover { border-color: var(--brand-soft); color: var(--brand); }
+  .stop.active { border-color: var(--brand); background: var(--brand); color: #fff; font-weight: 700; }
+
+  .foot { font-size: 10px; color: var(--sub); text-align: center; padding: 6px 0 2px; }
+</style>
+</head>
+<body>
+  <div class="card" id="card"></div>
+  <div class="subpanel" id="subpanel" hidden></div>
+
+<script>
+  const { ipcRenderer } = require('electron');
+  const card = document.getElementById('card');
+  const subpanel = document.getElementById('subpanel');
+  const STOPS = [30, 40, 50, 60, 70, 80, 100];
+  const DEFAULT = { pinned: 60, passthrough: 50 };
+  let opacity = { pinned: 0.6, passthrough: 0.5 };
+  let closing = false;
+  let panelStack = []; // 侧飞下钻栈：[{ label, children }]
+
+  // 聚合编排（2026-11-16）：把主进程下发的扁平菜单编排成「常驻项 + 折叠分组」。
+  // 高频项常驻顶层，其余按语义归入 4 组；两条透明度滑块合并进「透明度」组。
+  // 未识别项兜底保持顶层，绝不丢项；visible 门控已在主进程序列化阶段生效。
+  const TOP_LABELS = ['显示/隐藏', '固定窗口'];
+  const TAIL_LABELS = ['退出'];
+  const GROUPS = [
+    { key: 'opacity', label: '透明度', icon: '\u25D0',
+      match: function (l) { return /透明度…$/.test(l); } },
+    { key: 'window', label: '窗口与界面', icon: '\u25A6',
+      labels: ['语言 / Language', '隐藏模式', '自动隐藏倒计时', '历史上限', '自动打标签'] },
+    { key: 'pet', label: '桌宠', icon: '\u25C8',
+      labels: ['点击桌宠时唤出面板', '桌宠大小', '桌宠形象'] },
+    { key: 'system', label: '系统与调试', icon: '\u2699',
+      labels: ['检查更新', '关于 ClipSense', '清空历史',
+               '调试模式（主面板 DevTools）', '调试模式（桌宠 DevTools）'] },
+  ];
+  function groupMatch(g, label) {
+    if (g.match) return g.match(label);
+    return g.labels && g.labels.indexOf(label) >= 0;
+  }
+  function compose(items) {
+    const front = [], tail = [], rest = [];
+    const buckets = {};
+    GROUPS.forEach(function (g) { buckets[g.key] = []; });
+    (items || []).forEach(function (n) {
+      if (!n || n.type === 'separator') return; // 原分隔线由分组边界取代
+      const l = n.label || '';
+      if (TAIL_LABELS.indexOf(l) >= 0) { tail.push(n); return; }
+      if (TOP_LABELS.indexOf(l) >= 0) { front.push(n); return; }
+      let placed = false;
+      for (let i = 0; i < GROUPS.length; i++) {
+        if (groupMatch(GROUPS[i], l)) { buckets[GROUPS[i].key].push(n); placed = true; break; }
+      }
+      if (!placed) rest.push(n);
+    });
+    const out = front.slice();
+    GROUPS.forEach(function (g) {
+      if (!buckets[g.key].length) return;
+      out.push({ type: 'group', key: g.key, label: g.label,
+                 icon: g.icon, children: buckets[g.key] });
+    });
+    return out.concat(rest).concat(tail);
+  }
+
+  // 实测内容尺寸回传主进程：贴合内容收缩窗口 + 重新锚定托盘，消除底部空白。
+  function measure() {
+    requestAnimationFrame(function () {
+      const w = Math.ceil(document.body.scrollWidth);
+      const h = Math.ceil(document.body.scrollHeight);
+      ipcRenderer.send('tray-menu:resize', { width: w, height: h });
+    });
+  }
+
+  function fmt(pct) { return Math.round(pct) + '%'; }
+  function pctToValue(pct) { return pct / 100; }
+  function paintRange(input, pct) {
+    const min = Number(input.min), max = Number(input.max);
+    input.style.setProperty('--fill', ((pct - min) / (max - min) * 100) + '%');
+  }
+
+  // 构建一条滑块区块（可拖 + 固定点位可点，即时写回主进程）
+  function makeSlider(kind, label) {
+    const box = document.createElement('div');
+    box.className = 'slider-box';
+    const pct = Math.round(opacity[kind] * 100);
+    box.innerHTML =
+      '<div class="s-head"><span class="s-title">' + label + '</span>' +
+      '<span class="s-val">' + fmt(pct) + '</span></div>' +
+      '<input type="range" min="20" max="100" step="1" value="' + pct + '">' +
+      '<div class="stops"></div>';
+    const input = box.querySelector('input');
+    const val = box.querySelector('.s-val');
+    const stopsEl = box.querySelector('.stops');
+
+    function onDrag(v) {
+      const n = Math.max(20, Math.min(100, Number(v)));
+      val.textContent = fmt(n);
+      paintRange(input, n);
+      Array.prototype.forEach.call(stopsEl.children, function (b) {
+        b.classList.toggle('active', Math.abs(Number(b.dataset.pct) - n) < 0.5);
+      });
+      const value = Math.abs(n - DEFAULT[kind]) < 0.5 ? null : pctToValue(n);
+      ipcRenderer.send('opacity:set', { kind: kind, value: value });
+    }
+    STOPS.forEach(function (s) {
+      const b = document.createElement('button');
+      b.className = 'stop' + (Math.abs(s - pct) < 0.5 ? ' active' : '');
+      b.textContent = fmt(s);
+      b.dataset.pct = s;
+      b.addEventListener('click', function (e) { e.stopPropagation(); input.value = String(s); onDrag(s); });
+      stopsEl.appendChild(b);
+    });
+    input.addEventListener('input', function () { onDrag(this.value); });
+    paintRange(input, pct);
+    return box;
+  }
+
+  // 分组头：点击在右侧子面板展开该组子项（主列表高度不变）
+  function renderGroup(node) {
+    const head = document.createElement('div');
+    head.className = 'item group-head';
+    head.dataset.key = node.key;
+    const ico = document.createElement('span');
+    ico.className = 'g-ico'; ico.textContent = node.icon || '\u25B8';
+    const label = document.createElement('span');
+    label.className = 'g-label'; label.textContent = node.label;
+    const count = document.createElement('span');
+    count.className = 'g-count'; count.textContent = node.children.length + ' 项';
+    const caret = document.createElement('span');
+    caret.className = 'caret'; caret.textContent = '\u25C4';
+    head.appendChild(ico); head.appendChild(label);
+    head.appendChild(count); head.appendChild(caret);
+    head.addEventListener('click', function () {
+      if (closing) return;
+      panelStack = [{ label: node.label, children: node.children || [] }];
+      renderPanel();
+      Array.prototype.forEach.call(card.querySelectorAll('.group-head'), function (h) {
+        h.classList.toggle('active-group', h === head);
+      });
+      measure();
+    });
+    return head;
+  }
+
+  // 侧飞子面板渲染：顶部返回/关闭 + 当前层子项；下钻 push、返回 pop
+  function renderPanel() {
+    if (!panelStack.length) {
+      subpanel.hidden = true; subpanel.innerHTML = '';
+      Array.prototype.forEach.call(card.querySelectorAll('.group-head'), function (h) {
+        h.classList.remove('active-group');
+      });
+      return;
+    }
+    subpanel.hidden = false;
+    subpanel.innerHTML = '';
+    const top = panelStack[panelStack.length - 1];
+    const head = document.createElement('div');
+    head.className = 'sub-head';
+    const back = document.createElement('span');
+    back.className = 'back-btn';
+    back.textContent = panelStack.length > 1 ? '\u2039 返回' : '\u2039 关闭';
+    const title = document.createElement('span');
+    title.className = 'sub-title'; title.textContent = top.label;
+    back.addEventListener('click', function () {
+      panelStack.pop();
+      renderPanel();
+      measure();
+    });
+    head.appendChild(back); head.appendChild(title);
+    subpanel.appendChild(head);
+    (top.children || []).forEach(function (c) { subpanel.appendChild(renderNode(c)); });
+  }
+
+  // 渲染单个菜单节点：分组 / 分隔线 / 滑块 / 普通 / radio / checkbox / 子菜单
+  function renderNode(node) {
+    if (node.type === 'group') return renderGroup(node);
+    if (node.type === 'separator') {
+      const s = document.createElement('div');
+      s.className = 'sep';
+      return s;
+    }
+    if (node.type === 'slider') {
+      return makeSlider(node.kind, node.label === '固定透明度…' ? '固定窗口透明度' : '穿透透明度');
+    }
+    const row = document.createElement('div');
+    row.className = 'item';
+
+    const mark = document.createElement('span');
+    mark.className = 'mark' + (node.type === 'radio' ? ' radio' : '');
+    if (node.type === 'checkbox') mark.textContent = node.checked ? '\u2713' : '';
+    else if (node.type === 'radio') mark.textContent = node.checked ? '\u25CF' : '\u25CB';
+    row.appendChild(mark);
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = node.label || '';
+    row.appendChild(label);
+
+    if (node.hasSubmenu) {
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      caret.textContent = '\u25C4';
+      row.appendChild(caret);
+      // 侧飞下钻：点击把该子菜单压入面板栈，替换子面板内容（可继续下钻/返回）
+      row.addEventListener('click', function () {
+        if (closing) return;
+        panelStack.push({ label: node.label, children: node.children || [] });
+        renderPanel();
+        measure();
+      });
+      return row;
+    }
+
+    if (node.action) {
+      row.addEventListener('click', function () {
+        if (closing) return;
+        closing = true;
+        ipcRenderer.send('tray-menu:action', node.action);
+        ipcRenderer.send('tray-menu:close');
+      });
+    }
+    return row;
+  }
+
+  function render(cfg) {
+    if (cfg && cfg.pinned !== undefined) opacity.pinned = cfg.pinned;
+    if (cfg && cfg.passthrough !== undefined) opacity.passthrough = cfg.passthrough;
+    closing = false;
+    panelStack = [];
+    card.innerHTML = '';
+    compose(cfg && Array.isArray(cfg.items) ? cfg.items : []).forEach(function (n) {
+      card.appendChild(renderNode(n));
+    });
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    foot.textContent = 'Esc 关闭 · 设置自动保存';
+    card.appendChild(foot);
+    renderPanel();
+    measure();
+  }
+
+  ipcRenderer.on('tray-menu:init', function (_e, cfg) { render(cfg); });
+
+  // 主动对账：init 事件若在监听挂载前发出时不丢值
+  ipcRenderer.invoke('opacity:get').then(function (o) {
+    if (o) opacity = { pinned: o.pinned, passthrough: o.passthrough };
+  }).catch(function () {});
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      // 有子面板时先收起一层，无子面板时关闭整个菜单
+      if (panelStack.length) { panelStack.pop(); renderPanel(); measure(); }
+      else ipcRenderer.send('tray-menu:close');
+    }
+  });
+</script>
+</body>
+</html>

@@ -91,6 +91,8 @@ interface MenuWindowWindow {
   hide: () => void;
   close: () => void;
   showInactive: () => void;
+  show: () => void;
+  focus: () => void;
   isVisible: () => boolean;
   /** 2026-11-16：drag-and-drop 带内重顶，确保盖过桌宠窗 */
   moveTop: () => void;
@@ -98,6 +100,9 @@ interface MenuWindowWindow {
   isAlwaysOnTop: () => boolean;
   getBounds: () => { x: number; y: number; width: number; height: number };
   setBounds: (b: { x: number; y: number; width: number; height: number }) => void;
+  setPosition: (x: number, y: number) => void;
+  /** 窗口级事件（blur 失焦隐藏用） */
+  on: (event: string, listener: (...args: any[]) => void) => void;
   webContents: {
     send: (channel: string, payload?: unknown) => void;
     /** 首开防竞态：loadFile 异步，isLoading 时挂 did-finish-load 再下发载荷（2026-11-15） */
@@ -136,6 +141,8 @@ interface IndexTray {
   isDestroyed: () => boolean;
   destroy: () => void;
   displayBalloon: (options: { title: string; content: string; icon: string; iconType: string }) => void;
+  /** 托盘图标屏幕矩形：浮层定位锚点（2026-11-16 透明度浮层） */
+  getBounds: () => { x: number; y: number; width: number; height: number };
 }
 
 /** 标签设置（storage.getTagSettings 返回的结构化视图；TagSettings 本体在 storage.ts 模块作用域） */
@@ -191,7 +198,7 @@ interface IndexFocusTrackerApi {
   _trackedAt: number;
 }
 
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, screen, shell, powerMonitor, dialog } = require('electron') as {
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, nativeImage, screen, shell, powerMonitor, dialog } = require('electron') as {
   app: any;
   BrowserWindow: any;
   globalShortcut: any;
@@ -201,7 +208,6 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, sc
     on: (channel: string, listener: (event: any, ...args: any[]) => void) => void;
   };
   Tray: any;
-  Menu: any;
   nativeImage: any;
   screen: any;
   shell: any;
@@ -227,7 +233,7 @@ const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tr
 const updater = require('./updater') as typeof import('./updater');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
-const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computeCtxPullBack } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed } = require('./pet-manager') as typeof import('./pet-manager');
 const StatsModule = require('./stats') as typeof import('./stats');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
@@ -352,6 +358,7 @@ class ClipboardSpikeApp {
   _petCtxOpen: boolean = false;            // 右键菜单打开中（全窗可交互，渲染层 mouseleave 关闭）
   _petCtxPollId: ReturnType<typeof setInterval> | null = null;
   menuWindow: MenuWindowWindow | null = null; // 互动二级菜单独立窗（2026-11-15 L3 pet-menu-window，懒创建）
+  trayMenuWindow: MenuWindowWindow | null = null; // 统一托盘菜单浮窗（2026-11-16，懒创建单例，含透明度滑块）
   _menuShownAt: number = 0;
   _menuWinPollId: ReturnType<typeof setInterval> | null = null; // 菜单窗出界关闭轮询（2026-11-16 主进程接管）
   _menuWinReveal: (() => void) | null = null; // 菜单窗显示回调（loadFile promise / did-finish-load 双路触发）
@@ -581,7 +588,23 @@ window.__clipSenseBarHover = function (on) {
     }
     this.tray = new Tray(icon);
     this.tray!.setToolTip('ClipSense');
-    this.tray!.setContextMenu(Menu.buildFromTemplate([
+    // 统一 HTML 浮窗菜单（2026-11-16 小M）：原生 Menu.buildFromTemplate 不支持滑块与
+    // 自定义外观，托盘菜单整体改由 tray-menu.html 浮窗承载（透明度滑块内嵌其中）。
+    // 菜单项数据经 _trayTemplate() + _traySerialize() 下发，click 经 action id 分发回原函数。
+    this.tray!.on('right-click', () => this._showTrayMenu());
+    if (process.platform === 'darwin') {
+      // macOS：原生行为是左键弹菜单，改为左键弹浮窗
+      this.tray!.on('click', () => this._showTrayMenu());
+    } else {
+      // Windows/Linux：保留左键切换面板，右键弹浮窗菜单
+      this.tray!.on('click', () => this.toggleWindow());
+    }
+  }
+
+  /** 托盘菜单模板（原 Menu.buildFromTemplate 数组原地搬移，click 业务逻辑零改动）。
+   *  由 _traySerialize() 转成可下发模型；透明度两入口在序列化时转为内嵌滑块节点。 */
+  _trayTemplate(): any[] {
+    return [
       { label: '显示/隐藏', click: () => this.toggleWindow() },
       { label: '检查更新', click: () => this._checkUpdateFromTray() },
       {
@@ -601,7 +624,9 @@ window.__clipSenseBarHover = function (on) {
       },
       {
         // 动作/窗口解耦（2026-11-13）：关掉后单击桌宠只播反应动作，不再弹出主面板窗口
+        // 2026-11-16 小M：桌宠专属项，仅 pet 模式展示（edge/hidden 无桌宠可调）
         label: '点击桌宠时唤出面板',
+        visible: this._petTrayItemsVisible(),
         type: 'checkbox',
         checked: this._petClickSummon,
         click: (menuItem: { checked: boolean }) => {
@@ -612,6 +637,7 @@ window.__clipSenseBarHover = function (on) {
       },
       {
         label: '桌宠大小',
+        visible: this._petTrayItemsVisible(),
         submenu: [
           { label: '小（0.7×）', type: 'radio', checked: Math.abs(this._getPetScale() - 0.7) < 0.05, click: () => this._setPetScalePreset(0.7) },
           { label: '标准（1×）', type: 'radio', checked: Math.abs(this._getPetScale() - 1) < 0.05, click: () => this._setPetScalePreset(1) },
@@ -624,6 +650,7 @@ window.__clipSenseBarHover = function (on) {
         // P-B 形象选择器（2026-11-04 市场调研裁决添加）：models/ 目录枚举，
         // 热切换（重建舞台走既有回退链，加载失败自动回 hiyori）
         label: '桌宠形象',
+        visible: this._petTrayItemsVisible(),
         submenu: this._listPetModels().map((m) => ({
           label: m,
           type: 'radio' as const,
@@ -634,9 +661,10 @@ window.__clipSenseBarHover = function (on) {
       {
         // 调试模式（2026-11-05 小M「调试模式不生效」修复）：petStage DevTools 手动开关——
         // dev 模式自动开（did-finish-load 路径），打包版/生产模式下经此开关排查桌宠渲染问题
-        // 2026-11-12 小M：调试模式仅限开发（未打包）——打包版不展示（发布包不带调试入口）
+        // 2026-11-16 小M：调试入口仅限 start:dev（NODE_ENV=development 且未打包）
+        // npm start（未打包但无 NODE_ENV）不展示；旧口径 !app.isPackaged 会误放行 start
         label: '调试模式（主面板 DevTools）',
-        visible: !app.isPackaged,
+        visible: this._debugAllowed(),
         type: 'checkbox',
         checked: this._petDebugMode,
         click: (menuItem: { checked: boolean }) => {
@@ -656,9 +684,9 @@ window.__clipSenseBarHover = function (on) {
         },
       },
       {
-        // 2026-11-12 小M：调试模式仅限开发（未打包）——打包版不展示（发布包不带调试入口）
+        // 2026-11-16 小M：桌宠 DevTools 双门槛——start:dev 且 pet 模式（无桌宠时该入口无意义）
         label: '调试模式（桌宠 DevTools）',
-        visible: !app.isPackaged,
+        visible: this._debugAllowed() && this._petTrayItemsVisible(),
         type: 'checkbox',
         checked: this._petDebugMode,
         click: (menuItem: { checked: boolean }) => {
@@ -699,14 +727,18 @@ window.__clipSenseBarHover = function (on) {
           }
         },
       },
+      {
+        // 2026-11-16 小M：固定档透明度滑块（序列化为 slider 节点内嵌到统一浮窗）
+        label: '固定透明度…',
+      },
       { type: 'separator' },
       {
         label: '自动隐藏倒计时',
         submenu: this._buildHideDelaySubmenu(),
       },
       {
-        label: '穿透透明度',
-        submenu: this._buildPassthroughOpacitySubmenu(),
+        // 2026-11-16 小M：穿透档透明度滑块（序列化为 slider 节点内嵌到统一浮窗）
+        label: '穿透透明度…',
       },
       {
         label: '历史上限',
@@ -719,12 +751,176 @@ window.__clipSenseBarHover = function (on) {
       { type: 'separator' },
       { type: 'separator' },
       { label: '退出', click: () => app.exit(0) },
-    ]));
-    // macOS：setContextMenu 后左键单击即弹出菜单（原生行为），再绑 toggle 会同时
-    // 开关面板，语义冲突；因此仅在 Windows/Linux 上保留左键切换面板。
-    if (process.platform !== 'darwin') {
-      this.tray!.on('click', () => this.toggleWindow());
+    ];
+  }
+
+  /** 调试入口许可（2026-11-16 小M）：仅 start:dev（NODE_ENV=development 且未打包）。
+   *  托盘调试项 visible / F12 快捷键 / DevTools 自动打开三处统一走此判定，
+   *  杜绝 npm start（未设 NODE_ENV）也冒出调试入口。 */
+  _debugAllowed(): boolean {
+    return isDebugMenuAllowed(app.isPackaged, process.env.NODE_ENV);
+  }
+
+  /** 托盘桌宠专属项可见性（2026-11-16 小M）：仅 pet 模式；edge/hidden 收敛掉。 */
+  _petTrayItemsVisible(): boolean {
+    return shouldShowPetTrayItems(this._getHideMode());
+  }
+
+  /**
+   * 序列化托盘菜单模板为可下发模型（2026-11-16 小M）。
+   * 原生 template 的 click 函数无法跨 IPC 传递：为每个可点项分配 action id，
+   * 函数存入 _trayActions 表，渲染层点击时带 id 回传，由 _dispatchTrayAction 执行。
+   * 透明度两入口（label 含「透明度…」）转成 slider 节点，内嵌到浮窗菜单里。
+   */
+  _trayActions: Record<string, () => void> = {};
+  _serializeTrayTemplate(): Record<string, unknown>[] {
+    this._trayActions = {};
+    let seq = 0;
+    const serialize = (items: any[]): Record<string, unknown>[] => {
+      const out: Record<string, unknown>[] = [];
+      for (const it of items) {
+        if (it && it.visible === false) continue; // 模式门控：不可见项直接剔除
+        if (it && it.type === 'separator') { out.push({ type: 'separator' }); continue; }
+        // 透明度入口 → 内嵌滑块节点（focus 令牌用于打开时高亮）
+        if (it && typeof it.label === 'string' && /透明度…$/.test(it.label)) {
+          out.push({ type: 'slider', kind: it.label.indexOf('固定') === 0 ? 'pinned' : 'passthrough', label: it.label });
+          continue;
+        }
+        const node: Record<string, unknown> = {
+          label: it && it.label ? String(it.label) : '',
+          type: it && it.type ? it.type : 'normal',
+          checked: !!(it && it.checked),
+          hasSubmenu: !!(it && Array.isArray(it.submenu) && it.submenu.length > 0),
+        };
+        if (it && typeof it.click === 'function') {
+          const id = 'act_' + (seq++);
+          this._trayActions[id] = it.click;
+          node.action = id;
+        }
+        if (it && Array.isArray(it.submenu) && it.submenu.length > 0) {
+          node.children = serialize(it.submenu);
+        }
+        out.push(node);
+      }
+      return out;
+    };
+    return serialize(this._trayTemplate());
+  }
+
+  /** 执行渲染层回传的菜单动作（经 action id 查表，复用原 template click 函数） */
+  _dispatchTrayAction(id: unknown): void {
+    if (typeof id !== 'string') return;
+    const fn = this._trayActions[id];
+    if (typeof fn === 'function') {
+      try { fn(); } catch (_) { /* 单项动作异常不阻断菜单 */ }
     }
+  }
+
+  /** 统一托盘菜单浮窗（2026-11-16 小M）：整份托盘菜单 HTML 化，沿用透明度弹窗观感。
+   *  无边框 + 透明 + 不入任务栏，锚定托盘图标弹出，失焦隐藏、Esc 关闭。
+   *  菜单模型由 _serializeTrayTemplate() 生成（含内嵌透明度滑块），action 经 IPC 分发。
+   *  2026-11-16 定位修正：初始窗高按内容收缩（避免固定 520 造成底部空白），
+   *  渲染层实测内容后经 tray-menu:resize 回传真实尺寸再重定位。 */
+  _showTrayMenu(): void {
+    if (!this.trayMenuWindow || this.trayMenuWindow.isDestroyed()) {
+      const win = new BrowserWindow({
+        width: 320,
+        height: 440,
+        frame: false,
+        transparent: true,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        skipTaskbar: true,
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false,
+          sandbox: false,
+        },
+      });
+      win.loadFile(path.join(__dirname, '../renderer/tray-menu.html'));
+      win.on('closed', () => { this.trayMenuWindow = null; });
+      win.on('blur', () => { if (!win.isDestroyed()) win.hide(); });
+      this.trayMenuWindow = win;
+    }
+    const win = this.trayMenuWindow!;
+    const payload = {
+      items: this._serializeTrayTemplate(),
+      pinned: this._getPinnedOpacity() ?? 0.6,
+      passthrough: this._getPassthroughOpacity() ?? 0.5,
+    };
+    const deliver = () => { if (!win.isDestroyed()) win.webContents.send('tray-menu:init', payload); };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', deliver);
+    else deliver();
+    this._positionTrayPopup(win);
+    win.show();
+    win.focus();
+  }
+
+  /** 计算托盘浮窗目标坐标（纯计算，无窗口副作用）：以托盘图标矩形为锚点，贴图标上方弹出；
+   *  菜单右缘对齐图标右缘（托盘在屏幕右下角，水平居中会整体左偏）；高度取传入内容高，
+   *  底边紧贴图标上方；上下 clamp 防越出物理屏。
+   *  2026-11-17 抖动修复：从定位方法里抽出，供 resize 复用——先用「新尺寸」算好目标坐标，
+   *  再一次 setBounds({x,y,w,h}) 落地，消除旧实现「setBounds 旧坐标 → setPosition 新坐标」
+   *  两次几何变更导致的透明窗 DWM 表面重分配「右扩→左移」抖动。 */
+  _computeTrayPopupRect(w: number, h: number): { x: number; y: number } {
+    let ax = 0, ay = 0, ar = 0; // 锚点（托盘图标中心 x/y + 右缘 x）
+    try {
+      const tb = this.tray && !this.tray.isDestroyed() ? this.tray.getBounds() : null;
+      if (tb && tb.width > 0 && tb.height > 0) {
+        ax = tb.x + tb.width / 2;
+        ay = tb.y + tb.height / 2;
+        ar = tb.x + tb.width;
+      }
+    } catch (_) { /* 托盘取矩形失败：回落屏幕右下角 */ }
+
+    // 取锚点所在显示器工作区（无托盘锚点时用主显示器）
+    let wa = { x: 0, y: 0, width: 0, height: 0 };
+    try {
+      const anchor = (ax || ay) ? { x: Math.round(ax), y: Math.round(ay), width: 1, height: 1 } : { x: 0, y: 0, width: 1, height: 1 };
+      const d = screen.getDisplayMatching(anchor);
+      wa = d && d.workArea ? d.workArea : wa;
+    } catch (_) { /* 保留全屏兜底 */ }
+    if (!wa.width || !wa.height) {
+      try { wa = screen.getPrimaryDisplay().workArea; } catch (_) { /* 保留零值兜底 */ }
+    }
+
+    const GAP = 8; // 弹窗底边与托盘图标的间距
+    // 水平：菜单右缘对齐托盘图标右缘（无锚点时回落居中），靠右下角托盘不会被裁切
+    let x = ar ? ar - w : ax - w / 2;
+    // 垂直：底边贴图标上方
+    let y = ay - h - GAP;
+    // 上方空间不足（任务栏在顶部）时翻到图标下方
+    if (wa.height && y < wa.y) y = ay + GAP;
+    // clamp 到工作区（物理屏可视范围）
+    if (wa.width) x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
+    if (wa.height) y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  /** 托盘菜单浮窗定位（首次显示）：按当前窗口尺寸算目标坐标后 setPosition。 */
+  _positionTrayPopup(win: MenuWindowWindow): void {
+    const { width: w, height: h } = win.getBounds();
+    const { x, y } = this._computeTrayPopupRect(w, h);
+    win.setPosition(x, y);
+  }
+
+  /** 渲染层实测内容尺寸后回传（2026-11-16）：贴合内容收缩窗口 + 重新定位，
+   *  消除固定高造成的底部空白。带上限保护，异常值忽略，同尺寸幂等。 */
+  _resizeTrayPopup(w: unknown, h: unknown): void {
+    const win = this.trayMenuWindow;
+    if (!win || win.isDestroyed()) return;
+    if (typeof w !== 'number' || !Number.isFinite(w) || typeof h !== 'number' || !Number.isFinite(h)) return;
+    const width = Math.max(240, Math.min(560, Math.round(w)));
+    const height = Math.max(160, Math.min(560, Math.round(h)));
+    const b = win.getBounds();
+    if (b.width === width && b.height === height) return;
+    // 抖动修复：用「新尺寸」先算好目标坐标，新尺寸 + 新坐标在单次 setBounds 里一起落地。
+    // 透明窗只触发一次几何变更/表面重分配，不再「旧坐标扩张 → 再左移对齐」两跳。
+    const { x, y } = this._computeTrayPopupRect(width, height);
+    win.setBounds({ x, y, width, height });
   }
 
   /** 读托盘语言单选态（storage config.lang，缺省 zh-CN） */
@@ -886,13 +1082,13 @@ window.__clipSenseBarHover = function (on) {
       _modDiag(`[PetStage] loadFile 失败 code=${code} ${desc}`);
     });
     win.webContents.on('did-finish-load', () => {
-      // 调试模式判定（2026-11-05 小M「调试模式不生效」）：dev 构建（isPackaged=false）
-      // 或 config.petDebugMode=true（托盘开关）均自动打开 petStage DevTools
-      // npm start 不自动开 petStage DevTools（2026-11-05 小M）；托盘开关/F12 手动控制
+      // 调试模式判定（2026-11-16 小M 收紧）：仅 start:dev（NODE_ENV=development）且
+      // config.petDebugMode=true 才自动打开 petStage DevTools。
+      // 旧口径只看 _petDebugMode（config 持久化）——npm start 若历史勾选过调试，
+      // 重启仍会自动弹 DevTools；现加 _debugAllowed() 双门槛，start/打包版一律不开。
       // 单一来源（2026-11-13 窗口弹出治理）：_petDebugMode 在 init() 由 config 初始化，
-      // 托盘开关同时写回内存 + config。旧实现此处直接读 config，而「桌宠 DevTools」
-      // 托盘项取消勾选时不写回 config → 舞台每次重载仍自动弹一个 detach DevTools 窗口。
-      const dbg = this._petDebugMode;
+      // 托盘开关同时写回内存 + config。
+      const dbg = this._debugAllowed() && this._petDebugMode;
       if (dbg) {
         try { win.webContents.openDevTools({ mode: 'detach' }); _modDiag('[PetStage] DevTools opened (config)'); } catch (_) {}
       }
@@ -1021,6 +1217,11 @@ window.__clipSenseBarHover = function (on) {
    * 可用 Live2D 模型枚举（2026-11-04 P-B 形象选择器）：扫描 models/<name>/<name>.model3.json
    * 目录约定；hiyori 恒在首位（内置兜底）。fs.readdirSync 同步安全（小目录，托盘构建期）。
    */
+  /** 桌宠形象列表（2026-11-16 小M「形象不应为空，内置比熊」修复）：
+   *  实际发行版不含 Live2D models/ 目录（该目录从未随包分发），旧实现读它恒空 →
+   *  托盘「桌宠形象」子菜单永远空白。真实内置形象是 webm 比熊（pet-moves/ 22 动作，
+   *  白色比熊 + 浅蓝围巾）。故无 Live2D 模型时回退列出内置比熊项；若用户后续放入
+   *  Live2D 模型，则按名列出（内置比熊仍恒在首位作为可切回的默认形象）。 */
   _listPetModels(): string[] {
     const out: string[] = [];
     try {
@@ -1031,27 +1232,31 @@ window.__clipSenseBarHover = function (on) {
           if (fs.existsSync(p)) out.push(name);
         } catch (_) { /* 单项失败不影响其余 */ }
       }
-    } catch (_) { /* 目录缺失：空表 */ }
-    if (out.indexOf('hiyori') !== -1) {
-      const i = out.indexOf('hiyori');
-      out.splice(i, 1);
-      out.unshift('hiyori'); // 内置兜底恒首位
-    }
-    return out;
+    } catch (_) { /* 目录缺失：走内置比熊回退 */ }
+    // 内置比熊（webm）恒首位；移除旧的 hiyori 占位（其模型文件并不存在）
+    const builtin = '比熊（内置）';
+    const filtered = out.filter((n) => n !== builtin && n !== 'hiyori');
+    return [builtin, ...filtered];
   }
+
+  /** 内置比熊标识（webm 形象，清除 Live2D 覆盖走默认回退链） */
+  static readonly PET_MODEL_BUILTIN = '比熊（内置）';
 
   _getPetModel(): string {
     try {
       const m = this.storage._readConfig().petLive2dModel;
       if (typeof m === 'string' && m) return m;
     } catch (_) { /* 回落默认 */ }
-    return 'hiyori';
+    // 无覆盖 = 内置比熊（webm 回退链），与菜单单选态一致
+    return '比熊（内置）';
   }
 
-  /** 切换形象：持久化 → 重建舞台（loadFile 重新走 enterLive2dMode，from 失败自动回 hiyori） */
+  /** 切换形象：持久化 → 重建舞台（loadFile 重新走 enterLive2dMode，from 失败自动回退 webm 比熊） */
   _setPetModel(name: string): void {
     if (typeof name !== 'string' || !name) return;
-    try { this.storage._writeConfig({ petLive2dModel: name }); } catch (_) { /* 持久化失败不阻断 */ }
+    // 内置比熊 = 清除 Live2D 覆盖（petLive2dModel=null → 渲染层回落默认 → webm 比熊）
+    const writeValue = name === '比熊（内置）' ? null : name;
+    try { this.storage._writeConfig({ petLive2dModel: writeValue }); } catch (_) { /* 持久化失败不阻断 */ }
     // 舞台重建 = 最简热切换（模型加载失败时渲染层既有回退链自动落 hiyori/webm）
     if (this.petStage && !this.petStage.isDestroyed()) {
       this._destroyPetStage();
@@ -1524,19 +1729,18 @@ window.__clipSenseBarHover = function (on) {
     this.initTray(); // 重建单选态（幂等守卫已内置）
   }
 
-  _buildPassthroughOpacitySubmenu() {
-    const options = [
-      { label: '浅（70%）', value: 0.7 },
-      { label: '默认（50%）', value: 0.5 },
-      { label: '深（35%）', value: 0.35 },
-    ];
-    const current = this._getPassthroughOpacity();
-    return options.map(opt => ({
-      label: opt.label,
-      type: 'radio' as const,
-      checked: current === null ? opt.value === 0.5 : Math.abs(current - opt.value) < 0.01,
-      click: () => this._setPassthroughOpacity(opt.value === 0.5 ? null : opt.value),
-    }));
+  /** 固定档透明度（2026-11-16 滑块窗）：读 config，null=默认 60% */
+  _getPinnedOpacity(): number | null {
+    try {
+      const v = this.storage._readConfig().pinnedOpacity;
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1) return v;
+    } catch (_) { /* 读取失败回落默认 */ }
+    return null;
+  }
+
+  _setPinnedOpacity(v: number | null): void {
+    try { this.storage._writeConfig({ pinnedOpacity: v }); } catch (_) { /* 持久化失败不阻断 */ }
+    if (this.edgeDetector) this.edgeDetector.setPinnedOpacity(v);
   }
 
   _buildHideDelaySubmenu() {
@@ -1688,8 +1892,9 @@ window.__clipSenseBarHover = function (on) {
     // F12 调试切换（2026-11-05 小M「调试模式不生效」辅助）：切换主面板 DevTools，
     // 无需进托盘翻菜单。生产模式同样可用（排查需要）。
     globalShortcut.register('F12', () => {
-      // 2026-11-12 小M：调试快捷键仅限开发（未打包）——发布版不带调试入口
-      if (app.isPackaged) return;
+      // 2026-11-16 小M：F12 调试快捷键仅限 start:dev（与托盘调试项同口径）
+      // npm start（未设 NODE_ENV）与打包版均不注册生效——杜绝 start 模式冒出调试入口
+      if (!this._debugAllowed()) return;
       const mw = this.mainWindow;
       if (!mw || mw.isDestroyed()) return;
       // isDevTC：DevTools 是否已开（webContents.capturePage 不可靠，用 devToolsWebContents 判定）
@@ -2102,6 +2307,36 @@ window.__clipSenseBarHover = function (on) {
       tw.webContents.executeJavaScript(
         'window.__clipSenseBarPulse && window.__clipSenseBarPulse()'
       ).catch(() => {});
+    });
+
+    // ========== 统一托盘菜单浮窗 IPC（2026-11-16 小M） ==========
+    // 渲染层点击菜单项：带 action id 回传，主进程查表执行原 template click 函数
+    ipcMain.on('tray-menu:action', (_event: unknown, id: unknown) => {
+      this._dispatchTrayAction(id);
+    });
+    // Esc / 失焦关闭整个托盘菜单浮窗
+    ipcMain.on('tray-menu:close', () => {
+      if (this.trayMenuWindow && !this.trayMenuWindow.isDestroyed()) this.trayMenuWindow.hide();
+    });
+    // 渲染层实测内容尺寸后回传：贴合内容收缩窗口 + 重新锚定托盘（消除底部空白）
+    ipcMain.on('tray-menu:resize', (_event: unknown, size: { width: number; height: number }) => {
+      if (size) this._resizeTrayPopup(size.width, size.height);
+    });
+    // 菜单内嵌滑块读取当前两档值（init 亦推送，invoke 供渲染层主动对账）
+    ipcMain.handle('opacity:get', () => ({
+      pinned: this._getPinnedOpacity() ?? 0.6,
+      passthrough: this._getPassthroughOpacity() ?? 0.5,
+    }));
+    // 菜单内嵌滑块写值：kind=pinned|passthrough，value∈(0,1]，null 回落默认
+    ipcMain.on('opacity:set', (_event: unknown, p: { kind: 'pinned' | 'passthrough'; value: number | null }) => {
+      if (!p || (p.kind !== 'pinned' && p.kind !== 'passthrough')) return;
+      const raw = p.value;
+      const value = (typeof raw === 'number' && Number.isFinite(raw) && raw > 0 && raw <= 1) ? raw : null;
+      if (p.kind === 'pinned') {
+        this._setPinnedOpacity(value);
+      } else {
+        this._setPassthroughOpacity(value);
+      }
     });
 
     // ========== 桌宠舞台 IPC（P0 spike，2026-10-13） ==========
@@ -2615,6 +2850,8 @@ window.__clipSenseBarHover = function (on) {
     this.edgeDetector = new EdgeDetector(this.mainWindow!, this.triggerWindow!);
     // 穿透透明度持久化（2026-11-02 托盘菜单）：启动应用 config.passthroughOpacity（null=默认 0.5）
     this.edgeDetector.setPassthroughOpacity(this._getPassthroughOpacity());
+    // 固定档透明度持久化（2026-11-16 滑块窗）：启动应用 config.pinnedOpacity（null=默认 0.6）
+    this.edgeDetector.setPinnedOpacity(this._getPinnedOpacity());
     // 修饰键（Alt）按住穿透（2026-10-13）：注入全局键态探针（koffi 惰性绑定，非 win32 恒 false）+
     // 取证日志句柄（§5-③：落盘 userData，逐站编号定位链路断点）
     this.edgeDetector.setModifierProbe(() => _isAltPhysicallyDown(), _modDiag);

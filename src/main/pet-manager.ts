@@ -139,4 +139,26 @@ function computeCtxPullBack(
   return { x, y, moved };
 }
 
-export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage, computeCtxPullBack };
+/**
+ * 托盘「桌宠专属项」可见性（2026-11-16 小M：非宠物模式不应有桌宠相关）：
+ * 桌宠大小 / 桌宠形象 / 点击桌宠时唤出面板 / 桌宠 DevTools 只在 pet 模式展示；
+ * edge/hidden 模式下这些项对当前用户无意义（无桌宠可调），收敛掉降低托盘噪音。
+ * 模式切换入口（隐藏模式子菜单含「桌宠（实验）」）不在此列——那是切入宠物的唯一托盘入口。
+ */
+function shouldShowPetTrayItems(hideMode: unknown): boolean {
+  return hideMode === 'pet';
+}
+
+/**
+ * 调试入口许可（2026-11-16 小M：调试模式只能在 start:dev 出现，start 不出现）：
+ * npm start = `electron .`（NODE_ENV 未设 / 继承环境）；
+ * npm run start:dev = `set NODE_ENV=development&& electron .`（NODE_ENV=development）。
+ * 两者都不打包（isPackaged=false），故不能用 !isPackaged 判定——必须看 NODE_ENV 显式标记。
+ * 打包版即便误带 development 也不放行（双条件）。
+ * 统一接线点：托盘两项调试 visible、F12 快捷键、DevTools 自动打开。
+ */
+function isDebugMenuAllowed(isPackaged: boolean, nodeEnv: string | undefined): boolean {
+  return !isPackaged && nodeEnv === 'development';
+}
+
+export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed };

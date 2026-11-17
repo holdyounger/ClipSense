@@ -40,6 +40,8 @@ export interface ComputeOpacityState {
   passthroughActive?: boolean;
   /** 穿透档位自定义（2026-11-02 托盘菜单）：覆盖 OPACITY_PASSTHROUGH；非法值回落默认 */
   passthroughOpacity?: number;
+  /** 固定档位自定义（2026-11-16 滑块设置窗）：覆盖 OPACITY_PINNED；非法值回落默认 */
+  pinnedOpacity?: number;
 }
 
 /**
@@ -49,10 +51,12 @@ export interface ComputeOpacityState {
  * 倒计时终点（remaining = 0）→ OPACITY_GHOST。中间按剩余比例线性。
  */
 export function computeOpacity(s?: ComputeOpacityState): number {
-  const { pinned, isCountingDown, remainingMs, totalMs, passthroughActive, passthroughOpacity } = s ?? {};
+  const { pinned, isCountingDown, remainingMs, totalMs, passthroughActive, passthroughOpacity, pinnedOpacity } = s ?? {};
   let base: number;
   if (pinned) {
-    base = OPACITY_PINNED; // 规则 1：固定 → 60%
+    // 固定档位可配置（2026-11-16 滑块窗）：合法 [0,1] 覆盖默认 60%，否则防呆回落
+    base = (typeof pinnedOpacity === 'number' && Number.isFinite(pinnedOpacity)
+      && pinnedOpacity > 0 && pinnedOpacity <= 1) ? pinnedOpacity : OPACITY_PINNED;
   } else if (!isCountingDown) {
     base = OPAQUE;
   } else {

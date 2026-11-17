@@ -93,7 +93,7 @@ const {
   HEADER_DRAG_RESUME_MS: number;
 };
 const { computeOpacity } = require('./window-opacity') as {
-  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number; passthroughActive?: boolean; passthroughOpacity?: number }) => number;
+  computeOpacity: (state?: { pinned: boolean; isCountingDown: boolean; remainingMs: number; totalMs: number; passthroughActive?: boolean; passthroughOpacity?: number; pinnedOpacity?: number }) => number;
 };
 const { WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_HALF_WIDTH } = require('./window-dims') as {
   WINDOW_WIDTH: number;
@@ -163,6 +163,8 @@ class EdgeDetector {
   _modPass: ReturnType<typeof createModifierPassthrough>;
   /** 自定义穿透档位（2026-11-02 托盘菜单）：null=未设置走 OPACITY_PASSTHROUGH 默认 */
   _passthroughOpacity: number | null = null;
+  /** 自定义固定档位（2026-11-16 滑块窗）：null=未设置走 OPACITY_PINNED 默认 60% */
+  _pinnedOpacity: number | null = null;
 
   constructor(mainWindow: EdgeMainWindow, triggerWindow: EdgeTriggerWindow | null = null) {
     this.mainWindow = mainWindow;
@@ -977,6 +979,7 @@ class EdgeDetector {
       // Alt 穿透（2026-11-02）：穿透激活 → 降档（默认 0.5，托盘可调；取小值口径见 window-opacity.ts）
       passthroughActive: this._modPass.isActive(),
       passthroughOpacity: this._passthroughOpacity ?? undefined,
+      pinnedOpacity: this._pinnedOpacity ?? undefined,
     });
     this._applyWindowOpacity(target);
   }
@@ -1025,6 +1028,18 @@ class EdgeDetector {
   /** 读取穿透档位（托盘单选态）；null=默认 */
   getPassthroughOpacity(): number | null {
     return this._passthroughOpacity;
+  }
+
+  /** 设置固定档位（2026-11-16 滑块窗）：立即重算推送；null 回落默认 60% */
+  setPinnedOpacity(v: number | null): void {
+    this._pinnedOpacity = v;
+    this._appliedOpacity = null;
+    this._syncWindowOpacity();
+  }
+
+  /** 读取固定档位（滑块窗）；null=默认 */
+  getPinnedOpacity(): number | null {
+    return this._pinnedOpacity;
   }
 
   setPinned(pinned: boolean): void {
