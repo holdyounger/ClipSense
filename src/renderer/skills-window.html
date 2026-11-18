@@ -1,0 +1,277 @@
+<!doctype html>
+<!-- skills-window.html — 形象工坊：Skills 预览 + 多平台导入浮窗（2026-11-18 小M）
+     桌宠环形菜单 🎨 入口从「系统浏览器打开 SKILL.md」升级为应用内一体化窗口：
+       · 左侧：项目 skills/ 下发现的 Skill 列表（frontmatter name/description）
+       · 右侧：SKILL.md 轻量 Markdown 预览（标题/代码块/列表/链接，内容转义防注入）
+       · 底部：本机已安装的 AI 平台（Codex/Copilot/WorkBuddy/Wiscode/...），
+               一键把选中 Skill 复制安装到该平台 skills 目录（main 先备份再复制，绝不删其他文件）
+     数据全部经 IPC：skills:init 下发列表+平台，skills:detail 拉全文，skills:import 导入，
+     skills:close 关闭。无 Electron 依赖直连（nodeIntegration + contextIsolation:false）。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>形象工坊 · Skills</title>
+<style>
+  :root {
+    --brand: #6c5ce7; --brand-soft: #a29bfe; --ink: #1c1c1e; --sub: #6e6e73;
+    --line: rgba(0,0,0,.08); --hover: rgba(108,92,231,.08); --ok: #1a9d5a; --warn: #b26a00;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; padding: 0;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--ink); background: #f5f6fa; user-select: none;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* 自绘标题栏：-webkit-app-region:drag 让整条可拖动；按钮 no-drag */
+  .titlebar {
+    -webkit-app-region: drag; height: 44px; flex: 0 0 44px;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: rgba(255,255,255,.86); border-bottom: 1px solid var(--line);
+  }
+  .titlebar .logo { font-size: 18px; }
+  .titlebar .tt { font-size: 13px; font-weight: 600; }
+  .titlebar .sub { font-size: 11px; color: var(--sub); font-weight: 400; }
+  .titlebar .spacer { flex: 1; }
+  .titlebar .btn-ico {
+    -webkit-app-region: no-drag; width: 28px; height: 28px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--sub); font-size: 16px; cursor: pointer; line-height: 28px;
+  }
+  .titlebar .btn-ico:hover { background: rgba(0,0,0,.06); color: var(--ink); }
+
+  .wrap { flex: 1; display: flex; min-height: 0; }
+  /* 左侧 Skill 列表 */
+  .sidebar {
+    width: 220px; flex: 0 0 220px; background: rgba(255,255,255,.7);
+    border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px;
+  }
+  .side-h { font-size: 11px; color: var(--sub); letter-spacing: .5px; margin: 2px 6px 10px; }
+  .skill-item {
+    display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; margin-bottom: 6px;
+    border: 1px solid transparent; border-radius: 10px; cursor: pointer; background: transparent;
+  }
+  .skill-item:hover { background: var(--hover); }
+  .skill-item.active { background: #fff; border-color: rgba(108,92,231,.35); box-shadow: 0 1px 6px rgba(108,92,231,.12); }
+  .skill-item .nm { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .skill-item .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); flex: 0 0 7px; }
+  .skill-item .ds { font-size: 11px; color: var(--sub); line-height: 1.4; }
+  .empty { font-size: 12px; color: var(--sub); padding: 12px 8px; line-height: 1.6; }
+
+  /* 右侧内容区 */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .preview { flex: 1; overflow-y: auto; padding: 18px 22px 10px; user-select: text; }
+  .preview::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 8px; }
+  .preview::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: rgba(0,0,0,.15); border-radius: 4px; }
+  .md h1 { font-size: 21px; margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .md h2 { font-size: 17px; margin: 22px 0 10px; }
+  .md h3 { font-size: 14px; margin: 18px 0 8px; }
+  .md p { font-size: 13px; line-height: 1.75; color: #333; margin: 8px 0; }
+  .md ul, .md ol { font-size: 13px; line-height: 1.8; padding-left: 22px; color: #333; }
+  .md li { margin: 2px 0; }
+  .md code { background: rgba(108,92,231,.08); color: #5b3fd6; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: Consolas, "Courier New", monospace; }
+  .md pre { background: #1e1e24; color: #e8e8ea; padding: 12px 14px; border-radius: 9px; overflow-x: auto; margin: 10px 0; }
+  .md pre code { background: transparent; color: inherit; padding: 0; font-size: 12px; line-height: 1.6; }
+  .md a { color: var(--brand); text-decoration: none; cursor: pointer; }
+  .md a:hover { text-decoration: underline; }
+  .md blockquote { margin: 10px 0; padding: 6px 12px; border-left: 3px solid var(--brand-soft); background: rgba(108,92,231,.05); color: var(--sub); font-size: 12px; }
+  .md .fm { background: #f0f0f5; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: var(--sub); margin-bottom: 14px; font-family: Consolas, monospace; }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+
+  /* 底部平台导入区 */
+  .dock { flex: 0 0 auto; border-top: 1px solid var(--line); background: rgba(255,255,255,.9); padding: 12px 18px 14px; }
+  .dock-h { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+  .dock-h .hint { font-weight: 400; color: var(--sub); font-size: 11px; }
+  .plats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .plat {
+    display: flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--line);
+    border-radius: 9px; background: #fff; font-size: 12px; min-width: 132px;
+  }
+  .plat.off { opacity: .55; }
+  .plat .pnm { font-weight: 600; flex: 1; }
+  .plat .tag { font-size: 10px; padding: 2px 6px; border-radius: 5px; }
+  .plat .tag.on { background: rgba(26,157,90,.12); color: var(--ok); }
+  .plat .tag.off { background: rgba(0,0,0,.05); color: var(--sub); }
+  .plat .imp {
+    border: 0; border-radius: 6px; padding: 4px 9px; font-size: 11px; cursor: pointer;
+    background: var(--brand); color: #fff; font-weight: 600;
+  }
+  .plat .imp:hover { background: #5b4bd6; }
+  .plat .imp:disabled { opacity: .45; cursor: default; }
+  .plat .imp.done { background: var(--ok); }
+  .status { font-size: 11px; margin-top: 9px; min-height: 15px; color: var(--sub); }
+  .status.ok { color: var(--ok); } .status.err { color: #c0392b; }
+  .no-sel { color: var(--sub); font-size: 12px; padding: 8px 0; }
+</style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="logo">🎨</span>
+    <span class="tt">形象工坊 <span class="sub">· Skills 预览与导入</span></span>
+    <span class="spacer"></span>
+    <button class="btn-ico" id="closeBtn" title="关闭 (Esc)">✕</button>
+  </div>
+  <div class="wrap">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-h">本地 SKILLS</div>
+      <div id="skillList"></div>
+    </aside>
+    <div class="main">
+      <div class="preview" id="preview"><div class="no-sel">请选择左侧 Skill 查看文档</div></div>
+      <div class="dock">
+        <div class="dock-h">导入到 AI 平台 <span class="hint">把选中 Skill 安装到本机已检测到的平台</span></div>
+        <div class="plats" id="plats"><div class="no-sel">未检测到已安装的平台</div></div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const { ipcRenderer } = require('electron');
+  const $ = (id) => document.getElementById(id);
+  let skills = [];
+  let platforms = [];
+  let selected = null;
+
+  // ==== 轻量 Markdown 渲染（内容先转义，杜绝 HTML 注入） ====
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function inline(s) {
+    let t = esc(s);
+    // 行内代码
+    t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 链接 [text](url)：仅 http(s)，点击走 open-external 白名单 IPC
+    t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" data-url="$2">$1</a>');
+    // 粗体
+    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return t;
+  }
+  function renderMd(md) {
+    const lines = String(md || '').split(/\r?\n/);
+    const out = [];
+    let i = 0;
+    let fm = [];
+    // frontmatter 单独渲染为浅灰块
+    if (lines[0] && lines[0].trim() === '---') {
+      i = 1;
+      while (i < lines.length && lines[i].trim() !== '---') { fm.push(lines[i]); i++; }
+      i++; // 跳过收尾 ---
+    }
+    if (fm.length) out.push('<div class="fm">' + fm.map(esc).join('<br>') + '</div>');
+    let inCode = false, codeBuf = [], listType = null;
+    const closeList = () => { if (listType) { out[out.length - 1] += '</' + listType + '>'; listType = null; } };
+    for (; i < lines.length; i++) {
+      const raw = lines[i];
+      const line = raw.trimEnd();
+      if (/^\s*```/.test(line)) {
+        if (inCode) { out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>'); codeBuf = []; inCode = false; }
+        else { closeList(); inCode = true; }
+        continue;
+      }
+      if (inCode) { codeBuf.push(raw); continue; }
+      const h = line.match(/^(#{1,3})\s+(.*)$/);
+      if (h) { closeList(); const lv = h[1].length; out.push('<h' + lv + '>' + inline(h[2]) + '</h' + lv + '>'); continue; }
+      if (/^\s*[-*]\s+/.test(line)) {
+        if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; }
+        out.push('<li>' + inline(line.replace(/^\s*[-*]\s+/, '')) + '</li>'); continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; }
+        out.push('<li>' + inline(line.replace(/^\s*\d+\.\s+/, '')) + '</li>'); continue;
+      }
+      if (/^>\s?/.test(line)) { closeList(); out.push('<blockquote>' + inline(line.replace(/^>\s?/, '')) + '</blockquote>'); continue; }
+      if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { closeList(); out.push('<hr>'); continue; }
+      if (!line.trim()) { closeList(); continue; }
+      closeList();
+      out.push('<p>' + inline(line) + '</p>');
+    }
+    closeList();
+    if (inCode && codeBuf.length) out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>');
+    return '<div class="md">' + out.join('') + '</div>';
+  }
+
+  // ==== 渲染 ====
+  function renderSkills() {
+    const box = $('skillList');
+    if (!skills.length) { box.innerHTML = '<div class="empty">未发现 Skill<br>请确认项目 skills/ 目录含 SKILL.md</div>'; return; }
+    box.innerHTML = skills.map((s) =>
+      '<div class="skill-item' + (selected === s.id ? ' active' : '') + '" data-id="' + esc(s.id) + '">' +
+        '<div class="nm"><span class="dot"></span>' + esc(s.name) + '</div>' +
+        '<div class="ds">' + esc(s.description || s.id) + '</div>' +
+      '</div>').join('');
+    box.querySelectorAll('.skill-item').forEach((el) => {
+      el.addEventListener('click', () => selectSkill(el.dataset.id));
+    });
+  }
+  function selectSkill(id) {
+    selected = id;
+    renderSkills();
+    renderPlats();
+    $('status').textContent = '';
+    $('status').className = 'status';
+    ipcRenderer.invoke('skills:detail', id).then((r) => {
+      if (r && r.ok && r.meta) $('preview').innerHTML = renderMd(r.meta.raw);
+      else $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+    }).catch((e) => { $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(String(e)) + '</div>'; });
+  }
+  function renderPlats() {
+    const box = $('plats');
+    if (!platforms.length) { box.innerHTML = '<div class="no-sel">未检测到已安装的平台</div>'; return; }
+    box.innerHTML = platforms.map((p) =>
+      '<div class="plat' + (p.available ? '' : ' off') + '" data-pid="' + esc(p.id) + '">' +
+        '<span class="pnm">' + esc(p.name) + '</span>' +
+        '<span class="tag ' + (p.available ? 'on' : 'off') + '">' + (p.available ? '已安装' : '未安装') + '</span>' +
+        (p.available ? '<button class="imp" ' + (selected ? '' : 'disabled') + ' data-imp="' + esc(p.id) + '">导入</button>' : '') +
+      '</div>').join('');
+    box.querySelectorAll('[data-imp]').forEach((btn) => {
+      btn.addEventListener('click', () => doImport(btn.dataset.imp, btn));
+    });
+  }
+  function doImport(platformId, btn) {
+    if (!selected) return;
+    const st = $('status');
+    st.className = 'status'; st.textContent = '正在导入…';
+    ipcRenderer.invoke('skills:import', { skillId: selected, platformId }).then((r) => {
+      if (r && r.ok) {
+        st.className = 'status ok';
+        st.textContent = '已导入到平台（' + platformId + '）' + (r.backedUp ? '；旧版本已备份' : '') + '。';
+        btn.textContent = '✓ 已导入'; btn.classList.add('done');
+        // 刷新平台可用状态（导入不改变目录存在性，但保持一致）
+        ipcRenderer.invoke('skills:platforms').then((ps) => { if (Array.isArray(ps)) { platforms = ps; } }).catch(() => {});
+      } else {
+        st.className = 'status err';
+        st.textContent = '导入失败：' + esc(r && r.error ? r.error : '未知错误');
+      }
+    }).catch((e) => { st.className = 'status err'; st.textContent = '导入失败：' + esc(String(e)); });
+  }
+
+  // 预览区链接：仅 http(s)，走 open-external 白名单 IPC
+  $('preview').addEventListener('click', (ev) => {
+    const a = ev.target.closest('a[data-url]');
+    if (a) { ev.preventDefault(); ipcRenderer.invoke('open-external', a.dataset.url); }
+  });
+  $('closeBtn').addEventListener('click', () => ipcRenderer.send('skills:close'));
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') ipcRenderer.send('skills:close');
+  });
+
+  // 主进程下发数据
+  ipcRenderer.on('skills:init', (_e, payload) => {
+    skills = (payload && payload.skills) || [];
+    platforms = (payload && payload.platforms) || [];
+    selected = skills.length ? skills[0].id : null;
+    renderSkills();
+    renderPlats();
+    if (selected) {
+      ipcRenderer.invoke('skills:detail', selected).then((r) => {
+        if (r && r.ok && r.meta) $('preview').innerHTML = renderMd(r.meta.raw);
+      }).catch(() => {});
+    }
+  });
+</script>
+</body>
+</html>

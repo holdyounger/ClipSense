@@ -101,6 +101,8 @@ interface MenuWindowWindow {
   getBounds: () => { x: number; y: number; width: number; height: number };
   setBounds: (b: { x: number; y: number; width: number; height: number }) => void;
   setPosition: (x: number, y: number) => void;
+  center: () => void;
+  loadFile: (filePath: string) => unknown;
   /** 窗口级事件（blur 失焦隐藏用） */
   on: (event: string, listener: (...args: any[]) => void) => void;
   webContents: {
@@ -231,6 +233,7 @@ const { PasteBridge } = require('./paste-bridge') as typeof import('./paste-brid
 const { buildTriggerScript, DRAWER } = require('./trigger-anim') as typeof import('./trigger-anim');
 const { FocusTracker } = require('./focus-tracker') as typeof import('./focus-tracker');
 const updater = require('./updater') as typeof import('./updater');
+const skillsService = require('./skills-service') as typeof import('./skills-service');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
 const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed } = require('./pet-manager') as typeof import('./pet-manager');
@@ -359,6 +362,7 @@ class ClipboardSpikeApp {
   _petCtxPollId: ReturnType<typeof setInterval> | null = null;
   menuWindow: MenuWindowWindow | null = null; // 互动二级菜单独立窗（2026-11-15 L3 pet-menu-window，懒创建）
   trayMenuWindow: MenuWindowWindow | null = null; // 统一托盘菜单浮窗（2026-11-16，懒创建单例，含透明度滑块）
+  skillsWindow: MenuWindowWindow | null = null; // 形象工坊：Skills 预览 + 多平台导入浮窗（2026-11-18，懒创建单例）
   _menuShownAt: number = 0;
   _menuWinPollId: ReturnType<typeof setInterval> | null = null; // 菜单窗出界关闭轮询（2026-11-16 主进程接管）
   _menuWinReveal: (() => void) | null = null; // 菜单窗显示回调（loadFile promise / did-finish-load 双路触发）
@@ -921,6 +925,67 @@ window.__clipSenseBarHover = function (on) {
     // 透明窗只触发一次几何变更/表面重分配，不再「旧坐标扩张 → 再左移对齐」两跳。
     const { x, y } = this._computeTrayPopupRect(width, height);
     win.setBounds({ x, y, width, height });
+  }
+
+  /** 形象工坊窗口：居中显示于锚点所在显示器工作区，clamp 防越屏。
+   *  内容型窗口（非贴托盘），按当前 bounds 居中。 */
+  _positionSkillsWindow(win: MenuWindowWindow): void {
+    const b = win.getBounds();
+    let wa = { x: 0, y: 0, width: 0, height: 0 };
+    try { wa = screen.getPrimaryDisplay().workArea; } catch (_) { /* 零值兜底 */ }
+    if (!wa.width || !wa.height) { win.center(); return; }
+    let x = wa.x + (wa.width - b.width) / 2;
+    let y = wa.y + (wa.height - b.height) / 2;
+    x = Math.max(wa.x, Math.min(x, wa.x + wa.width - b.width));
+    y = Math.max(wa.y, Math.min(y, wa.y + wa.height - b.height));
+    win.setPosition(Math.round(x), Math.round(y));
+  }
+
+  /** 形象工坊（2026-11-18）：打开应用内 Skills 预览 + 多平台导入浮窗。
+   *  懒创建单例；无边框 + 透明 + 不入任务栏；失焦隐藏、Esc 关闭（渲染层）。
+   *  数据经 skills:init 下发（本地 skill 列表 + 平台检测结果）。 */
+  _showSkillsWindow(): void {
+    if (!this.skillsWindow || this.skillsWindow.isDestroyed()) {
+      const win = new BrowserWindow({
+        width: 880,
+        height: 620,
+        minWidth: 560,
+        minHeight: 400,
+        frame: false,
+        transparent: false,
+        resizable: true,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        skipTaskbar: false,
+        show: false,
+        backgroundColor: '#f5f6fa',
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false,
+          sandbox: false,
+        },
+      }) as unknown as MenuWindowWindow;
+      win.loadFile(path.join(__dirname, '../renderer/skills-window.html'));
+      win.on('closed', () => { this.skillsWindow = null; });
+      win.on('blur', () => { if (!win.isDestroyed()) win.hide(); });
+      this.skillsWindow = win;
+    }
+    const win = this.skillsWindow!;
+    const deliver = () => {
+      if (win.isDestroyed()) return;
+      const skillsRoot = path.join(__dirname, '../../skills');
+      win.webContents.send('skills:init', {
+        skills: skillsService.listLocalSkills(skillsRoot),
+        platforms: skillsService.detectPlatforms(),
+        skillsRoot,
+      });
+    };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', deliver);
+    else deliver();
+    this._positionSkillsWindow(win);
+    win.show();
+    win.focus();
   }
 
   /** 读托盘语言单选态（storage config.lang，缺省 zh-CN） */
@@ -1935,22 +2000,46 @@ window.__clipSenseBarHover = function (on) {
     // 用默认浏览器打开 URL（协议白名单：仅 http/https）
     // 安全：shell.openExternal 对未过滤协议可能拉起任意已注册 handler，
     // file:/javascript:/自定义协议一律拒绝。
-    // 形象工坊（2026-11-13 小M）：桌宠菜单 🎨 入口 → 用系统浏览器打开仓库内的
-    // pet-webm-pipeline Skill 文档（用户按 Skill 生成自己的桌宠形象素材）
+    // 形象工坊（2026-11-18 升级）：桌宠菜单 🎨 入口 → 打开应用内 Skills 预览 + 多平台导入浮窗。
+    // 旧版（2026-11-13）是用系统浏览器打开 SKILL.md，现由 skills-window 承载预览与导入。
     ipcMain.handle('pet:open-skill', async () => {
       try {
-        const skillPath = path.join(__dirname, '../../skills/pet-webm-pipeline/SKILL.md');
-        const skillUrl = 'https://github.com/holdyounger/ClipSense/blob/main/skills/pet-webm-pipeline/SKILL.md';
-        // 本地存在则优先开本地文件（离线可用）；异常回落 GitHub 在线版
-        if (fs.existsSync(skillPath)) {
-          await shell.openExternal('file:///' + skillPath.replace(/\\/g, '/'));
-        } else {
-          await shell.openExternal(skillUrl);
-        }
+        this._showSkillsWindow();
         return { ok: true };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
+    });
+
+    // 形象工坊数据面：读取单个 Skill 全文（供预览窗切换选中项时拉取）
+    ipcMain.handle('skills:detail', (_e: unknown, id: unknown) => {
+      const skillsRoot = path.join(__dirname, '../../skills');
+      return skillsService.readSkill(skillsRoot, id);
+    });
+
+    // 形象工坊：重新检测平台（导入后刷新可用状态）
+    ipcMain.handle('skills:platforms', () => skillsService.detectPlatforms());
+
+    // 形象工坊：把一个 Skill 导入到指定 AI 平台（只写目标 skill 子目录，存在先备份）
+    ipcMain.handle('skills:import', (_e: unknown, payload: unknown) => {
+      const p = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+      const id = p.skillId;
+      const platformId = p.platformId;
+      if (typeof id !== 'string' || typeof platformId !== 'string') {
+        return { ok: false, error: '参数缺失' };
+      }
+      const platform = skillsService.detectPlatforms().find((x) => x.id === platformId);
+      if (!platform || !platform.available) return { ok: false, error: '目标平台未安装' };
+      const skillsRoot = path.join(__dirname, '../../skills');
+      const safeId = skillsService.sanitizeSkillName(id);
+      if (!safeId) return { ok: false, error: '非法 Skill 标识' };
+      const srcDir = path.join(skillsRoot, safeId);
+      return skillsService.importSkill(srcDir, platform.dir, id);
+    });
+
+    // 形象工坊：关闭浮窗
+    ipcMain.on('skills:close', () => {
+      if (this.skillsWindow && !this.skillsWindow.isDestroyed()) this.skillsWindow.hide();
     });
 
     ipcMain.handle('open-external', async (event, rawUrl) => {
