@@ -44,9 +44,11 @@
 
 ### 动态演示
 
-![ClipSense 运行演示：复制归档、搜索定位、双击粘贴回原窗口](README/demoShow.gif)
+<video src="demo/demoShow.mp4" controls width="100%" poster="demo/demo-cover.jpg">
+  你的浏览器不支持内嵌视频，请<a href="demo/demoShow.mp4">下载演示视频</a>观看。
+</video>
 
-> 完整流程：复制内容自动归档 → 边缘唤出 → 搜索定位 → 双击粘贴回原目标窗口。
+> 完整流程：复制内容自动归档 → 边缘唤出 → 搜索定位 → 双击粘贴回原目标窗口。GIF 版本见 [`README/demoShow.gif`](README/demoShow.gif)（37MB）。
 
 ### 功能截图
 

@@ -5,6 +5,18 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
+## v1.0.21（2026-11-18）—— README 内嵌演示视频
+
+### 📝 文档
+
+- **真实演示视频上传**：将原 37MB 的 `README/demoShow.gif` 用 ffmpeg 转码为 H.264 MP4（`demo/demoShow.mp4`，1280×764 / 29 秒 / 2.1MB，缩小 94%，`-movflags +faststart` 边下边播），README「动态演示」改用 `<video controls poster>` 内联播放，附 GIF 版链接兜底
+- **演示封面帧**：从视频第 5 秒抽取真实面板截图 `demo/demo-cover.jpg`（192KB）作为 poster，播放前可见应用界面
+- 转码工具 `ffmpeg-static` 以 `--no-save --no-package-lock` 临时安装，未写入项目依赖
+
+### 🧪 验证
+
+- MP4 全量解码无报错（H.264 / yuv420p / 25fps / 29.28s）；README 四个资源引用（MP4/封面/GIF/动作截图）逐个 `[ -f ]` 校验全部有效
+
 ## v1.0.20（2026-11-17）—— 托盘菜单 HTML 化 + 透明度滑块 + 视觉/交互精修批次
 
 ### ✨ 新功能
