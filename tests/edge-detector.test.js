@@ -97,3 +97,64 @@ describe('setOverlayActive：模态 overlay 挂起自动隐藏', () => {
     assert.strictEqual(det.hideTimerId, null);
   });
 });
+
+// ==================== prepare 硬超时（2026-11-22 启动面板不弹出回归） ====================
+// 实机证据：macOS 27.2 上 _showWindow 的 prepare 双 rAF 确认间歇性冻结 9s~146s
+//（正常 0.79s），_showAnimationId 恒为 'pending' → 窗口永不 show + 轮询冻结
+// →「启动后主面板不主动弹出」。prepare Promise 只处理 reject 不处理"永不 resolve"，
+// 本组测试锚定：prepare 不确认时弹出链必须有界兜底，窗口必被显示。
+
+function makeShowChainStub() {
+  const calls = [];
+  const win = {
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    restore: () => calls.push('restore'),
+    setMinimumSize: () => {},
+    setIgnoreMouseEvents: () => {},
+    setBounds: () => {},
+    getBounds: () => ({ x: 100, y: 100, width: 340, height: 550 }),
+    showInactive: () => calls.push('showInactive'),
+    hide: () => {},
+    webContents: {
+      send: () => {},
+      executeJavaScript: () => new Promise(() => {}), // 永不 resolve = prepare 卡死
+    },
+  };
+  return { win, calls };
+}
+
+describe('prepare 硬超时：渲染层确认冻结时弹出链必须有界兜底（2026-11-22 回归）', () => {
+  test('prepare 永不 resolve：show 链 ~800ms 内完成 showInactive + 过渡锁解除', async () => {
+    const { win, calls } = makeShowChainStub();
+    const det = new EdgeDetector(win, null);
+    det.prepareFallbackMs = 80; // 测试加速；生产默认 900
+    det.forceShow();
+    // 最坏路径：80ms prepare 兜底 → +50ms → showInactive(~130ms) → 'in' 400ms 硬
+    // 超时 → startIn 立 320ms 过渡锁 → ~850ms 解除。等 950ms 断言整条链有界完成。
+    await new Promise((r) => setTimeout(r, 950));
+    assert.ok(calls.includes('showInactive'), 'prepare 冻结时必须兜底 show 窗口（实际调用: ' + JSON.stringify(calls) + '）');
+    assert.strictEqual(det._showAnimationId, null, '过渡锁须解除（轮询恢复）');
+  });
+
+  test('prepare 正常 resolve：走原链路，不受超时兜底影响', async () => {
+    const { win, calls } = makeShowChainStub();
+    win.webContents.executeJavaScript = () => Promise.resolve('paint-ready');
+    const det = new EdgeDetector(win, null);
+    det.forceShow();
+    await new Promise((r) => setTimeout(r, 450)); // 等 320ms 过渡锁到期
+    assert.ok(calls.includes('showInactive'), '正常确认路径照常显示');
+    assert.strictEqual(det._showAnimationId, null, '过渡锁正常解除');
+  });
+
+  test('forceHide 在 prepare 冻结中：作废在途兜底，不误显示', async () => {
+    const { win, calls } = makeShowChainStub();
+    const det = new EdgeDetector(win, null);
+    det.prepareFallbackMs = 80;
+    det.forceShow();
+    await new Promise((r) => setTimeout(r, 20));
+    det.forceHide(); // 用户显式收起：代际递增后兜底不得再 show
+    await new Promise((r) => setTimeout(r, 160));
+    assert.ok(!calls.includes('showInactive'), 'forceHide 后在途兜底必须作废');
+  });
+});

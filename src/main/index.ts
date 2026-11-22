@@ -220,6 +220,13 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, nativeImage, screen, 
 // 透明小窗被 Chromium 判「被完全遮挡」后停渲染/降帧（桌宠动画莫名停帧第一嫌疑）。
 // 必须先于 app ready 注册；未知 feature 名被 Chromium 静默忽略，无副作用。
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// macOS（2026-11-22 启动不弹面板回归配套）：本应用是无 Dock 图标的后台工具，
+// macOS 会对其施加 App Nap（定时器合流/渲染帧限频）——主面板弹出链依赖隐藏态
+// 双 rAF 绘制确认，纳管冻结下 rAF 间歇停摆（实测 9s~146s，正常 0.8s）。
+// 显式豁免；Windows/无此 API 的平台静默跳过。
+if (process.platform === 'darwin' && typeof (app as any).setAppNapEnabled === 'function') {
+  try { (app as any).setAppNapEnabled(false); } catch (_) { /* 老版本 Electron 无此 API */ }
+}
 // macOS（2026-11-18 实机修复「桌宠白色背景板」根因）：桌面 GPU 路径下 VP9 视频走
 // VideoToolbox 硬件解码，macOS 27 + Chromium 120（Electron 28）组合丢失 WebM alpha
 // 副通道 → 整帧不透明 → 露出素材白色 RGB 底（狗站在白卡片上）。CPU 软解路径 alpha
@@ -341,6 +348,13 @@ function _isMacOptionDown(): boolean {
 
 // 尽早启动 Crashpad：覆盖主/渲染/GPU/native 崩溃，本地 .dmp 不上传（先于 app ready）
 crashDump.startCrashReporter();
+
+// 启动取证（2026-11-22）：进程一进入 main 就落盘一行。出现「拿锁后零日志」的
+// 僵尸实例（11:18 实锤：NSApplication 注册后 JS 未推进 whenReady）时，有此行
+// = JS 顶层跑过、卡点在 whenReady/init 内（看后续阶段标记）；无此行 = 原生
+// 初始化即挂（对照 .ips 崩溃报告）。
+_modDiag('[Boot] main 进程进入（pid=' + process.pid + ' ppid=' + process.ppid
+  + ' platform=' + process.platform + '）');
 
 class ClipboardSpikeApp {
   mainWindow: IndexMainWindow | null;
@@ -1090,6 +1104,9 @@ window.__clipSenseBarHover = function (on) {
         // 面板收起（setOnHidden）时经补口首次创建舞台
         ed.notifyExternalHide(); // 状态对账（面板将走 forceShow 正常显示周期）
         ed.forceShow();
+        // 显示兜底由 EdgeDetector 的 prepare 硬超时承担（2026-11-22）：此处曾加同步
+        // showInactive 兜底，实测无效——页面未就绪时显示的是 prepare 透明态/空白窗，
+        // 且绕过 _beginShowTransition 会错置 _petAwaitPanelEnter，已移除。
         console.log('[Pet] 启动首次 → 优先主面板，桌宠延迟登场（收起后创建）');
         return;
       }
@@ -3203,10 +3220,14 @@ crashDump.setupExceptionCapture({
 // 单实例锁（2026-09-11 22:24）：双实例并行会争抢全局快捷键与剪贴板监听，
 // 粘贴目标跟踪互相污染（实测 21:22 起双实例并行）。抢不到锁 = 已有实例在跑，直接退出。
 if (!app.requestSingleInstanceLock()) {
+  // 2026-11-22：抢锁失败=已有实例占锁。曾发生僵尸实例（init 卡死）持锁 40 分钟，
+  // 期间用户所有启动都被此分支静默吞掉，表象=「启动后什么都不弹」。留痕便于归因。
+  _modDiag('[Boot] 抢单实例锁失败 → 退出（已有实例持锁，若其无响应需手动结束旧进程）');
   app.quit();
 } else {
   app.on('second-instance', () => {
     // 重复启动尝试：唤出已有实例的面板（未初始化完成时静默）
+    _modDiag('[Boot] second-instance 事件（重复启动尝试）');
     if (spikeApp.mainWindow && !spikeApp.mainWindow.isDestroyed()) {
       spikeApp.mainWindow.show();
     }
@@ -3217,7 +3238,20 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === 'darwin' && app.dock) {
       try { app.dock.hide(); } catch (_) { /* 无 dock（headless/CI）时忽略 */ }
     }
+    _modDiag('[Boot] app ready → init 开始（pid=' + process.pid + '）');
     await spikeApp.init();
+    _modDiag('[Boot] init 完成 → 启动自检（pid=' + process.pid
+      + ' panelVisible=' + (spikeApp.edgeDetector ? spikeApp.edgeDetector.isWindowVisible : 'n/a') + '）');
+    // 启动自检（2026-11-22）：init 完成后面板应已在显示链中（edge 模式 forceShow /
+    // pet 模式 _applyHideMode forceShow）。1.5s 后仍未可见 = 显示链异常，落盘现场。
+    setTimeout(() => {
+      try {
+        const ed = spikeApp.edgeDetector;
+        const mw = spikeApp.mainWindow;
+        _modDiag('[Boot] 启动自检 1.5s：panelVisible=' + (mw && !mw.isDestroyed() ? mw.isVisible() : 'no-win')
+          + ' isWindowVisible=' + (ed ? ed.isWindowVisible : 'n/a') + ' showLock=' + (ed ? String(ed._showAnimationId) : 'n/a'));
+      } catch (e) { _modDiag('[Boot] 启动自检异常: ' + String(e)); }
+    }, 1500);
     // 菜单窗全链路自检（CLIPSENSE_MENU_SELFTEST=1 时启用，2026-11-16 调试工具）：
     // 启动 8s 后用桌宠窗真实 bounds 自动触发一次 pet-menu:show → 定位 → reveal，
     // 日志可完整取证 reveal/isVisible/z-order，无需人工点击。

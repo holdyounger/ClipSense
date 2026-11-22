@@ -142,6 +142,14 @@ class EdgeDetector {
   _hideAnimationId: NodeJS.Timeout | null;
   /** 过渡锁兼动画定时器：'pending' 占位（prepare 前先行立起，clearTimeout 对字符串无害） */
   _showAnimationId: NodeJS.Timeout | string | null;
+  /** prepare 确认硬超时（ms）：渲染层双 rAF 永不 resolve 时的兜底显示时限。
+   *  2026-11-22 实机：macOS 27.2 隐藏透明窗口 compositor 间歇不出帧，prepare
+   *  Promise 冻结 9s~146s（正常 ~0.8s）→ 窗口永不 show + 轮询冻结 →「启动后
+   *  主面板不主动弹出」。900ms ≈ 正常链路（0.8s）+ 余量；测试可覆盖加速。 */
+  prepareFallbackMs: number;
+  /** 已启动过渡的代际：_beginShowTransition 消费后记录，迟到的 prepare 确认
+   *  不得二次走显示链（超时兜底与正常确认竞态）。0=尚无过渡启动。 */
+  _showTransitionGen: number;
   _showGeneration: number;
   _isHiding: boolean;
   /** 隐藏完成回调（setOnHidden 注入；null = 未注入） */
@@ -220,6 +228,8 @@ class EdgeDetector {
     /** 当前推出/弹入动画定时器，避免窗口动画重复触发 */
     this._hideAnimationId = null;
     this._showAnimationId = null;
+    this.prepareFallbackMs = 900;
+    this._showTransitionGen = 0;
     /**
      * 弹出代际令牌：每次 _showWindow 递增。prepare 确认/rAF 链的异步回调
      * 靠比对 gen 判断自己是否仍属当前轮弹出，防止旧回调操纵新一轮动画。
@@ -628,6 +638,20 @@ class EdgeDetector {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
       this._showAfterPrepare(gen, false, edge);
     });
+    // prepare 硬超时（2026-11-22 启动不弹出回归）：上面只覆盖 reject，不覆盖
+    // 「永不 resolve」——macOS 27.2 隐藏透明窗口 compositor 间歇不出帧时双 rAF
+    // 确认卡死（实测 9s~146s），窗口永不显示且轮询被 'pending' 锁冻结。
+    // 超时无动画直接显示（同 paint-fallback 路径）：最坏回退旧行为闪一下，
+    // 但弹出链必须有界。gen 比对保证 forceHide/新一轮弹出后在途超时作废。
+    setTimeout(() => {
+      if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出/隐藏作废
+      if (this._showTransitionGen === gen) return; // 已显示（正常确认先到）
+      console.log('[Perf] summon prepare TIMEOUT → fallback show '
+        + (performance.now() - __showT0).toFixed(1) + 'ms');
+      if (this._modDiag) this._modDiag('[Edge] prepare 确认超时 → 兜底显示（'
+        + (performance.now() - __showT0).toFixed(0) + 'ms，正常 ~800ms 内）');
+      this._showAfterPrepare(gen, false, edge);
+    }, this.prepareFallbackMs);
 
     console.log(`[EdgeDetector] 弹出窗口 (x=${targetX}, y=${targetY}, edge=${edge})`);
   }
@@ -641,6 +665,7 @@ class EdgeDetector {
   _showAfterPrepare(gen: number, paintConfirmed: boolean, edge: string): void {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    if (this._showTransitionGen === gen) return; // 超时兜底/正常确认竞态：过渡已启动
     if (paintConfirmed) {
       this._beginShowTransition(gen, edge);
       return;
@@ -663,6 +688,7 @@ class EdgeDetector {
    */
   _beginShowTransition(gen: number, edge: string): void {
     if (gen !== this._showGeneration) return; // 已被 stop()/新一轮弹出取代
+    this._showTransitionGen = gen; // 过渡已启动：迟到确认/超时兜底不得重入
     console.log('[Perf] summon prepare→show ' + (performance.now() - __showT0).toFixed(1) + 'ms');
     this.mainWindow.showInactive();
     this._appliedOpacity = null; // 滑出期间透明度残值作废，按当前状态重设（首帧即正确）
@@ -678,8 +704,11 @@ class EdgeDetector {
 
     // 'in' 滑入：_showAnimationId 兼作过渡锁（toggle 用它判断动画中）。
     // 隐藏态 rAF 未被节流（backgroundThrottling:false），双 rAF 等效 ~2 帧。
+    let inStarted = false;
     const startIn = () => {
       if (gen !== this._showGeneration) return; // 锁已被 stop() 清除
+      if (inStarted) return; // 双 rAF 与硬超时竞态：只应用一次
+      inStarted = true;
       console.log('[Perf] summon →slide-in ' + (performance.now() - __showT0).toFixed(1) + 'ms');
       this.mainWindow.webContents.executeJavaScript(
         `window.__clipSenseSlide && window.__clipSenseSlide('in','${edge}')`
@@ -696,6 +725,13 @@ class EdgeDetector {
       // rAF 注入失败（页面异常）：退化为直接滑入，保证面板可见。
       startIn();
     });
+    // 'in' 前双 rAF 硬超时（2026-11-22 配套）：窗口已 show 后若 compositor
+    // 仍不出帧，startIn 永不执行 → 内容停在 prepare 透明态（窗口可见但全透明，
+    // 用户感知=没弹出）。400ms 后无条件应用 'in'，恢复可见性优先于动画流畅度。
+    setTimeout(() => {
+      if (gen !== this._showGeneration) return;
+      startIn();
+    }, 400);
   }
 
   /**
@@ -1137,6 +1173,9 @@ class EdgeDetector {
   forceHide(): void {
     this._cancelHideTimer();
     this._cancelHideAnimation();
+    // 2026-11-22：显式隐藏必须作废在途 show 链（prepare 确认 + 硬超时兜底）。
+    // 否则 prepare 冻结期间 forceHide 后，迟到的兜底仍会 showInactive 把面板弹回。
+    this._cancelShowAnimation();
     this._hideWindow();
   }
 
