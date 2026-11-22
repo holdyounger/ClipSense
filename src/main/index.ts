@@ -220,6 +220,24 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, nativeImage, screen, 
 // 透明小窗被 Chromium 判「被完全遮挡」后停渲染/降帧（桌宠动画莫名停帧第一嫌疑）。
 // 必须先于 app ready 注册；未知 feature 名被 Chromium 静默忽略，无副作用。
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// macOS（2026-11-18 实机修复「桌宠白色背景板」根因）：桌面 GPU 路径下 VP9 视频走
+// VideoToolbox 硬件解码，macOS 27 + Chromium 120（Electron 28）组合丢失 WebM alpha
+// 副通道 → 整帧不透明 → 露出素材白色 RGB 底（狗站在白卡片上）。CPU 软解路径 alpha
+// 完好（沙箱无 GPU 取证：76% 全透 + 四角 alpha=0）。桌宠视频全在 petStage 渲染，
+// 软解 1-2 路 220px 小视频 CPU 开销可忽略。Windows 无此问题，保持不变。
+if (process.platform === 'darwin') {
+  app.commandLine.appendSwitch('disable-accelerated-video-decode');
+}
+// macOS（2026-11-18 白底修复第二轮）：视频软解后桌面仍白卡 → 嫌疑上移到 GPU 合成器：
+// Chromium 120 的 GPU 合成路径在 macOS 27 上传视频纹理时丢失 alpha（YUVA→RGBA 纹理
+// 转换），软解开关只换解码器不换合成路径。整体 GPU 合成软件化（SwiftShader/Skia 软光
+// 栅），本应用为小面板+小视频，性能影响可忽略。Windows 不变。
+// 2026-11-20 白底根治第三轮：素材已重编码为真 alpha（绿幕+黑边洪泛抠像，yuva420p
+// BlockAdditional），不再依赖 GPU 路径保留 alpha。且 Chromium 软件合成路径同样会丢
+// 视频 alpha（disable-gpu 反而引入新白底风险），故回退本开关，保留软解开关。
+// if (process.platform === 'darwin') {
+//   app.commandLine.appendSwitch('disable-gpu');
+// }
 const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
@@ -1103,9 +1121,12 @@ window.__clipSenseBarHover = function (on) {
       this._positionAndShowPet();
       return;
     }
+    // macOS Electron 对 220px 左右的小型透明窗口存在原生表面变白问题
+    //（Electron #38630/#44884）。宿主放大但渲染层宠物仍保持 210px，绕开该路径。
+    const petHostSize = process.platform === 'darwin' ? 360 : 220;
     const win = new BrowserWindow({
-      width: 220,
-      height: 220,
+      width: petHostSize,
+      height: petHostSize,
       frame: false,
       transparent: true,
       backgroundColor: '#00000000',
@@ -1113,7 +1134,17 @@ window.__clipSenseBarHover = function (on) {
       resizable: false,
       skipTaskbar: true,
       show: false,
-      focusable: false, // 全程不夺焦（focus-tracker 链路安全）
+      // macOS（2026-11-17 实机修复「桌宠白色背景」根因）：focusable:false 在 darwin
+      // 走 NSPanel 路径，透明舞台在 NSPanel 上渲染白底（整块白色背景的真正来源）——
+      // 与 triggerWindow 2026-11-11「小白框」同源（同注释）。triggerWindow 的成功修法：
+      // mac 改普通窗口 + showInactive 不夺焦 + 点击穿透，行为等价。petStage 显示本就
+      // 走 showInactive（_showPetWindow），命中穿透由 setIgnoreMouseEvents 自持轮询驱动，
+      // 与 focusable 无关，故 macOS 置 focusable:true 即可消除 NSPanel 白底。
+      // Windows 保持 focusable:false 不变（无 NSPanel 路径；focus-tracker 链路安全）。
+      focusable: process.platform === 'darwin',
+      // 系统圆角+阴影一并关（darwin 下 frame:false 仍保留 Cocoa 强制圆角/投影，
+      // 透明舞台表现为圆角灰白描边）。两开关仅 darwin 生效，其余平台无行为变化。
+      ...(process.platform === 'darwin' ? { hasShadow: false, roundedCorners: false } : {}),
       webPreferences: {
         // 卡顿修复（2026-10-29）：永不夺焦窗口在部分场景被判后台 → rAF/定时器节流；
         // 与离线渲染探针同款关闭（探针 main.js 早已验证 backgroundThrottling 必要性）
@@ -1134,6 +1165,33 @@ window.__clipSenseBarHover = function (on) {
     });
     this.petStage = win;
     win.loadFile(path.join(__dirname, '../renderer/pet-stage.html'));
+    // macOS 不夺焦守卫（2026-11-17，配套 focusable 普通窗口化）：普通窗口点击会被
+    // 系统激活（夺走用户当前应用焦点），破坏「桌宠永不跟焦」架构（focus-tracker 的
+    // 粘贴目标跟踪依赖前台窗口稳定）。聚焦后延迟释放——延迟窗口内渲染层仍可收
+    // keydown（右键菜单 Esc 关闭在普通窗口下恢复可用）；fire 时拖拽已开始则豁免
+    // （mousedown→dragstart 间隙立即 blur 会扰动手势输入面）。等价 Windows 侧
+    // _applyNoActivate 的 NOACTIVATE 语义（mac 无该样式，用 blur 兜底）。
+    if (process.platform === 'darwin') {
+      let _petBlurTimer: ReturnType<typeof setTimeout> | null = null;
+      const _petCreatedAt = Date.now();
+      // 启动宽限（2026-11-22 回归修复）：启动后 ~1.5s 内 petStage 的 showInactive/
+      // setBounds 自碰会激活窗口并触发 focus → 120ms 后 blur。若此期间主面板正在
+      // 走「启动优先展示」焦点链（forceShow→prepare→show→focus），blur 会把焦点
+      // 释放给前一个应用、打断面板弹出（实机：今天起启动后主面板不主动弹出）。
+      // 宽限期内不抢也不释放——该窗口期的夺焦由主面板自身流程接管；宽限期后
+      // blur 守卫恢复「永不跟焦」语义（点击穿透自持，与启动无关）。
+      const _startupGraceUntil = _petCreatedAt + 1500;
+      win.on('focus', () => {
+        if (Date.now() < _startupGraceUntil) return;
+        if (_petBlurTimer) clearTimeout(_petBlurTimer);
+        _petBlurTimer = setTimeout(() => {
+          _petBlurTimer = null;
+          if (this._petDragOffset == null && !win.isDestroyed()) {
+            try { win.blur(); } catch (_) { /* 竞态静默 */ }
+          }
+        }, 120);
+      });
+    }
     // v8 取证网（2026-10-14）：渲染层零输出的情况下，把 console（含未捕获错误）
     // 转发落盘 + 3s 后探询内部状态，断点必须能从日志读出
     win.webContents.on('console-message', (_e: unknown, level: unknown, message: string, line: number, sourceId: string) => {
@@ -1211,6 +1269,25 @@ window.__clipSenseBarHover = function (on) {
     if (this._petShowFallback) { clearTimeout(this._petShowFallback); this._petShowFallback = null; }
     const win = this.petStage;
     if (!win || win.isDestroyed()) return;
+    // [ALPHA-PROBE-MAIN 2026-11-18] 白底修复取证（验收后移除）：窗口 show 后 8s 抓
+    // petStage 合成画面落盘——capturePage 走窗口合成路径，与渲染层 canvas 探针（2D
+    // 解码路径）对照，可区分「解码丢 alpha」vs「合成丢 alpha」。fire-once。
+    if (!(this as any)._alphaProbeDone) {
+      (this as any)._alphaProbeDone = true;
+      const _probeLog = (m: string): void => { try { require('fs').appendFileSync('/tmp/pet-stage-capture.log', new Date().toISOString() + ' ' + m + '\n'); } catch (_) {} };
+      _probeLog('probe scheduled (showPetWindow)');
+      setTimeout(() => {
+        try {
+          _probeLog('fire: destroyed=' + win.isDestroyed() + ' visible=' + win.isVisible());
+          if (!win.isDestroyed()) {
+            win.webContents.capturePage().then((img) => {
+              try { require('fs').writeFileSync('/tmp/pet-stage-capture.png', img.toPNG()); _probeLog('capturePage saved'); }
+              catch (e) { _probeLog('save fail: ' + String(e)); }
+            }).catch((e) => _probeLog('capturePage reject: ' + String(e)));
+          }
+        } catch (e) { _probeLog('outer fail: ' + String(e)); }
+      }, 8000);
+    }
     _modDiag('[Pet] _showPetWindow entered visibleBefore=' + (win.isVisible() ? 'Y' : 'N')); // B1b：路径证实
     win.showInactive();
     // show 后重申置顶（2026-10-14 置顶修复；2026-10-20 二次修复）：hide→show 周期不保证保留
@@ -1330,11 +1407,12 @@ window.__clipSenseBarHover = function (on) {
     this.initTray(); // 重建单选态
   }
 
-  /** 舞台逻辑尺寸（2026-11-04 显示不全修复）：220 × petScale，随缩放增长；
+  /** 舞台逻辑尺寸：macOS 使用 360px 透明宿主（绕开小窗口白底），其他平台 220px；
    *  live2d 大档（2.0/2.2）模型高度超 220 窗口 → 头顶被裁（小M 实机截图实证）。
    *  底边锚定不变：调用方 setBounds 的 y = 旧底边 - 新高度。 */
   _petStageSize(): { w: number; h: number } {
-    const s = Math.round(220 * (this._petScale || 1));
+    const base = process.platform === 'darwin' ? 360 : 220;
+    const s = Math.round(base * (this._petScale || 1));
     return { w: s, h: s };
   }
 

@@ -101,8 +101,13 @@
     user-select: none;
     cursor: pointer;
     transition: opacity 180ms ease;
+    visibility:hidden;
   }
   #petVideo2 { opacity: 0; }
+  /* WebM 直接参与 Chromium 合成时 macOS 会把 alpha 纹理铺成白底。
+     视频仍保留作解码/几何来源，最终像素改由透明 Canvas 合成。 */
+  #petCanvas { position:absolute; left:50%; bottom:0; width:210px; height:210px;
+    transform:translateX(-50%); pointer-events:none; z-index:2; }
   /* 唱歌音符层（webm 专用）：跟随 video 底部居中，不吃鼠标事件。
      仅播放 light0song 时由 JS 注入音符粒子，从狗嘴位置上升飘散并淡出——
      给「唱歌」一个摇摆没有的视觉标识，解决两者都是「张嘴近景小幅晃」难分辨的问题。 */
@@ -144,6 +149,7 @@
 
 <video id="petVideo" muted autoplay loop playsinline preload="auto"></video>
 <video id="petVideo2" muted autoplay playsinline preload="auto"></video>
+<canvas id="petCanvas" width="210" height="210"></canvas>
 <div id="songFx"></div>
 <canvas id="vrmCanvas" style="position:absolute;inset:0;width:100%;height:100%;display:none"></canvas>
 <div id="ctxMenu">
@@ -189,6 +195,24 @@ if (window.__petIpcErr) {
 const ipcRenderer = window.__petIpc;
 const video = document.getElementById('petVideo');
 const video2 = document.getElementById('petVideo2');
+const petCanvas = document.getElementById('petCanvas');
+const petCtx = petCanvas && typeof petCanvas.getContext === 'function'
+  ? petCanvas.getContext('2d', { alpha: true }) : null;
+function paintPetCanvas() {
+  if (!petCtx) { requestAnimationFrame(paintPetCanvas); return; }
+  petCtx.clearRect(0, 0, petCanvas.width, petCanvas.height);
+  if (mode === 'webm') {
+    [video, video2].forEach(function (v) {
+      if (v.readyState >= 2 && v.videoWidth) {
+        petCtx.globalAlpha = Number(v.style.opacity || (v === frontV ? 1 : 0));
+        petCtx.drawImage(v, 0, 0, petCanvas.width, petCanvas.height);
+      }
+    });
+    petCtx.globalAlpha = 1;
+  }
+  requestAnimationFrame(paintPetCanvas);
+}
+requestAnimationFrame(paintPetCanvas);
 let frontV = video;   // 当前显示层
 let backV = video2;   // 预加载缓冲层（双缓冲交叉淡入 2026-10-20）
 function eachV(fn) { fn(video); fn(video2); }
@@ -198,6 +222,7 @@ let mode = 'none';           // webm | sprite
 window.__petMode = mode;
 function setMode(m) {
   mode = m;
+  petCanvas.style.display = m === 'webm' ? 'block' : 'none';
   // 切离 webm（进 sprite/live2d）时清掉唱歌音符层，避免残留动画浮在非 webm 画面上
   if (m !== 'webm' && typeof clearSongFx === 'function') clearSongFx();
   try { window.__petMode = m; } catch (_) {}
@@ -217,6 +242,8 @@ let petScale = 1.0;
 function applyScale(s) {
   petScale = Number(s) || 1;
   eachV(function (v) { v.style.height = Math.round(210 * petScale) + 'px'; });
+  petCanvas.style.height = Math.round(210 * petScale) + 'px';
+  petCanvas.style.width = Math.round(210 * petScale) + 'px';
   // 唱歌音符层随桌宠同步缩放。容器固定 210px，仅用 scale（锚点=底边中心）放大，
   // 保证 vertical 位置与 video「底部居中」对齐；不再改宽高，避免与 scale 重复缩放。
   const fxEl = document.getElementById('songFx');
@@ -338,6 +365,7 @@ function play(name, loop) {
     outgoing.style.opacity = '0';
     frontV = incoming;
     backV = outgoing;
+    petCanvas.style.display = 'block';
     if (fadePauseTimer) clearTimeout(fadePauseTimer);
     fadePauseTimer = setTimeout(function () {
       if (backV === outgoing && !outgoing.paused) outgoing.pause(); // 淡出后暂停隐藏层
@@ -1306,6 +1334,35 @@ function live2dBounds() {
   }, 3000);
   // 首个 loadeddata 若 3s 未触发（异常），paint-ready 由主进程 1200ms 兜底
 })();
+
+// ===== [ALPHA-PROBE 2026-11-18] 运行时视频帧 alpha 取证（验收后移除）=====
+(function () {
+  function probe(tag) {
+    try {
+      var v = document.getElementById('petVideo');
+      if (!v || v.readyState < 2 || !v.videoWidth) { console.log('[ALPHA-PROBE] skip ' + tag + ' notready'); return; }
+      var c = document.createElement('canvas'); c.width = 110; c.height = 110;
+      var ctx2d = c.getContext('2d'); ctx2d.drawImage(v, 0, 0, 110, 110);
+      var d = ctx2d.getImageData(0, 0, 110, 110).data;
+      var h = [0, 0, 0, 0], white = 0, bgR = 0, bgG = 0, bgB = 0, bgN = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        var a = d[i + 3]; h[a < 16 ? 0 : a < 128 ? 1 : a < 240 ? 2 : 3]++;
+        if (a > 128 && d[i] > 235 && d[i + 1] > 235 && d[i + 2] > 235) white++;
+        if (a < 16) { bgR += d[i]; bgG += d[i + 1]; bgB += d[i + 2]; bgN++; }
+      }
+      var t = d.length / 4;
+      var corners = [[0, 0], [109, 0], [0, 109], [109, 109]].map(function (p) { var j = (p[1] * 110 + p[0]) * 4; return [d[j], d[j + 1], d[j + 2], d[j + 3]]; });
+      var out = { ts: Date.now(), tag: tag, mode: window.__petMode || '?', video: v.videoWidth + 'x' + v.videoHeight, hist: { fullTransparent: (h[0] / t).toFixed(2), semi: (h[1] / t).toFixed(2), mid: (h[2] / t).toFixed(2), opaque: (h[3] / t).toFixed(2) }, whiteOpaquePx: (white / t).toFixed(2), corners: corners, 透明区平均RGB: bgN ? [Math.round(bgR / bgN), Math.round(bgG / bgN), Math.round(bgB / bgN)] : null };
+      var s = JSON.stringify(out);
+      try { require('fs').appendFileSync('/tmp/pet-alpha-probe.log', new Date().toISOString() + ' ' + s + '\n'); } catch (e) {}
+      console.log('[ALPHA-PROBE] ' + s);
+    } catch (e) { console.log('[ALPHA-PROBE] fail ' + e.message); }
+  }
+  setTimeout(function () { probe('t5s'); }, 5000);
+  setTimeout(function () { probe('t12s'); }, 12000);
+  setTimeout(function () { probe('t30s'); }, 30000);
+})();
+// ===== [ALPHA-PROBE end] =====
 </script>
 <script type="importmap">
 {"imports":{
