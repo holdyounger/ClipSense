@@ -5,6 +5,35 @@
 > [GitHub Releases](https://github.com/holdyounger/ClipSense/releases)。
 
 ---
+## v1.0.22（2026-11-22）—— macOS 桌宠白底根治 + 启动主面板不弹出修复
+
+### 🛠 修复
+
+- **macOS 桌宠白色背景板**：白底真正来源是 `focusable:false` 在 darwin 走 NSPanel 路径、
+  透明舞台在 NSPanel 上渲染白底（与 triggerWindow「小白框」同源）。改普通窗口
+  （focusable=true）+ showInactive 不夺焦 + 点击穿透自持，行为等价；配套关闭
+  hasShadow/roundedCorners（Cocoa 强制圆角/投影）。叠加 GPU 路径 VP9 硬解丢 WebM
+  alpha 副通道问题，macOS 加 `disable-accelerated-video-decode` 走软解。
+  渲染层改用 `#petCanvas` 每帧 drawImage 双 video 呈现，绕开合成路径丢 alpha 风险。
+  Windows 零改动
+- **macOS 启动后主面板不主动弹出**：弹出链 `_showWindow` 依赖渲染层 prepare 双 rAF
+  绘制确认才 showInactive，macOS 27.2 上隐藏透明窗口 compositor 间歇不出帧、
+  Promise 永不 resolve（实测 9s~146s，正常 0.77s），窗口永不显示且轮询被
+  `'pending'` 锁冻结。prepare 加 900ms 硬超时兜底（超时无动画显示，弹出链从此
+  有界）；`'in'` 滑入前双 rAF 加 400ms 硬超时（防窗口已 show 但内容停在透明态）；
+  forceHide 补作废在途 show 链；macOS 显式豁免 App Nap（后台工具纳管冻结是
+  rAF 停摆的土壤）。移除前一轮无效的同步 showInactive 兜底
+- **启动可观测性**：新增 `[Boot]` 进程进入/ready/init 完成/1.5s 启动自检四处取证；
+  抢单实例锁失败与 second-instance 静默退出留痕（此前僵尸实例持锁 40min 吞掉
+  后续所有启动且无日志可归因）
+
+### 🧪 验证
+
+- TDD：prepare 冻结/正常/forceHide 作废三路径测试（Red→Green）；全量 821 项单测通过
+- 真实 Electron 独立舞台截图取证：解码透明 0.7583 / 合成透明 0.7798 / 不透明角色 0.2077
+- 隔离 userData 实机启动：init 完成即 panelVisible=true，弹出链 prepare→show 256ms
+- 用户实机确认：白底消除、启动后主面板主动弹出
+
 ## v1.0.21（2026-11-18）—— README 内嵌演示视频
 
 ### 📝 文档
