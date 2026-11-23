@@ -51,11 +51,23 @@
     white-space: nowrap;
   }
   .item:hover { background: var(--hover); }
+  /* 勾选/单选控件外观（2026-11-19）：原生 Menu 由 OS 画 checkbox/radio，HTML 浮窗
+     以前只有裸 ✓/空 字符，状态难辨。这里画出方框/圆框，选中填充品牌色，一眼可辨。 */
   .item .mark {
-    width: 15px; flex: 0 0 15px; text-align: center;
-    font-size: 12px; color: var(--brand); font-weight: 700;
+    width: 16px; flex: 0 0 16px; text-align: center;
+    font-size: 11px; color: #fff; font-weight: 700;
   }
-  .item .mark.radio { font-size: 15px; }
+  .item .mark.checkbox, .item .mark.radio {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; line-height: 1;
+    background: #fff; border: 1.5px solid #b8b3c9;
+    color: transparent; transition: background .12s ease, border-color .12s ease;
+  }
+  .item .mark.checkbox { border-radius: 4px; }
+  .item .mark.radio { border-radius: 50%; font-size: 9px; }
+  .item .mark.checkbox.on, .item .mark.radio.on {
+    background: var(--brand); border-color: var(--brand); color: #fff;
+  }
   .item .label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
   .item .caret { color: var(--sub); font-size: 10px; flex: 0 0 auto; }
   .sep { height: 1px; background: var(--line); margin: 5px 4px; }
@@ -281,6 +293,17 @@
     (top.children || []).forEach(function (c) { subpanel.appendChild(renderNode(c)); });
   }
 
+  // 同步勾选/单选标记外观（render 与点击后共用，保证状态一致）
+  function syncMark(mark, node) {
+    if (node.type === 'checkbox') {
+      mark.className = 'mark checkbox' + (node.checked ? ' on' : '');
+      mark.textContent = node.checked ? '\u2713' : '';
+    } else if (node.type === 'radio') {
+      mark.className = 'mark radio' + (node.checked ? ' on' : '');
+      mark.textContent = node.checked ? '\u25CF' : '';
+    }
+  }
+
   // 渲染单个菜单节点：分组 / 分隔线 / 滑块 / 普通 / radio / checkbox / 子菜单
   function renderNode(node) {
     if (node.type === 'group') return renderGroup(node);
@@ -324,8 +347,34 @@
     if (node.action) {
       row.addEventListener('click', function () {
         if (closing) return;
+        // checkbox/radio：把新的选中态随 action 回传主进程，供 click(menuItem) 读取。
+        // 原生菜单里这两类项由 OS 自动维护 checked 并回调；HTML 浮窗没有 OS 菜单，
+        // 必须自己计算 + 透传，否则 _dispatchTrayAction 无参调用 → menuItem.checked
+        // 抛 TypeError 被静默吞掉 → 开关永远不生效。
+        let checkedArg;
+        if (node.type === 'checkbox') {
+          checkedArg = !node.checked;
+          node.checked = checkedArg;
+          syncMark(mark, node);
+        } else if (node.type === 'radio') {
+          checkedArg = true;
+          node.checked = true;
+          syncMark(mark, node);
+          // 同组互斥：清掉兄弟 radio 的标记（数据 + DOM），与原生 radio 一致
+          const parent = row.parentNode;
+          if (parent) {
+            for (let i = 0; i < parent.children.length; i++) {
+              const sib = parent.children[i];
+              if (sib !== row && sib._menuNode && sib._menuNode.type === 'radio') {
+                sib._menuNode.checked = false;
+                const sm = sib.querySelector('.mark');
+                if (sm) syncMark(sm, sib._menuNode);
+              }
+            }
+          }
+        }
         closing = true;
-        ipcRenderer.send('tray-menu:action', node.action);
+        ipcRenderer.send('tray-menu:action', node.action, checkedArg);
         ipcRenderer.send('tray-menu:close');
       });
     }

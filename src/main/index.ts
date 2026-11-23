@@ -813,7 +813,10 @@ window.__clipSenseBarHover = function (on) {
    * 函数存入 _trayActions 表，渲染层点击时带 id 回传，由 _dispatchTrayAction 执行。
    * 透明度两入口（label 含「透明度…」）转成 slider 节点，内嵌到浮窗菜单里。
    */
-  _trayActions: Record<string, () => void> = {};
+  /** click 回调签名：原生 checkbox/radio 的 click 会收到 menuItem（含 checked），
+   *  其余项无参。HTML 浮窗化后由渲染层回传 checked，_dispatchTrayAction 合成
+   *  menuItem 传入，避免依赖 menuItem.checked 的开关全部 TypeError。 */
+  _trayActions: Record<string, (menuItem?: { checked: boolean }) => void> = {};
   _serializeTrayTemplate(): Record<string, unknown>[] {
     this._trayActions = {};
     let seq = 0;
@@ -848,12 +851,17 @@ window.__clipSenseBarHover = function (on) {
     return serialize(this._trayTemplate());
   }
 
-  /** 执行渲染层回传的菜单动作（经 action id 查表，复用原 template click 函数） */
-  _dispatchTrayAction(id: unknown): void {
+  /** 执行渲染层回传的菜单动作（经 action id 查表，复用原 template click 函数）。
+   *  checkbox/radio 项由渲染层带 checked 回传，这里合成 menuItem 传入，
+   *  让 click:(menuItem)=>menuItem.checked 的开关真正生效（原生菜单语义对齐）。 */
+  _dispatchTrayAction(id: unknown, checked?: unknown): void {
     if (typeof id !== 'string') return;
     const fn = this._trayActions[id];
     if (typeof fn === 'function') {
-      try { fn(); } catch (_) { /* 单项动作异常不阻断菜单 */ }
+      try {
+        if (typeof checked === 'boolean') fn({ checked: checked });
+        else fn();
+      } catch (_) { /* 单项动作异常不阻断菜单 */ }
     }
   }
 
@@ -2530,8 +2538,8 @@ window.__clipSenseBarHover = function (on) {
 
     // ========== 统一托盘菜单浮窗 IPC（2026-11-16 小M） ==========
     // 渲染层点击菜单项：带 action id 回传，主进程查表执行原 template click 函数
-    ipcMain.on('tray-menu:action', (_event: unknown, id: unknown) => {
-      this._dispatchTrayAction(id);
+    ipcMain.on('tray-menu:action', (_event: unknown, id: unknown, checked?: unknown) => {
+      this._dispatchTrayAction(id, checked);
     });
     // Esc / 失焦关闭整个托盘菜单浮窗
     ipcMain.on('tray-menu:close', () => {

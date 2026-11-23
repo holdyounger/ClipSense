@@ -72,6 +72,18 @@ describe('统一托盘菜单浮窗渲染层（tray-menu.html）', () => {
     assert.match(html, /node\.action/);
   });
 
+  test('勾选/单选控件化 + checked 回传（修复开关不生效）', () => {
+    assert.match(html, /\.item \.mark\.checkbox, \.item \.mark\.radio/, '方框/圆框控件样式');
+    assert.match(html, /function syncMark\(mark, node\)/, '标记外观统一同步函数');
+    assert.match(html, /mark\.className = 'mark checkbox' \+ \(node\.checked \? ' on' : ''\)/, 'checkbox 选中态类');
+    assert.match(html, /checkedArg = !node\.checked/, 'checkbox 点击取反');
+    assert.match(html, /checkedArg = true;[\s\S]{0,60}node\.checked = true/, 'radio 点击选中');
+    assert.match(html, /sib\._menuNode\.type === 'radio'/, '同组 radio 互斥');
+    assert.match(html, /ipcRenderer\.send\('tray-menu:action', node\.action, checkedArg\)/,
+      '新 checked 随 action 回传主进程');
+    assert.match(html, /row\._menuNode = node/, '节点回挂供互斥定位');
+  });
+
   test('两条内嵌透明度滑块（range + 固定点位 + 拖动）', () => {
     assert.match(html, /node\.type === 'slider'/, '滑块作为菜单节点内嵌');
     assert.match(html, /const STOPS = \[[^\]]{10,}\]/, '固定点位多档');
@@ -167,8 +179,12 @@ describe('wiring 静态守卫（index.ts）', () => {
     assert.match(src, /_serializeTrayTemplate\(\): Record<string, unknown>\[\]/);
     assert.match(src, /this\._trayActions\[id\] = it\.click/, 'click 存入 action 表');
     assert.match(src, /node\.action = id/);
-    assert.match(src, /_dispatchTrayAction\(id: unknown\)/);
+    assert.match(src, /_dispatchTrayAction\(id: unknown, checked\?: unknown\)/);
     assert.match(src, /this\._trayActions\[id\]/);
+    assert.match(src, /if \(typeof checked === 'boolean'\) fn\(\{ checked: checked \}\)/,
+      'checkbox/radio 的 checked 合成 menuItem 传入 click 回调');
+    assert.match(src, /_trayActions: Record<string, \(menuItem\?: \{ checked: boolean \}\) => void>/,
+      'action 表签名允许 menuItem 参数');
   });
 
   test('透明度入口序列化为 slider 节点（内嵌）', () => {
@@ -215,8 +231,9 @@ describe('wiring 静态守卫（index.ts）', () => {
   });
 
   test('tray-menu:action / opacity:get / opacity:set IPC 接线', () => {
-    assert.match(src, /ipcMain\.on\('tray-menu:action'/);
-    assert.match(src, /this\._dispatchTrayAction\(id\)/);
+    assert.match(src, /ipcMain\.on\('tray-menu:action', \(_event: unknown, id: unknown, checked\?: unknown\)/,
+      'IPC handler 接收渲染层回传的 checked');
+    assert.match(src, /this\._dispatchTrayAction\(id, checked\)/);
     assert.match(src, /ipcMain\.handle\('opacity:get'/);
     assert.match(src, /ipcMain\.on\('opacity:set'/);
     assert.match(src, /this\._setPinnedOpacity\(value\)/);
