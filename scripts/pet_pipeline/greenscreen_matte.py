@@ -69,7 +69,7 @@ def process(src, dst, hue_lo=35, hue_hi=92, sat_min=60, val_min=30,
         frame = despill(frame, alpha, despill_strength)
         alpha = shrink_alpha(alpha, shrink_px)
         rgba = np.dstack([frame, alpha])
-        # 与 encode_webm.ps1 约定的 frame_%04d.png 命名保持一致
+        # 与 encode_webm.py 约定的 frame_%04d.png 命名保持一致
         cv2.imwrite(os.path.join(dst, 'frame_%04d.png' % (i + 1)), rgba)
         i += 1
         count += 1
