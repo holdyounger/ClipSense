@@ -112,7 +112,7 @@ describe('统一托盘菜单浮窗渲染层（tray-menu.html）', () => {
     assert.match(html, /key: 'opacity', label: '透明度'/, '透明度分组');
     assert.match(html, /key: 'window', label: '窗口与界面'/);
     assert.match(html, /key: 'pet', label: '桌宠'/);
-    assert.match(html, /key: 'system', label: '系统与调试'/);
+    assert.match(html, /key: 'system', label: '系统'/);
     assert.match(html, /if \(!placed\) rest\.push\(n\)/, '未识别项兜底不丢');
     assert.match(html, /n\.type === 'separator'\) return/, '原分隔线由分组边界取代');
   });

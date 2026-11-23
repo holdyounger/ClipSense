@@ -107,6 +107,8 @@ interface MenuWindowWindow {
   on: (event: string, listener: (...args: any[]) => void) => void;
   webContents: {
     send: (channel: string, payload?: unknown) => void;
+    /** 主题色换肤（2026-11-19）：注入 CSS 变量到窗口 document 根元素 */
+    executeJavaScript: (code: string) => Promise<unknown>;
     /** 首开防竞态：loadFile 异步，isLoading 时挂 did-finish-load 再下发载荷（2026-11-15） */
     isLoading: () => boolean;
     once: (event: string, listener: (...args: any[]) => void) => void;
@@ -262,6 +264,7 @@ const skillsService = require('./skills-service') as typeof import('./skills-ser
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
 const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computePetHit, isInPetShowGrace, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeHex, deriveTheme, themeInjectScript, THEME_PRESETS } = require('./theme') as typeof import('./theme');
 const StatsModule = require('./stats') as typeof import('./stats');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
@@ -769,6 +772,10 @@ window.__clipSenseBarHover = function (on) {
         },
       },
       {
+        // 2026-11-19 小M：主题色选择器（序列化为 theme 节点内嵌到统一浮窗）
+        label: '主题色…',
+      },
+      {
         // 2026-11-16 小M：固定档透明度滑块（序列化为 slider 节点内嵌到统一浮窗）
         label: '固定透明度…',
       },
@@ -825,6 +832,11 @@ window.__clipSenseBarHover = function (on) {
       for (const it of items) {
         if (it && it.visible === false) continue; // 模式门控：不可见项直接剔除
         if (it && it.type === 'separator') { out.push({ type: 'separator' }); continue; }
+        // 主题色入口 → 内嵌选择器节点（预定义色板 + RGB 输入）
+        if (it && it.label === '主题色…') {
+          out.push({ type: 'theme', label: it.label });
+          continue;
+        }
         // 透明度入口 → 内嵌滑块节点（focus 令牌用于打开时高亮）
         if (it && typeof it.label === 'string' && /透明度…$/.test(it.label)) {
           out.push({ type: 'slider', kind: it.label.indexOf('固定') === 0 ? 'pinned' : 'passthrough', label: it.label });
@@ -899,6 +911,8 @@ window.__clipSenseBarHover = function (on) {
       items: this._serializeTrayTemplate(),
       pinned: this._getPinnedOpacity() ?? 0.6,
       passthrough: this._getPassthroughOpacity() ?? 0.5,
+      themeColor: this._getThemeColor(),
+      themePresets: THEME_PRESETS,
     };
     const deliver = () => { if (!win.isDestroyed()) win.webContents.send('tray-menu:init', payload); };
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', deliver);
@@ -1946,6 +1960,49 @@ window.__clipSenseBarHover = function (on) {
     if (this.edgeDetector) this.edgeDetector.setPinnedOpacity(v);
   }
 
+  // ========== 用户自定义主题色（2026-11-19） ==========
+  /** 读取持久化色号：null / 非法配置一律回落默认紫（由 deriveTheme 兜底） */
+  _getThemeColor(): string | null {
+    try { return normalizeHex(this.storage._readConfig().themeColor); }
+    catch (_) { return null; }
+  }
+
+  /**
+   * 写入色号 + 全窗口生效。
+   * null = 恢复默认（config 存 null，渲染回落 #6c5ce7）。
+   * 广播 theme:changed 让选择器 UI 同步（多窗口可能同时开着托盘浮窗）。
+   */
+  _setThemeColor(input: unknown): void {
+    const hex = normalizeHex(input); // 非法输入 → null（恢复默认），不落脏值
+    try { this.storage._writeConfig({ themeColor: hex }); } catch (_) { /* 持久化失败不阻断 */ }
+    for (const w of BrowserWindow.getAllWindows()) this._hookThemeInjection(w);
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('theme:changed', hex);
+    }
+  }
+
+  /** 单窗口注入主题 CSS 变量（渲染层 :root 默认值被内联 style 覆盖） */
+  _applyThemeToWindow(win: MenuWindowWindow): void {
+    if (!win || win.isDestroyed() || !win.webContents) return;
+    const script = themeInjectScript(deriveTheme(this._getThemeColor()));
+    win.webContents.executeJavaScript(script).catch(() => { /* 加载竞态静默，下一钩子重试 */ });
+  }
+
+  /** 注入时机守卫：仍在加载的窗口挂首帧钩子，已加载的立即注入（避免启动竞态丢色） */
+  _hookThemeInjection(win: MenuWindowWindow): void {
+    if (!win || win.isDestroyed() || !win.webContents) return;
+    if (win.webContents.isLoading()) {
+      win.webContents.once('did-finish-load', () => this._applyThemeToWindow(win));
+    } else {
+      this._applyThemeToWindow(win);
+    }
+  }
+
+  /** 所有现存窗口注入（启动时 + 改色时） */
+  _applyThemeToWindows(): void {
+    for (const w of BrowserWindow.getAllWindows()) this._hookThemeInjection(w);
+  }
+
   _buildHideDelaySubmenu() {
     const options = [
       { label: '3 秒', value: 3000 },
@@ -2565,6 +2622,19 @@ window.__clipSenseBarHover = function (on) {
         this._setPassthroughOpacity(value);
       }
     });
+    // 主题色：读取当前色号 + 预定义色板（init 亦下发，invoke 供渲染层主动对账）
+    ipcMain.handle('theme:get', () => ({
+      color: this._getThemeColor(),
+      presets: THEME_PRESETS,
+    }));
+    // 主题色写值：color=#rrggbb 或 null（恢复默认）；非法值由 _setThemeColor 回落默认
+    ipcMain.on('theme:set', (_event: unknown, p: { color: string | null } | string | null) => {
+      this._setThemeColor(p && typeof p === 'object' ? p.color : p);
+    });
+    // 新窗口创建后首帧注入主题变量（覆盖各 HTML :root 的硬编码默认值）
+    app.on('browser-window-created', (_e: unknown, win: MenuWindowWindow) => {
+      this._hookThemeInjection(win);
+    });
 
     // ========== 桌宠舞台 IPC（P0 spike，2026-10-13） ==========
     // paint-ready：渲染层双 rAF 首帧确认（兑底定时器见 _positionAndShowPet）
@@ -3076,6 +3146,9 @@ window.__clipSenseBarHover = function (on) {
     this.initTray();
     this.registerShortcut();
     this.setupIPC();
+
+    // 主题色启动应用（2026-11-19）：已创建窗口主动注入；后续窗口走 browser-window-created 钩子
+    this._applyThemeToWindows();
 
     // 初始化边缘检测器（贴边 / 自动隐藏 / 鼠标唤出）
     // createWindow() 已同步创建两窗口；! 为类型收窄（运行时恒非空）
