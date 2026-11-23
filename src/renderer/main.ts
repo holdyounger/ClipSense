@@ -573,9 +573,19 @@ function applyStatsSummary(s: { level: number; title: string; nextNeed: number; 
   if (badge) badge.classList.add('stats-show');
 
   // 数据绑定（新 DOM 元素 ID）
+  // 今日瓦片数值 id（变更时触发瓦片打卡跳动；首推 dataset.previousText=null 不跳）
+  const SCS_TICK_IDS = new Set(['shcCopy', 'shcPaste', 'shcStreak', 'shcTotalExp']);
   const setText = (id: string, v: string): void => {
     const el = document.getElementById(id);
-    if (el) el.textContent = v;
+    if (!el) return;
+    const prev = el.dataset.previousText;
+    el.dataset.previousText = v;
+    if (el.textContent === v) return; // 同值幂等
+    el.textContent = v;
+    if (SCS_TICK_IDS.has(id) && prev !== undefined) {
+      const tile = el.closest('.scs-tile') as HTMLElement | null;
+      if (tile) { tile.classList.remove('scs-tile-tick'); void tile.offsetWidth; tile.classList.add('scs-tile-tick'); }
+    }
   };
   setText('statsLv', String(s.level));         // 环心数字
   setText('statsLvNum', String(s.level));      // 等级 tab 环心大数字（此前未绑定，静态 2）
@@ -596,6 +606,10 @@ function applyStatsSummary(s: { level: number; title: string; nextNeed: number; 
   setText('shcCopy', String(s.todayCopy));     // 今日复制
   setText('shcPaste', String(s.todayPaste));   // 今日粘贴
   setText('shcStreak', String(s.streakCurrent)); // 连续天数
+  // 断签视觉（2026-11-20）：streak=0 → 瓦片熄灭（is-cold），恢复 → 点灯
+  const _streakEl = document.getElementById('shcStreak');
+  const _streakTile = _streakEl ? (_streakEl.closest('.scs-tile--streak') as HTMLElement | null) : null;
+  if (_streakTile) _streakTile.classList.toggle('is-cold', s.streakCurrent === 0);
   setText('shcTotalExp', String(s.exp ?? s.totalCopy ?? 0)); // 累计经验（summary 键为 exp，此前读 totalCopy 恒 0——顺手修复）
   setText('shcExpLv', (s.exp ?? s.totalCopy ?? 0) + ' exp'); // 等级 tab 经验 chip（新增）
   setText('statsStreakLine', `🔥 连续 ${s.streakCurrent} 天`); // 等级 tab streak chip（此前未绑定，静态文案——顺手修复）
@@ -737,6 +751,14 @@ if (statsFooterEl) {
   statsFooterEl.addEventListener('click', (e: Event) => {
     const tab = (e.target as HTMLElement).closest('.scs-tab');
     if (tab) switchStatsTab((tab as HTMLElement).dataset.tab || 'level');
+  });
+  // 打卡跳动自清（2026-11-20）：animationend 移除 scs-tile-tick，重复推送可重放
+  statsFooterEl.addEventListener('animationend', (e: Event) => {
+    const t = e.target as HTMLElement;
+    if (t && t.classList && t.closest) {
+      const tile = t.closest('.scs-tile') as HTMLElement | null;
+      if (tile && tile.classList.contains('scs-tile-tick')) tile.classList.remove('scs-tile-tick');
+    }
   });
 
   // tab 悬停切换（2026-11-11 小M：免点选，鼠标位置直接切换）+ 初始流光定位

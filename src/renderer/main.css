@@ -31,6 +31,15 @@
   --fd-acrylic-bg: rgba(44, 44, 52, 0.88);
 }
 
+/* ========== 统计徽章·指标色（2026-11-20 今日页签图标分色；与趋势图柱色同源） ========== */
+:root {
+  --scs-c-copy: #a29bfe;    /* 复制：accent-hover（= .tr-b-copy 顶色） */
+  --scs-c-paste: #0ce0e5;   /* 粘贴：cyan（= .tr-b-paste 顶色） */
+  --scs-c-streak: #ffb454;  /* 连续：琥珀（火焰语义） */
+  --scs-c-exp: #ffd166;    /* 经验：金（累计成就） */
+  --scs-tile-pop: cubic-bezier(0.34, 1.56, 0.64, 1); /* 弹跳曲线（同 scs-pop） */
+}
+
 
 html, body {
   width: 100%;
@@ -1498,6 +1507,63 @@ body.mod-pass .hint {
 
 
 
+
+/* --- 今日瓦片·弹跳入场（2026-11-20：fade-up→pop，过冲回弹更"打卡"） --- */
+@keyframes scs-tile-pop {
+  0% { opacity: 0; transform: translateY(10px) scale(0.86); }
+  60% { opacity: 1; transform: translateY(-2px) scale(1.03); }
+  100% { opacity: 1; transform: none; }
+}
+/* --- 今日瓦片·数值打卡跳动（JS 变更检测加 .scs-tile-tick，animationend 自清） --- */
+.scs-tile-tick .scs-tile-num { animation: scs-num-tick 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.scs-tile-tick .scs-tile-ic { animation: scs-ic-tick 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes scs-num-tick {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.28); text-shadow: 0 0 10px currentColor; }
+  100% { transform: scale(1); }
+}
+@keyframes scs-ic-tick {
+  0% { transform: rotate(0) scale(1); }
+  35% { transform: rotate(-8deg) scale(1.18); }
+  70% { transform: rotate(4deg) scale(1.06); }
+  100% { transform: rotate(0) scale(1); }
+}
+/* --- 连续天数·火焰微闪（常驻轻微律动；断签 is-cold 熄灭） --- */
+.scs-tile--streak .scs-tile-svg { animation: scs-flame-flick 2.2s ease-in-out infinite; }
+@keyframes scs-flame-flick {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12) rotate(-3deg); opacity: 0.82; }
+}
+.scs-tile--streak.is-cold { opacity: 0.45; filter: grayscale(1); }
+.scs-tile--streak.is-cold .scs-tile-svg { animation: none; }
+/* --- 升级脉冲（2026-11-20 补齐：此前 main.ts 加 shc-pulse 无样式 = 死动画） --- */
+.shc-pulse { animation: shc-pulse-kf 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes shc-pulse-kf {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.5); text-shadow: 0 0 14px var(--accent-hover); }
+  100% { transform: scale(1); }
+}
+/* --- 统计模块·系统减弱动效（2026-11-20：此前仅 header 覆盖，统计模块未降级） --- */
+@media (prefers-reduced-motion: reduce) {
+  .scs-tile,
+  .scs-tile-tick .scs-tile-num,
+  .scs-tile-tick .scs-tile-ic,
+  .scs-tile--streak .scs-tile-svg,
+  .scs-chip-flame,
+  .scs-lv-num,
+  .shc-pulse,
+  .scs-tab-glider::after,
+  .scs-title[data-rarity="legend"] {
+    animation: none !important;
+  }
+  .scs-tab-glider,
+  .stats-popover,
+  .scs-ring-progress,
+  .scs-progress-fill {
+    transition: none !important;
+  }
+}
+
 /* ========== 统计徽章块结束 ========== */
 
 /* ========== 置顶（2026-11-11 FR1/FR2/D1/D2）========== */
@@ -1744,19 +1810,34 @@ body.mod-pass .hint {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  animation: scs-fade-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: scs-tile-pop 0.4s var(--scs-tile-pop) both;
 }
-.scs-tile:nth-child(2) { animation-delay: 0.05s; }
-.scs-tile:nth-child(3) { animation-delay: 0.1s; }
-.scs-tile:nth-child(4) { animation-delay: 0.15s; }
+
+.scs-tile:nth-child(2) { animation-delay: 0.06s; }
+.scs-tile:nth-child(3) { animation-delay: 0.12s; }
+.scs-tile:nth-child(4) { animation-delay: 0.18s; }
 .scs-tile-ic {
-  font-size: 16px;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px; margin-bottom: 3px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
 }
+.scs-tile-svg { width: 17px; height: 17px; display: block; }
+.scs-tile--copy { color: var(--scs-c-copy); }
+.scs-tile--paste { color: var(--scs-c-paste); }
+.scs-tile--streak { color: var(--scs-c-streak); }
+.scs-tile--exp { color: var(--scs-c-exp); }
+.scs-tile--copy .scs-tile-svg { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 50%, transparent)); }
+.scs-tile--paste .scs-tile-svg { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 50%, transparent)); }
+.scs-tile--streak .scs-tile-svg { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 50%, transparent)); }
+.scs-tile--exp .scs-tile-svg { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 50%, transparent)); }
+
 .scs-tile-num {
   font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
   font-size: 20px;
   font-weight: 700;
-  color: var(--accent-hover);
+  color: currentColor;
   line-height: 1.1;
 }
 .scs-tile-lb {
