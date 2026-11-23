@@ -113,6 +113,60 @@ function computePetIgnore(state: { altActive?: boolean; ctxOpen?: boolean; curso
   return !s.cursorOnModel;        // 本体=交互 / 透明区=穿透
 }
 
+/** 屏幕坐标点（screen.getCursorScreenPoint 同口径，DIP） */
+interface PetPoint { x: number; y: number }
+/** 窗口 bounds（getBounds 同口径，屏幕 DIP） */
+interface PetBounds { x: number; y: number; width: number; height: number }
+/** 本体矩形（渲染层 pet:body-rect 上报，窗口相对 DIP） */
+interface PetRect { x: number; y: number; w: number; h: number }
+
+/**
+ * 光标命中本体判定（2026-11-19 显示后鼠标延迟根因修复，可测纯函数）：
+ * 把「光标屏幕坐标 vs 窗口 bounds + 窗口相对本体矩形」的判定收敛到一处，
+ * 供显示瞬间同步探测、body-rect 到位重判、150ms 轮询三者共用，杜绝口径分叉。
+ *
+ * 关键兜底：bodyRect 为 null（渲染层首帧视频 loadeddata / Live2D 布局尚未上报）
+ * 时回退「整窗命中」——宁可透明区短暂挡一下鼠标，也不能让桌宠显示后长时间
+ * 全窗穿透、鼠标完全无响应（旧实现此处 `if (!bodyRect) return` 直接短路轮询）。
+ *
+ * 迟滞：未命中需深入 enterPx 才算进入、已命中需离界 leavePx 才算离开，
+ * 消除 150ms 轮询在矩形边缘的高频翻转抖动（沿用旧实现的 3px / 6px）。
+ */
+function computePetHit(
+  cursor: PetPoint,
+  bounds: PetBounds,
+  bodyRect: PetRect | null,
+  currentHit: boolean,
+  enterPx: number = 3,
+  leavePx: number = 6,
+): boolean {
+  const r: PetRect = bodyRect || { x: 0, y: 0, w: bounds.width, h: bounds.height };
+  const px = cursor.x - bounds.x;
+  const py = cursor.y - bounds.y;
+  const inShrunk = px >= r.x + enterPx && px <= r.x + r.w - enterPx
+    && py >= r.y + enterPx && py <= r.y + r.h - enterPx;
+  const inExpanded = px >= r.x - leavePx && px <= r.x + r.w + leavePx
+    && py >= r.y - leavePx && py <= r.y + r.h + leavePx;
+  return currentHit ? inExpanded : inShrunk;
+}
+
+/**
+ * 桌宠显示后交互宽限期判定（2026-11-19 二次修复，可测纯函数）：
+ * 桌宠显示瞬间处于穿透态（cursorOnModel=false）——透明区让行下层窗口。但用户此时
+ * 把鼠标移到桌宠上，必须靠主进程命中轮询翻回交互态；翻转滞后于点击 → 首次 mousedown
+ * 落在穿透窗口被 OS 吞掉，表现为「显示后无法及时响应鼠标」。上一轮 computePetHit 修复
+ * 只覆盖「显示瞬间鼠标恰好在窗口内」，没覆盖「显示后鼠标从别处移入」这一真实场景。
+ * 宽限期策略：show 后 graceMs 内强制整窗交互（ignore=false），保证首次点击必达；
+ * 宽限期过后交回 computePetHit 轮廓命中判定（透明区恢复让行，不长期牺牲穿透语义）。
+ * 参数用绝对时间戳（Date.now），调用方传 show 时刻，纯函数无副作用便于单测。
+ */
+function isInPetShowGrace(now: number, shownAt: number, graceMs: number): boolean {
+  if (!Number.isFinite(now) || !Number.isFinite(shownAt) || !(graceMs > 0)) return false;
+  if (shownAt <= 0) return false; // 0 = 从未显示（哨兵），不进宽限期
+  const elapsed = now - shownAt;
+  return elapsed >= 0 && elapsed < graceMs;
+}
+
 /** 桌宠延迟登场判定（2026-10-30 可测纯函数）：桌宠模式且面板在场 → 不创建舞台，
  *  待面板收起（setOnHidden）后再登场（启动优先展示主面板的需求语义）。 */
 function shouldDeferPetStage(opts: { petMode: boolean; panelVisible: boolean }): boolean {
@@ -161,4 +215,4 @@ function isDebugMenuAllowed(isPackaged: boolean, nodeEnv: string | undefined): b
   return !isPackaged && nodeEnv === 'development';
 }
 
-export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, shouldDeferPetStage, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed };
+export = { STAGE, SCALE_MIN, SCALE_MAX, stageSizeFor, normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, shouldAutoRespawn, computePetIgnore, computePetHit, isInPetShowGrace, shouldDeferPetStage, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed };

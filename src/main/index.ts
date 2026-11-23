@@ -261,7 +261,7 @@ const updater = require('./updater') as typeof import('./updater');
 const skillsService = require('./skills-service') as typeof import('./skills-service');
 const { WINDOW_WIDTH, WINDOW_HEIGHT } = require('./window-dims') as typeof import('./window-dims');
 const crashDump = require('./crash-dump') as typeof import('./crash-dump');
-const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed } = require('./pet-manager') as typeof import('./pet-manager');
+const { normalizeScale, normalizeHideMode, buildPetStageBounds, clampPetPosition, computePetIgnore, computePetHit, isInPetShowGrace, computeCtxPullBack, shouldShowPetTrayItems, isDebugMenuAllowed } = require('./pet-manager') as typeof import('./pet-manager');
 const StatsModule = require('./stats') as typeof import('./stats');
 
 // ==================== 修饰键键态探针（2026-10-13，Alt 按住穿透） ====================
@@ -379,6 +379,11 @@ class ClipboardSpikeApp {
   _petBodyRect: { x: number; y: number; w: number; h: number } | null = null;
   _petHitPollId: ReturnType<typeof setInterval> | null = null;   // Alt 穿透态（edge-detector 边沿回调写入）
   _petCursorOnModel: boolean = false; // 最近一次轮廓命中上报（未命中前默认 false = 忽略鼠标）
+  /** 桌宠显示时刻（Date.now，2026-11-19 二次修复）：show 后 ~900ms 宽限期强制整窗交互，
+   *  防「显示后鼠标从别处移入时首次 mousedown 落在穿透窗被吞」。0 = 无宽限期。 */
+  _petShownAt: number = 0;
+  _petShowGraceMs: number = 900;
+  _petGraceWasActive: boolean = false; // 上一 tick 是否处于显示宽限期（检测结束边沿用）
   _petScale: number = 1;            // 桌宠缩放系数（2026-10-14 大小可调：滚轮/托盘，持久化）
   _petCtxSaved: { x: number; y: number; width: number; height: number } | null = null; // 右键菜单扩窗前的舞台 bounds
   _trayScaleNearest: number = -1; // 托盘单选态最近档位缓存（滚轮步进防托盘闪烁，2026-11-04）
@@ -1323,6 +1328,16 @@ window.__clipSenseBarHover = function (on) {
       win.moveTop();
       _modDiag('[Pet] _showPetWindow input-surface nudge applied');
     } catch (_) { /* 竞态静默 */ }
+    // 显示后立即同步探测一次命中（2026-11-19 鼠标延迟根因修复）：
+    // 旧实现显示后 cursorOnModel 恒 false → 整窗穿透，必须等 150ms 轮询且 body-rect
+    // 已上报才翻回交互；视频首帧未就绪时轮询短路 → 鼠标"等半天"没响应。
+    // 现在 show 当场按当前光标位置判一次（body-rect 未就绪回退整窗命中），即时可点；
+    // 后续 body-rect 到位/轮询会再精判，收敛到真实轮廓。
+    // 2026-11-19 二次修复：仅"显示瞬间鼠标恰在窗口内"仍不够——真实场景是显示后鼠标
+    // 从别处移入，穿透态吞掉首次 mousedown。记录显示时刻开宽限期，窗口强制整窗交互
+    // ~900ms，保证首次点击必达；宽限期过后交回轮廓命中（透明区恢复让行）。
+    this._petShownAt = Date.now();
+    this._probePetCursorHit();
     this._applyPetIgnore();
   }
 
@@ -1699,7 +1714,12 @@ window.__clipSenseBarHover = function (on) {
     // ② ctxOpen 一票交互（菜单点击不被穿透吞）；
     // ③ Alt 恒不参与（34b9fe4 真正根因=探针假阳性，由「永不跟 Alt」结构性保留，
     //    与主面板 Alt 穿透完全解耦——edge-detector 不变）。
-    const ignore = computePetIgnore({
+    // 显示后宽限期（2026-11-19 二次修复）：show 后 ~900ms 强制整窗交互，
+    // 覆盖「显示后鼠标从别处移入、首次 mousedown 落在穿透窗被吞」的场景。
+    // 宽限期只压 ignore（让鼠标进得来），不改 _petCursorOnModel 轮廓语义；
+    // 到期后自然回落 computePetIgnore 轮廓判定，透明区继续让行。
+    const inGrace = isInPetShowGrace(Date.now(), this._petShownAt, this._petShowGraceMs);
+    const ignore = inGrace ? false : computePetIgnore({
       altActive: this._petAltActive,
       ctxOpen: this._petCtxOpen,
       cursorOnModel: this._petCursorOnModel,
@@ -1717,49 +1737,64 @@ window.__clipSenseBarHover = function (on) {
     this._ensurePetHitPoll();
   }
 
-  /** 命中穿透轮询（150ms，惰性启动）：光标 vs 本体矩形 + 置顶自愈（2026-10-23） */
+  /**
+   * 同步探测一次光标命中并（沿变化时）翻转穿透态（2026-11-19 桌宠显示后鼠标延迟修复）。
+   * 三个调用点共用：显示瞬间同步探测 / body-rect 到位立即重判 / 150ms 兜底轮询——
+   * 判定统一收敛到 computePetHit 纯函数，杜绝三处口径分叉。
+   * 关键兜底：body-rect 尚未上报时 computePetHit 回退整窗命中——保证显示瞬间
+   * 鼠标就在窗口内时立即判为交互（旧实现轮询 `if(!bodyRect) return` 短路 → 全窗穿透）。
+   */
+  _probePetCursorHit(): void {
+    const win = this.petStage;
+    if (!win || win.isDestroyed()) return;
+    if (this._petCtxOpen || this._petAltActive) return; // 交互/Alt 态由既有逻辑管
+    if (this._petDragOffset) return; // B2 守卫：拖拽手势中不翻转（150ms 翻转吞 mousedown）
+    const cur = screen.getCursorScreenPoint();
+    const b = win.getBounds();
+    const hit = computePetHit(cur, b, this._petBodyRect, this._petCursorOnModel);
+    if (hit !== this._petCursorOnModel) {
+      this._petCursorOnModel = hit;
+      _modDiag('[Pet] probe hit=' + hit + ' cur=(' + cur.x + ',' + cur.y + ') win=(' + b.x + ',' + b.y + ' ' + b.width + 'x' + b.height + ') body=' + JSON.stringify(this._petBodyRect));
+      this._applyPetIgnore();
+      // hover 链路：命中沿变化合成 mousemove（渲染层 reportHit 触发进入/离开语义）
+      try {
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cur.x - b.x), y: Math.round(cur.y - b.y) });
+      } catch (_) { /* 竞态静默 */ }
+    }
+  }
+
+  /** 命中穿透轮询（150ms，惰性启动）：置顶/显隐自愈 + 命中兜底探测（2026-10-23 / 11-19） */
   _ensurePetHitPoll(): void {
     if (this._petHitPollId) return;
     this._petHitPollId = setInterval(() => {
       const win = this.petStage;
       if (!win || win.isDestroyed()) return;
-      // 置顶自愈：模式切换/hide→show 周期可能掉出 topmost 带，150ms 内补回
+      // 置顶自愈：模式切换/hide→show 周期可能掉出 topmost 带，50ms 内补回
       if (!win.isAlwaysOnTop()) {
         win.setAlwaysOnTop(true, 'screen-saver');
       }
       // 显隐自愈（2026-11-04 Bug：桌宠不稳定不显示/疑似未置顶）：取证 TOPMOST 恒 true，
       // 非置顶不成立；主嫌疑是 setOnShown 隐藏 ↔ setOnHidden 召回的时序缝隙。
-      // 面板已收起但舞台不可见 → 幂等重 show（showInactive 不夺焦，150ms 内自愈）。
+      // 面板已收起但舞台不可见 → 幂等重 show（showInactive 不夺焦）。
       if (!win.isVisible()) {
         const panelVisibleNow = this.edgeDetector ? this.edgeDetector.isWindowVisible : false;
         if (!panelVisibleNow) {
           this._showPetWindow();
         }
       }
-      if (this._petCtxOpen || this._petAltActive) return; // 交互/Alt 态由既有逻辑管
-      if (this._petDragOffset) return; // B2 守卫：拖拽手势中轮询不翻转穿透（150ms 翻转吞 mousedown 即 v2 缺陷）
-      const r = this._petBodyRect;
-      if (!r) return;
-      const cur = screen.getCursorScreenPoint();
-      const b = win.getBounds();
-      // 迟滞命中（2026-10-29 卡顿/交互抖动修复）：150ms 轮询在矩形边缘高频翻转
-      // 穿透/交互（日志实锤 150ms 连续翻转，每翻一次 setIgnoreMouseEvents+合成事件）——
-      // 进入需深入 3px，离开需离界 6px，消除边界抖动
-      const inShrunk = cur.x >= b.x + r.x + 3 && cur.x <= b.x + r.x + r.w - 3
-        && cur.y >= b.y + r.y + 3 && cur.y <= b.y + r.y + r.h - 3;
-      const inExpanded = cur.x >= b.x + r.x - 6 && cur.x <= b.x + r.x + r.w + 6
-        && cur.y >= b.y + r.y - 6 && cur.y <= b.y + r.y + r.h + 6;
-      const hit = this._petCursorOnModel ? inExpanded : inShrunk;
-      if (hit !== this._petCursorOnModel) {
-        this._petCursorOnModel = hit;
+      // 命中判定（含迟滞 + body-rect 兜底），与显示瞬间探测同口径。
+      // 轮询间隔 150→50ms（2026-11-19 二次修复）：鼠标从别处移入本体后更快翻回交互，
+      // 降低「等半天」感知；置顶/显隐自愈同频受益。
+      this._probePetCursorHit();
+      // 显示宽限期结束边沿（2026-11-19 二次修复）：宽限期内 ignore 被强制 false，
+      // 若光标一直在透明区，probe 因 hit 未变不会重判 → 透明区长期不穿透。
+      // 检测 true→false 边沿，到期强制重算一次 ignore，恢复轮廓让行语义。
+      const graceNow = isInPetShowGrace(Date.now(), this._petShownAt, this._petShowGraceMs);
+      if (this._petGraceWasActive && !graceNow) {
         this._applyPetIgnore();
-        _modDiag('[Pet] poll hit=' + hit + ' cur=(' + cur.x + ',' + cur.y + ') win=(' + b.x + ',' + b.y + ' ' + b.width + 'x' + b.height + ') body=' + JSON.stringify(r));
-        // hover 链路：命中沿变化合成 mousemove（渲染层 reportHit 触发进入/离开语义）
-        try {
-          win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cur.x - b.x), y: Math.round(cur.y - b.y) });
-        } catch (_) { /* 竞态静默 */ }
       }
-    }, 150);
+      this._petGraceWasActive = graceNow;
+    }, 50);
   }
 
   /** 销毁桌宠舞台（切回贴边/纯隐藏时；拖拽中间态一并清） */
@@ -2537,7 +2572,12 @@ window.__clipSenseBarHover = function (on) {
     });
     ipcMain.on('pet:body-rect', (_event: unknown, rect: { x: number; y: number; w: number; h: number }) => {
       // 宠物本体矩形（渲染层按视频宽高比计算上报；2026-10-23 命中穿透 v2）
-      if (rect && typeof rect.x === 'number') this._petBodyRect = rect;
+      if (!rect || typeof rect.x !== 'number' || !(rect.w > 0) || !(rect.h > 0)) return;
+      this._petBodyRect = rect;
+      // body-rect 到位/变化后立即重判一次（2026-11-19 鼠标延迟修复）：
+      // 显示瞬间若 body-rect 未就绪，探测走"整窗命中"兜底；首帧矩形到达后必须
+      // 立即收敛到真实轮廓（否则要等下一个 150ms tick，且期间轮廓透区挡鼠标）。
+      this._probePetCursorHit();
     });
     // 渲染层诊断上报（2026-10-13 实机返工）：装配/WebGL 失败落盘取证
     ipcMain.on('pet:diag', (_event: unknown, msg: unknown) => {
