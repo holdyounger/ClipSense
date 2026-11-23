@@ -78,6 +78,14 @@
   .md blockquote { margin: 10px 0; padding: 6px 12px; border-left: 3px solid var(--brand-soft); background: rgba(108,92,231,.05); color: var(--sub); font-size: 12px; }
   .md .fm { background: #f0f0f5; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: var(--sub); margin-bottom: 14px; font-family: Consolas, monospace; }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+  .md table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+  .md th, .md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; line-height: 1.6; }
+  .md th { background: rgba(108,92,231,.08); font-weight: 600; color: #3a2d80; }
+  .md tr:nth-child(even) td { background: rgba(0,0,0,.02); }
+  .md a.rel-ref { border-bottom: 1px dashed var(--brand-soft); }
+  .md .ref-bar { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--sub);
+    background: rgba(108,92,231,.06); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; }
+  .md .ref-bar a { color: var(--brand); font-weight: 600; }
 
   /* 底部平台导入区 */
   .dock { flex: 0 0 auto; border-top: 1px solid var(--line); background: rgba(255,255,255,.9); padding: 12px 18px 14px; }
@@ -146,9 +154,26 @@
     // 链接 [text](url)：仅 http(s)，点击走 open-external 白名单 IPC
     t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
       '<a href="$2" data-url="$2">$1</a>');
+    // 相对路径引用 [text](references/xxx.md)：点击走 skills:reference IPC 在当前窗口展开
+    t = t.replace(/\[([^\]]+)\]\((?!https?:\/\/)([^)\s]+)\)/g,
+      '<a href="#" data-ref="$2" class="rel-ref">$1</a>');
     // 粗体
     t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     return t;
+  }
+  // 表格行拆分 / 分隔行判定（支持 | a | b |、:---、---:、:---:）
+  function splitRow(line) {
+    let s = line.trim();
+    if (s.charAt(0) === '|') s = s.slice(1);
+    if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+    return s.split('|').map((x) => x.trim());
+  }
+  function isTableRow(line) {
+    const s = String(line || '').trim();
+    return s.indexOf('|') !== -1 && (s.charAt(0) === '|' || s.charAt(s.length - 1) === '|');
+  }
+  function isSepRow(line) {
+    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ''));
   }
   function renderMd(md) {
     const lines = String(md || '').split(/\r?\n/);
@@ -173,6 +198,21 @@
         continue;
       }
       if (inCode) { codeBuf.push(raw); continue; }
+      // 表格：表头行 + 紧随的分隔行；随后连续的 |...| 行为数据行
+      if (isTableRow(line) && i + 1 < lines.length && isSepRow(lines[i + 1])) {
+        closeList();
+        const head = splitRow(line);
+        i += 2; // 跳过表头 + 分隔行
+        const body = [];
+        while (i < lines.length && isTableRow(lines[i])) { body.push(splitRow(lines[i])); i++; }
+        i--; // for 循环会再 i++，回退一格继续解析后续行
+        let t = '<table><thead><tr>' + head.map((c) => '<th>' + inline(c) + '</th>').join('') + '</tr></thead>';
+        if (body.length) {
+          t += '<tbody>' + body.map((row) => '<tr>' + row.map((c) => '<td>' + inline(c) + '</td>').join('') + '</tr>').join('') + '</tbody>';
+        }
+        out.push(t + '</table>');
+        continue;
+      }
       const h = line.match(/^(#{1,3})\s+(.*)$/);
       if (h) { closeList(); const lv = h[1].length; out.push('<h' + lv + '>' + inline(h[2]) + '</h' + lv + '>'); continue; }
       if (/^\s*[-*]\s+/.test(line)) {
@@ -213,10 +253,7 @@
     renderPlats();
     $('status').textContent = '';
     $('status').className = 'status';
-    ipcRenderer.invoke('skills:detail', id).then((r) => {
-      if (r && r.ok && r.meta) $('preview').innerHTML = renderMd(r.meta.raw);
-      else $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
-    }).catch((e) => { $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(String(e)) + '</div>'; });
+    showSkillDoc();
   }
   function renderPlats() {
     const box = $('plats');
@@ -249,10 +286,35 @@
     }).catch((e) => { st.className = 'status err'; st.textContent = '导入失败：' + esc(String(e)); });
   }
 
-  // 预览区链接：仅 http(s)，走 open-external 白名单 IPC
+  // 渲染当前选中 Skill 的主文档（SKILL.md）
+  function showSkillDoc() {
+    if (!selected) return;
+    ipcRenderer.invoke('skills:detail', selected).then((r) => {
+      if (r && r.ok && r.meta) $('preview').innerHTML = renderMd(r.meta.raw);
+      else $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+    }).catch((e) => { $('preview').innerHTML = '<div class="no-sel">读取失败：' + esc(String(e)) + '</div>'; });
+  }
+  // 在窗口内展开相对路径的 reference 文档（带返回条）
+  function showReference(refPath, label) {
+    ipcRenderer.invoke('skills:reference', { skillId: selected, ref: refPath }).then((r) => {
+      if (r && r.ok) {
+        const bar = '<div class="ref-bar"><a href="#" id="refBack">← 返回 SKILL.md</a><span>' + esc(label || refPath) + '</span></div>';
+        $('preview').innerHTML = bar + renderMd(r.raw || '');
+        $('preview').scrollTop = 0;
+        $('refBack').addEventListener('click', (e) => { e.preventDefault(); showSkillDoc(); });
+      } else {
+        $('status').className = 'status err';
+        $('status').textContent = '打开引用失败：' + esc(r && r.error ? r.error : '未知错误');
+      }
+    }).catch((e) => { $('status').className = 'status err'; $('status').textContent = '打开引用失败：' + esc(String(e)); });
+  }
+
+  // 预览区链接：http(s) 走外部浏览器白名单；相对引用在当前窗口展开
   $('preview').addEventListener('click', (ev) => {
-    const a = ev.target.closest('a[data-url]');
-    if (a) { ev.preventDefault(); ipcRenderer.invoke('open-external', a.dataset.url); }
+    const ext = ev.target.closest('a[data-url]');
+    if (ext) { ev.preventDefault(); ipcRenderer.invoke('open-external', ext.dataset.url); return; }
+    const ref = ev.target.closest('a[data-ref]');
+    if (ref) { ev.preventDefault(); showReference(ref.dataset.ref, ref.textContent); }
   });
   $('closeBtn').addEventListener('click', () => ipcRenderer.send('skills:close'));
   document.addEventListener('keydown', (ev) => {
@@ -266,11 +328,7 @@
     selected = skills.length ? skills[0].id : null;
     renderSkills();
     renderPlats();
-    if (selected) {
-      ipcRenderer.invoke('skills:detail', selected).then((r) => {
-        if (r && r.ok && r.meta) $('preview').innerHTML = renderMd(r.meta.raw);
-      }).catch(() => {});
-    }
+    if (selected) showSkillDoc();
   });
 </script>
 </body>

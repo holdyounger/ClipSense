@@ -162,6 +162,33 @@ function readSkill(skillsRoot: string, id: unknown, io: SkillFs = nodeFs): { ok:
   }
 }
 
+/** 读取单个 skill 目录下的相对路径文档（如 references/verification.md），供预览窗展开。
+ *  安全：skillId 走白名单清洗；ref 仅允许相对路径，解析后必须仍落在 skill 目录内，
+ *  拒绝 .. 穿越与绝对路径；只接受 .md 文本。 */
+function readReference(skillsRoot: string, id: unknown, ref: unknown, io: SkillFs = nodeFs): { ok: boolean; raw?: string; error?: string } {
+  const safe = sanitizeSkillName(id);
+  if (!safe) return { ok: false, error: '非法 Skill 标识' };
+  if (typeof ref !== 'string' || !ref.trim()) return { ok: false, error: '引用路径为空' };
+  const rel = ref.trim();
+  if (path.isAbsolute(rel) || rel.includes('..')) return { ok: false, error: '非法引用路径' };
+  const skillDir = path.join(skillsRoot, safe);
+  // 用 normalize+join 而非 resolve：resolve 在 Windows 会给无盘符的根相对路径补当前盘符，
+  // 造成与 skillDir 前缀比对失败（测试桩 /root 与生产 C:\... 都会踩到）。
+  const target = path.normalize(path.join(skillDir, rel));
+  const base = String(skillDir).replace(/[\\/]+$/, '');
+  const norm = String(target);
+  if (norm !== base && !norm.startsWith(base + path.sep) && !norm.startsWith(base + '/')) {
+    return { ok: false, error: '引用越界' };
+  }
+  if (!target.toLowerCase().endsWith('.md')) return { ok: false, error: '仅支持 Markdown 引用' };
+  if (!io.existsSync(target)) return { ok: false, error: '引用文档不存在' };
+  try {
+    return { ok: true, raw: io.readFileSync(target, 'utf-8') };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 /** 检测已知 AI 平台：平台存在 = 其 skills 目录已存在（可导入）。
  *  homeDir 可注入，便于测试；缺省 os.homedir()。 */
 function detectPlatforms(homeDir: string = os.homedir(), io: SkillFs = nodeFs): PlatformStatus[] {
@@ -199,6 +226,7 @@ export = {
   sanitizeSkillName,
   listLocalSkills,
   readSkill,
+  readReference,
   detectPlatforms,
   importSkill,
 };

@@ -154,6 +154,27 @@ describe('readSkill 读取详情', () => {
   });
 });
 
+describe('readReference 引用文档读取（安全）', () => {
+  const io = makeFs({
+    '/root/a/SKILL.md': '---\nname: alpha\n---\n# 内容',
+    '/root/a/references/verification.md': '# 验证\n正文',
+  });
+  test('正常读取相对引用文档', () => {
+    const r = svc.readReference('/root', 'a', 'references/verification.md', io);
+    assert.strictEqual(r.ok, true);
+    assert.match(r.raw, /# 验证/);
+  });
+  test('.. 穿越 / 绝对路径 / 非 md 拒绝', () => {
+    assert.strictEqual(svc.readReference('/root', 'a', '../b/secret.md', io).ok, false);
+    assert.strictEqual(svc.readReference('/root', 'a', '/etc/passwd', io).ok, false);
+    assert.strictEqual(svc.readReference('/root', 'a', 'references/x.txt', io).ok, false);
+  });
+  test('非法 id / 不存在的引用拒绝', () => {
+    assert.strictEqual(svc.readReference('/root', '../evil', 'references/verification.md', io).ok, false);
+    assert.strictEqual(svc.readReference('/root', 'a', 'references/missing.md', io).ok, false);
+  });
+});
+
 describe('detectPlatforms 平台检测', () => {
   test('存在的目录标 available，不存在标 false', () => {
     const io = makeFs({});
@@ -233,9 +254,12 @@ describe('主进程接线（index.ts）静态守卫', () => {
     assert.match(src, /ipcMain\.handle\('pet:open-skill'[\s\S]{0,300}_showSkillsWindow\(\)/);
   });
   test('新增 skills 数据面 IPC', () => {
-    for (const ch of ['skills:detail', 'skills:platforms', 'skills:import', 'skills:close']) {
+    for (const ch of ['skills:detail', 'skills:reference', 'skills:platforms', 'skills:import', 'skills:close']) {
       assert.ok(src.includes("'" + ch + "'"), '应注册 ' + ch);
     }
+  });
+  test('reference IPC 调 skillsService.readReference', () => {
+    assert.match(src, /skillsService\.readReference/);
   });
   test('导入前检测平台可用 + 清洗 id + 调 skillsService', () => {
     assert.match(src, /detectPlatforms\(\)\.find/);
@@ -254,10 +278,22 @@ describe('渲染层（skills-window.html）静态守卫', () => {
     assert.match(html, /renderSkills\(\)/);
     assert.match(html, /renderPlats\(\)/);
   });
-  test('调用 detail / import / close IPC', () => {
+  test('调用 detail / reference / import / close IPC', () => {
     assert.match(html, /invoke\('skills:detail'/);
+    assert.match(html, /invoke\('skills:reference'/);
     assert.match(html, /invoke\('skills:import'/);
     assert.match(html, /send\('skills:close'\)/);
+  });
+  test('Markdown 渲染支持表格（表头/分隔行/数据行）', () => {
+    assert.match(html, /function isSepRow\(/);
+    assert.match(html, /function splitRow\(/);
+    assert.ok(html.includes('<table><thead><tr>'), '生成 table HTML');
+    assert.ok(html.includes('<tbody>'), '生成 tbody');
+  });
+  test('相对引用链接可点击 + 返回主文档', () => {
+    assert.match(html, /data-ref=/);
+    assert.match(html, /function showReference\(/);
+    assert.match(html, /id="refBack"/);
   });
   test('Markdown 先转义防注入，外链走 open-external 白名单', () => {
     assert.match(html, /function esc\(/);

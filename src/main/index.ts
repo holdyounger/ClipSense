@@ -2212,6 +2212,13 @@ window.__clipSenseBarHover = function (on) {
       return skillsService.readSkill(skillsRoot, id);
     });
 
+    // 形象工坊：在预览窗内展开 skill 的相对路径引用文档（带路径穿越防护）
+    ipcMain.handle('skills:reference', (_e: unknown, payload: unknown) => {
+      const p = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+      const skillsRoot = path.join(__dirname, '../../skills');
+      return skillsService.readReference(skillsRoot, p.skillId, p.ref);
+    });
+
     // 形象工坊：重新检测平台（导入后刷新可用状态）
     ipcMain.handle('skills:platforms', () => skillsService.detectPlatforms());
 
